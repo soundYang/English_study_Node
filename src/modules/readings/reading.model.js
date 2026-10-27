@@ -17,6 +17,37 @@ const questionSchema = new Schema(
   { _id: false },
 )
 
+/**
+ * 本次生成的选池与目标词计划（P1 新增）。
+ * 排查「这篇文章为什么这么难写」时，光看正文没用，得知道当时给了模型什么条件。
+ */
+const targetPlanSchema = new Schema(
+  {
+    scope: { type: [String], default: [] }, // 词源：['all'] / ['today_new','today_reviewed']
+    poolSize: { type: Number, default: 0 }, // 候选池实际大小
+    requiredWords: { type: Number, default: 0 }, // 按篇幅算出的目标词数
+    focusWords: { type: [String], default: [] }, // 重点词清单，要求复现 2–3 次
+  },
+  { _id: false },
+)
+
+/**
+ * 正文里实际出现的个人词及次数（P1 新增）。
+ * 不统计基础词——没有复习价值，还会把数组撑到几百条。
+ */
+const usedWordSchema = new Schema(
+  {
+    word: { type: String, required: true },
+    count: { type: Number, required: true, min: 0 }, // 正文实际出现次数
+    kind: {
+      type: String,
+      enum: ['focus', 'target', 'pool'], // 重点词 / 普通目标词 / 池内但未入选目标词
+      required: true,
+    },
+  },
+  { _id: false },
+)
+
 const readingSchema = new Schema(
   {
     userId: { type: String, required: true }, // 所属用户
@@ -34,6 +65,10 @@ const readingSchema = new Schema(
     questions: { type: [questionSchema], required: true }, // 题目，含答案
     vocabularySnapshot: { type: [String], required: true }, // 生成时参与的用户词汇快照，最多 800 个
     names: { type: [String], default: [] }, // AI 声明的人名，词汇校验时放行用
+
+    // ——— P1 新增：生成计划与实际复现，老文档没有时分别取 null / [] ———
+    targetPlan: { type: targetPlanSchema, default: null },
+    usedWords: { type: [usedWordSchema], default: [] },
 
     status: {
       type: String,
@@ -55,6 +90,16 @@ const readingSchema = new Schema(
       promptTokens: Number, // 输入 token
       completionTokens: Number, // 输出 token
       repairRounds: Number, // 触发了几轮修正
+
+      // ——— P1 扩展：P3 的覆盖度指标，也是 P6 回归对比的观察项 ———
+      candidatePoolSize: Number, // 候选池大小
+      requiredWords: Number, // 计划的目标词数
+      actualTargetWordCount: Number, // 实际用上的目标词数
+      focusWordHits: Number, // 重点词平均复现次数
+      userWordTokenRatio: Number, // 个人词占正文词次的比例
+      wordCountDeviation: Number, // 实际篇幅 / targetWords，1 表示刚好
+      violationsCount: Number, // 最终仍有几个违规词
+      finishReason: String, // stop / length，用于判断是否被截断
     },
   },
   { timestamps: true },
