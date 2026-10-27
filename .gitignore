@@ -1,0 +1,7 @@
+node_modules/
+.env
+*.log
+coverage/
+
+# 文档改动前的临时备份
+*.bak

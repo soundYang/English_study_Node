@@ -1,0 +1,35 @@
+{
+  "name": "word-reading-api",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Word Reading 后端 API：Express 5 + MongoDB + 本地 COCA 词库 + DeepSeek",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "node --watch src/server.js",
+    "start": "node src/server.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "build:dictionary": "node scripts/build-dictionary.mjs",
+    "build:basic-words": "node scripts/build-basic-words.mjs"
+  },
+  "dependencies": {
+    "cors": "2.8.6",
+    "dotenv": "18.0.9",
+    "express": "5.3.0",
+    "express-rate-limit": "8.7.1",
+    "helmet": "8.3.0",
+    "mongoose": "8.24.7",
+    "openai": "7.45.0",
+    "pino": "10.4.0",
+    "pino-http": "11.0.0",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "mongodb-memory-server": "11.3.0",
+    "supertest": "7.3.1",
+    "vitest": "5.0.5"
+  }
+}
