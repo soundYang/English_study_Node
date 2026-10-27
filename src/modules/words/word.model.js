@@ -48,11 +48,31 @@ const wordSchema = new Schema(
       type: [senseSchema], // 义项快照；手填至多一条且 pos 为空串
       default: [],
     },
+
+    // ——— 复习与复现统计（P1 新增，全部有默认值，老文档无需迁移）———
+
+    lastReviewedAt: {
+      type: Date,
+      default: null, // 最近一次「在文章里复习到」的时间；提交练习时才回写，生成文章不算
+    },
+    articleExposureCount: {
+      type: Number,
+      default: 0, // 累计在生成文章的正文中出现过多少次
+    },
+    lastArticleExposureAt: {
+      type: Date,
+      default: null, // 最近一次进文章的时间；与 lastReviewedAt 的区别见 reading.service 的提交逻辑
+    },
+    cocaRank: {
+      type: Number,
+      default: null, // COCA 词频排名，越小越常用；手填词与源表里没有的词（an / yourselves）为 null
+    },
   },
-  { timestamps: true }, // 自动维护 createdAt / updatedAt
+  { timestamps: true }, // 自动维护 createdAt / updatedAt，createdAt 就是「加入时间」
 )
 
 wordSchema.index({ userId: 1, word: 1 }, { unique: true }) // 同一用户内单词唯一，去重靠它而不是应用层 if
 wordSchema.index({ userId: 1, createdAt: -1 }) // 列表默认按创建时间倒序
+wordSchema.index({ userId: 1, status: 1, lastReviewedAt: 1 }) // P3 选池：按复习优先级取词，替代按 createdAt 截断
 
 export const Word = mongoose.model('Word', wordSchema)
