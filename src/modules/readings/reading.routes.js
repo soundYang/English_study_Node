@@ -1,6 +1,6 @@
 import { Router } from 'express'
 
-import { generateReading } from './reading.service.js'
+import { generateReading, submitReading } from './reading.service.js'
 
 const router = Router()
 
@@ -27,6 +27,16 @@ router.post('/generate', async (req, res) => {
 
     throw err
   }
+})
+
+router.post('/:id/submit', async (req, res) => {
+  const dto = await submitReading({
+    userId: req.userId,
+    id: req.params.id,
+    body: req.body ?? {},
+  })
+
+  res.json(dto)
 })
 
 export default router

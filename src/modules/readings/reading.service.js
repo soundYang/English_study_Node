@@ -1,5 +1,7 @@
+import mongoose from 'mongoose'
+
 import { config } from '../../config/index.js'
-import { ApiError, ERROR_CODES } from '../../shared/errors.js'
+import { ApiError, ERROR_CODES, conflict, readingNotFound } from '../../shared/errors.js'
 import { logger } from '../../shared/logger.js'
 import { parseOrThrow } from '../../shared/utils/validation.js'
 import { wordRepository } from '../words/word.repository.js'
@@ -7,9 +9,9 @@ import { chatJson } from './ai.client.js'
 import { buildMessages, buildRepairMessages } from './ai.prompt.js'
 import { parseAiContent, validateAiReading } from './ai.schema.js'
 import { basicWords } from './basic-words.js'
-import { toSafeDto } from './reading.dto.js'
+import { toResultDto, toSafeDto } from './reading.dto.js'
 import { readingRepository as repo } from './reading.repository.js'
-import { generateReadingSchema } from './reading.schema.js'
+import { generateReadingSchema, submitReadingSchema } from './reading.schema.js'
 import { validateArticle } from './vocabulary.service.js'
 
 /** vocabularySnapshot 的上限，与 Schema 注释一致 */
@@ -210,4 +212,88 @@ export async function generateReading({ userId, body, signal }) {
   })
 
   return toSafeDto(doc)
+}
+
+/** answers 的格式错误统一用 INVALID_ANSWER，前端据此提示"答案格式不对" */
+function parseAnswers(body) {
+  const result = submitReadingSchema.safeParse(body)
+
+  if (result.success) return result.data.answers
+
+  throw new ApiError(
+    400,
+    ERROR_CODES.INVALID_ANSWER,
+    result.error.issues[0].message,
+    'answers',
+  )
+}
+
+/**
+ * POST /api/readings/:id/submit
+ *
+ * 1. 校验答案数组的结构
+ * 2. 取文档，确认 questionId 都属于这份练习
+ * 3. 用库里的 correctAnswer 判分（绝不信客户端）
+ * 4. 条件更新 generated → submitted，并发的第二个请求拿 409
+ */
+export async function submitReading({ userId, id, body }) {
+  const answers = parseAnswers(body)
+
+  // 非法 ObjectId 直接当 404，否则 Mongoose 会抛 CastError 变成 500
+  if (!mongoose.isValidObjectId(id)) throw readingNotFound()
+
+  const reading = await repo.findByIdAndUser(id, userId)
+  if (!reading) throw readingNotFound()
+
+  const questions = new Map(reading.questions.map((item) => [item.id, item]))
+  const userAnswers = {}
+
+  for (const { questionId, selectedOption } of answers) {
+    const question = questions.get(questionId)
+    if (!question) {
+      throw new ApiError(
+        400,
+        ERROR_CODES.INVALID_ANSWER,
+        `题目 ${questionId} 不属于这份练习`,
+        'answers',
+      )
+    }
+
+    if (selectedOption !== null && selectedOption >= question.options.length) {
+      throw new ApiError(
+        400,
+        ERROR_CODES.INVALID_ANSWER,
+        `题目 ${questionId} 的选项越界`,
+        'answers',
+      )
+    }
+
+    // 未作答不落库：Map 的 of: Number 存 null 会走类型转换，容易埋坑
+    if (selectedOption !== null) userAnswers[questionId] = selectedOption
+  }
+
+  const totalQuestions = reading.questions.length
+  const correctCount = reading.questions.reduce(
+    (sum, question) => sum + (userAnswers[question.id] === question.correctAnswer ? 1 : 0),
+    0,
+  )
+  const score = totalQuestions ? Math.round((correctCount / totalQuestions) * 100) : 0
+
+  const updated = await repo.submitIfGenerated(id, userId, {
+    status: 'submitted',
+    userAnswers,
+    score,
+    correctCount,
+    submittedAt: new Date(),
+  })
+
+  if (!updated) {
+    // 没更新到只有两种可能：记录没了，或已经提交过
+    const exists = await repo.existsByIdAndUser(id, userId)
+    if (!exists) throw readingNotFound()
+
+    throw conflict(ERROR_CODES.ALREADY_SUBMITTED, '这份练习已提交过')
+  }
+
+  return toResultDto(updated)
 }

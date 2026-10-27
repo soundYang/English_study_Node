@@ -24,3 +24,27 @@ export const generateReadingSchema = z.object({
       'questionCount 只能是 3 / 5 / 8',
     ),
 })
+
+/**
+ * POST /api/readings/:id/submit 的请求体。
+ *
+ * 前端每道题都会发，未作答的 selectedOption 为 null——null 是合法输入，
+ * 判错即可，不能报 400（否则用户没答完就提交会被接口挡住）。
+ */
+export const submitReadingSchema = z.object({
+  answers: z.array(
+    z.object({
+      questionId: z
+        .number({ error: 'questionId 必须是数字' })
+        .int('questionId 必须是整数')
+        .positive('questionId 必须是正整数'),
+      selectedOption: z
+        .number({ error: 'selectedOption 必须是数字或 null' })
+        .int('selectedOption 必须是整数')
+        .min(0, 'selectedOption 必须在 0–3 之间')
+        .max(3, 'selectedOption 必须在 0–3 之间')
+        .nullable(),
+    }),
+    { error: 'answers 必须是数组' },
+  ),
+})
