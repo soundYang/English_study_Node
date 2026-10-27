@@ -392,3 +392,21 @@ describe('POST /api/readings/generate · 上游异常', () => {
     expect(await Reading.countDocuments()).toBe(0)
   })
 })
+
+describe('POST /api/readings/generate · 词汇快照上限', () => {
+  it('用户词超过 800 时截断到 800，且全部并入提示词', async () => {
+    await seedWords(820)
+    chatJson.mockResolvedValue(reply(makePayload()))
+
+    const res = await generate(VALID_BODY)
+
+    expect(res.status).toBe(201)
+
+    // 800 个用户词 + 2578 个基础词 + 19 个日历词（may 与基础词表重复，去重后是 18 个）
+    const prompt = chatJson.mock.calls[0][0].messages[1].content
+    expect(prompt).toContain(`共 ${800 + 2578 + 18} 个`)
+
+    const doc = await Reading.findById(res.body.id)
+    expect(doc.vocabularySnapshot).toHaveLength(800)
+  })
+})

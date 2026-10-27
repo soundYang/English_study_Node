@@ -1,7 +1,9 @@
 # 本地词库数据说明
 
-本目录的 `a.json` … `z.json` 是前端离线词库，由 `scripts/build-dictionary.mjs` 从 COCA 词频表生成。
-页面运行时不访问任何外部接口，全部数据随前端打包。
+本目录的 `dictionary/a.json` … `dictionary/z.json` 是前端离线词库，由 `scripts/build-dictionary.mjs`
+从 COCA 词频表生成。页面运行时不访问任何外部接口，全部数据随前端打包。
+
+同目录另有两个生成物，本文件第 5 节单独说明：`basic-words.json`、`irregular-forms.json`。
 
 ## 1. 数据来源
 
@@ -80,3 +82,14 @@ node scripts/build-dictionary.mjs
 放在其他位置时用 `--src <目录>` 指定。
 
 脚本会打印条目数、去重丢弃数、缺音标/缺释义条数与各分片体积，用于核对数据是否变化。
+
+## 5. 同目录的其他数据文件
+
+| 文件                    | 用途                                                       | 生成方式                                  |
+| ----------------------- | ---------------------------------------------------------- | ----------------------------------------- |
+| `dictionary/*.json`     | 查词与加词的离线词库，17,417 条可检索                      | `scripts/build-dictionary.mjs`            |
+| `basic-words.json`      | 生成文章时的基础词白名单（2,578 个），与用户词表合并校验   | `scripts/build-basic-words.mjs --rank 3000` |
+| `irregular-forms.json`  | 词形还原用的不规则变化表（约 238 条），词汇校验依赖它      | 手工维护                                  |
+
+三者不会自动同步：词库扩容后，`basic-words.json` 仍要按新的 `--rank` 单独重跑。
+星期与月份名不在 COCA 源里，校验时由 `src/modules/readings/calendar-words.js` 单独放行。

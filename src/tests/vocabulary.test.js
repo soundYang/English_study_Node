@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { basicWords } from '../modules/readings/basic-words.js'
+import { calendarWords } from '../modules/readings/calendar-words.js'
 import { validateArticle } from '../modules/readings/vocabulary.service.js'
 
 /**
@@ -28,6 +29,12 @@ describe('validateArticle · 词形还原', () => {
   it('两字母的不规则形式：is → be（长度门槛不能先于不规则表）', () => {
     expect(check('is', ['be']).valid).toBe(true)
     expect(check('am', ['be']).valid).toBe(true)
+  })
+
+  it('易漏的不规则过去分词：shown / sunk / rang', () => {
+    expect(check('shown', ['show']).valid).toBe(true)
+    expect(check('sunk', ['sink']).valid).toBe(true)
+    expect(check('rang', ['ring']).valid).toBe(true)
   })
 
   it('第三人称单数：likes → like、goes → go', () => {
@@ -127,9 +134,22 @@ describe('validateArticle · 判定与统计', () => {
 })
 
 describe('基础词表', () => {
-  it('产出 728 个词，全部是小写纯字母或撇号词', () => {
-    expect(basicWords).toHaveLength(728)
+  it('产出 2578 个词，全部是小写纯字母或撇号词', () => {
+    expect(basicWords).toHaveLength(2578)
     expect(basicWords.every((word) => /^[a-z]+(?:'[a-z]+)?$/.test(word))).toBe(true)
+  })
+
+  it('补齐 COCA 词元表漏掉的虚词（an 漏了会让每篇含 an 的文章失败）', () => {
+    for (const word of ['an', 'onto', 'mine', 'whom', 'shall']) {
+      expect(basicWords.includes(word)).toBe(true)
+    }
+
+    // 只用基础词 + an：apple / orange 本身在 800 名之外，会把用例引偏
+    const article = 'Tom has an old dog. An hour is a long time.'
+
+    expect(validateArticle({ article, allowedWords: new Set(basicWords), names: ['Tom'] }).valid).toBe(
+      true,
+    )
   })
 
   it('不含专有名词、缩写与表头残留', () => {
@@ -144,6 +164,24 @@ describe('基础词表', () => {
       'Tom is a good boy. His dog is big and the boy is small. Tom and his dog play in the house.'
 
     expect(validateArticle({ article, allowedWords: new Set(basicWords), names: ['Tom'] }).valid).toBe(
+      true,
+    )
+  })
+})
+
+describe('日历词白名单', () => {
+  it('19 个星期与月份，全部小写纯字母', () => {
+    expect(calendarWords).toHaveLength(19)
+    expect(calendarWords.every((word) => /^[a-z]+$/.test(word))).toBe(true)
+  })
+
+  it('这些词在基础词表里捞不到，只能靠白名单放行', () => {
+    for (const word of ['saturday', 'december']) {
+      expect(basicWords.includes(word)).toBe(false)
+    }
+
+    // 正文里是大写（Saturday），校验时统一转小写后再命中白名单
+    expect(validateArticle({ article: 'Saturday December', allowedWords: calendarWords }).valid).toBe(
       true,
     )
   })

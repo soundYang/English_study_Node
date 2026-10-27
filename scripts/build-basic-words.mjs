@@ -1,13 +1,13 @@
 /**
  * 基础词表构建脚本（S7）
  *
- * 用途：从 COCA 源数据取词频前 N（默认 800）且有释义的词条，
+ * 用途：从 COCA 源数据取词频前 N（默认 3000）且有释义的词条，
  *      过滤掉专有名词、复合词、缩写、释义敏感的词，输出 data/basic-words.json。
  *
  * 产出是**初稿**：脚本做完机械过滤，剩下"看着像普通词但其实不适合当基础词"
  * 的条目由 MANUAL_EXCLUDE 人工维护，保证重建结果可复现（改脚本比手改 json 可靠）。
  *
- * 用法：node scripts/build-basic-words.mjs [--src <md 目录>] [--out <文件>] [--rank 800]
+ * 用法：node scripts/build-basic-words.mjs [--src <md 目录>] [--out <文件>] [--rank 3000]
  */
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
@@ -71,8 +71,16 @@ const PROPER_NOUN_KEEP = new Set(['true'])
  */
 const MANUAL_EXCLUDE = new Set([])
 
+/**
+ * 人工补充的虚词。
+ * COCA 源是词元表：`a/an` 只收了 `a`，`is/am/are` 只收了 `be`（靠不规则表兜住）。
+ * 这些词不在源数据里，无法靠排名捞出来，只能显式补——漏掉 `an` 会让每篇含
+ * "an apple" 的文章都判超纲，是最隐蔽的一种失败。
+ */
+const MANUAL_INCLUDE = ['an', 'mine', 'whom', 'shall', 'onto']
+
 function parseArgs(argv) {
-  const args = { src: DEFAULT_SRC, out: DEFAULT_OUT, rank: 800 }
+  const args = { src: DEFAULT_SRC, out: DEFAULT_OUT, rank: 3000 }
 
   for (let i = 0; i < argv.length; i += 1) {
     if (argv[i] === '--src' && argv[i + 1]) args.src = resolve(argv[++i])
@@ -187,11 +195,18 @@ function main() {
     kept.push(lower)
   }
 
+  // 源数据里不存在的虚词靠排名永远捞不到，只能显式补
+  const keptSet = new Set(kept)
+  const added = MANUAL_INCLUDE.filter((word) => !keptSet.has(word))
+  for (const word of added) keptSet.add(word)
+
+  const result = [...keptSet]
+
   // 按字母序输出：diff 稳定，Set 化之后顺序本来也不影响校验
-  kept.sort()
+  result.sort()
 
   mkdirSync(dirname(args.out), { recursive: true })
-  writeFileSync(args.out, `${JSON.stringify(kept, null, 0)}\n`)
+  writeFileSync(args.out, `${JSON.stringify(result, null, 0)}\n`)
 
   console.log(`源目录        ${args.src}`)
   console.log(`前 N 词条     ${inRange.length}（N=${args.rank}）`)
@@ -201,7 +216,8 @@ function main() {
   console.log(`专有名词剔除  ${dropped.properNoun.length}  ${dropped.properNoun.join(', ')}`)
   console.log(`敏感释义剔除  ${dropped.sensitive.length}  ${dropped.sensitive.join(', ')}`)
   console.log(`人工剔除      ${dropped.manual.length}  ${dropped.manual.join(', ')}`)
-  console.log(`最终基础词    ${kept.length}`)
+  console.log(`人工补充      ${added.length}  ${added.join(', ')}`)
+  console.log(`最终基础词    ${result.length}`)
   console.log(`输出文件      ${args.out}`)
 }
 

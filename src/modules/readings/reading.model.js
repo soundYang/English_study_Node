@@ -32,7 +32,7 @@ const readingSchema = new Schema(
     questionCount: { type: Number, required: true }, // 题目数量，用户选的
     actualWords: { type: Number, required: true }, // 实际词数；不落库的话历史统计要全表扫
     questions: { type: [questionSchema], required: true }, // 题目，含答案
-    vocabularySnapshot: { type: [String], required: true }, // 生成时参与的用户词汇快照，最多 200 个
+    vocabularySnapshot: { type: [String], required: true }, // 生成时参与的用户词汇快照，最多 800 个
     names: { type: [String], default: [] }, // AI 声明的人名，词汇校验时放行用
 
     status: {

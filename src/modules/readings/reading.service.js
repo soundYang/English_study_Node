@@ -9,6 +9,7 @@ import { chatJson } from './ai.client.js'
 import { buildMessages, buildRepairMessages } from './ai.prompt.js'
 import { parseAiContent, validateAiReading } from './ai.schema.js'
 import { basicWords } from './basic-words.js'
+import { calendarWords } from './calendar-words.js'
 import { toHistoryItem, toResultDto, toSafeDto } from './reading.dto.js'
 import { readingRepository as repo } from './reading.repository.js'
 import {
@@ -18,8 +19,11 @@ import {
 } from './reading.schema.js'
 import { validateArticle } from './vocabulary.service.js'
 
-/** vocabularySnapshot 的上限，与 Schema 注释一致 */
-const VOCABULARY_SNAPSHOT_LIMIT = 200
+/**
+ * vocabularySnapshot 的上限（方案 §9.2：超过 800 按 createdAt 倒序截断）。
+ * 取太小会让"词汇量越大越容易生成失败"——用户明明学过，却没进提示词。
+ */
+const VOCABULARY_SNAPSHOT_LIMIT = 800
 const MAX_TOKENS_CAP = 2600
 /** article 实际词数允许偏离目标的范围，超出只记 warning 不判错 */
 const WORD_COUNT_TOLERANCE = { min: 0.7, max: 1.4 }
@@ -113,7 +117,19 @@ export async function generateReading({ userId, body, signal }) {
     VOCABULARY_SNAPSHOT_LIMIT,
   )
   const vocabularySnapshot = words.map((item) => item.word)
-  const allowedWords = new Set([...vocabularySnapshot, ...basicWords])
+
+  // 超过上限必须留痕：用户会以为"我学过的词为什么没被用上"
+  if (available > VOCABULARY_SNAPSHOT_LIMIT) {
+    logger.warn(
+      `vocabulary snapshot truncated: ${available} > ${VOCABULARY_SNAPSHOT_LIMIT}`,
+    )
+  }
+  // 日历词单独放行：COCA 源里没有它们，既进不了基础词表也搜不到（见 calendar-words.js）
+  const allowedWords = new Set([
+    ...vocabularySnapshot,
+    ...basicWords,
+    ...calendarWords,
+  ])
 
   const messages = buildMessages({
     level: params.level,

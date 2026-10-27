@@ -66,7 +66,7 @@ export const config = Object.freeze({
   // 生成策略
   vocabularyThreshold: toNumber('VOCABULARY_THRESHOLD', 20),
   maxRepairRounds: toNumber('MAX_REPAIR_ROUNDS', 1),
-  basicWordsRank: toNumber('BASIC_WORDS_RANK', 800),
+  basicWordsRank: toNumber('BASIC_WORDS_RANK', 3000),
 
   // 限流（次 / 分钟）
   rateLimitDictionary: toNumber('RATE_LIMIT_DICTIONARY', 60),
