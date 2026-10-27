@@ -11,6 +11,7 @@ import { escapeRegex } from '../../shared/utils/regex.js'
 import { parseOrThrow } from '../../shared/utils/validation.js'
 import { findEntry } from '../dictionary/dictionary.loader.js'
 import { toWordDto } from './word.dto.js'
+import { getWordRank } from './word-ranks.js'
 import { wordRepository as repo } from './word.repository.js'
 import {
   WORD_STATUSES,
@@ -164,6 +165,9 @@ export async function createWord({ userId, body }) {
     }
   }
 
+  // 词频排名两个分支都要写：手填词与源表里没有的词（an / yourselves）查不到，存 null
+  payload.cocaRank = getWordRank(word)
+
   if (await repo.existsByWord(userId, word)) {
     throw conflict(ERROR_CODES.WORD_EXISTS, '这个单词已经添加过了', 'word')
   }
@@ -234,6 +238,8 @@ export async function updateWord({ userId, id, body }) {
 
     const currentMeaning = doc.senses?.[0]?.meaning ?? ''
     doc.word = nextWord
+    // 词形变了，旧排名描述的已经不是这个词了；不改会一直按错的难度参与选池
+    doc.cocaRank = getWordRank(nextWord)
 
     if (doc.source === 'dictionary') {
       // 改词即降级：快照来自旧词条，继续留着就是在撒谎
