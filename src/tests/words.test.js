@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest'
 import { createApp } from '../app.js'
 import { config } from '../config/index.js'
 import { Word } from '../modules/words/word.model.js'
+import { getWordRank } from '../modules/words/word-ranks.js'
 
 const app = createApp()
 const uid = config.defaultUserId
@@ -361,5 +362,57 @@ describe('DELETE /api/words/:id', () => {
     const res = await del('not-an-id')
 
     expect(res.status).toBe(404)
+  })
+})
+
+/**
+ * P1 新增字段。
+ *
+ * 断言用 getWordRank() 对照而不是写死 2201：排名表会随词库重建而变，
+ * 写死数字会让这条用例在无关的改动里莫名其妙地红。
+ */
+describe('P1 字段：cocaRank 与复习统计', () => {
+  it('新增词库词时写入 COCA 排名', async () => {
+    const res = await post({ word: 'Abandon', source: 'dictionary' })
+
+    expect(res.status).toBe(201)
+
+    const doc = await Word.findOne({ userId: uid, word: 'abandon' }).lean()
+    expect(doc.cocaRank).toBe(getWordRank('abandon'))
+    expect(typeof doc.cocaRank).toBe('number')
+  })
+
+  it('排名表里没有的词（手填）存 null，而不是 0 或省略', async () => {
+    await post({ word: 'zzzqqq', source: 'manual', meaning: '自造词' })
+
+    const doc = await Word.findOne({ userId: uid, word: 'zzzqqq' }).lean()
+    expect(doc.cocaRank).toBeNull()
+  })
+
+  it('改词形后排名跟随新词', async () => {
+    const doc = await Word.create({
+      userId: uid,
+      word: 'abandon',
+      source: 'manual',
+      cocaRank: getWordRank('abandon'),
+    })
+
+    const res = await patch(String(doc._id), { word: 'may' })
+
+    expect(res.status).toBe(200)
+
+    const updated = await Word.findById(doc._id).lean()
+    expect(updated.cocaRank).toBe(getWordRank('may'))
+    expect(updated.cocaRank).not.toBe(getWordRank('abandon'))
+  })
+
+  it('老文档缺新字段时按默认值读取', async () => {
+    await seed([{ word: 'legacy' }])
+
+    const doc = await Word.findOne({ userId: uid, word: 'legacy' }).lean()
+    expect(doc.lastReviewedAt).toBeNull()
+    expect(doc.articleExposureCount).toBe(0)
+    expect(doc.lastArticleExposureAt).toBeNull()
+    expect(doc.cocaRank).toBeNull()
   })
 })
