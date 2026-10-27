@@ -1,6 +1,8 @@
 import { Router } from 'express'
 
-import { generateReading, submitReading } from './reading.service.js'
+import { parseOrThrow } from '../../shared/utils/validation.js'
+import { listHistoryQuerySchema } from './reading.schema.js'
+import { generateReading, getReading, listHistory, submitReading } from './reading.service.js'
 
 const router = Router()
 
@@ -29,6 +31,12 @@ router.post('/generate', async (req, res) => {
   }
 })
 
+// /history 必须排在 /:id 之前，否则会被当成 id 去查，直接 404
+router.get('/history', async (req, res) => {
+  const query = parseOrThrow(listHistoryQuerySchema, req.query)
+  res.json(await listHistory({ userId: req.userId, query }))
+})
+
 router.post('/:id/submit', async (req, res) => {
   const dto = await submitReading({
     userId: req.userId,
@@ -37,6 +45,10 @@ router.post('/:id/submit', async (req, res) => {
   })
 
   res.json(dto)
+})
+
+router.get('/:id', async (req, res) => {
+  res.json(await getReading({ userId: req.userId, id: req.params.id }))
 })
 
 export default router

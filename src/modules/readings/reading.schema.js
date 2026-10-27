@@ -3,6 +3,9 @@ import { z } from 'zod'
 export const LEVELS = ['easy', 'medium', 'hard']
 export const QUESTION_COUNTS = [3, 5, 8]
 
+/** 历史列表允许的 level 取值，all = 不筛选 */
+export const HISTORY_LEVEL_FILTERS = ['all', ...LEVELS]
+
 /**
  * POST /api/readings/generate 的请求体。
  * 约束与前端 unit/validators.js 完全一致——前端已经限过一遍，
@@ -47,4 +50,24 @@ export const submitReadingSchema = z.object({
     }),
     { error: 'answers 必须是数组' },
   ),
+})
+
+/**
+ * GET /api/readings/history 的 query。
+ *
+ * `_t` 是前端防缓存附加的时间戳，不在这里声明——zod 默认剥掉未知键。
+ */
+export const listHistoryQuerySchema = z.object({
+  level: z.string({ error: '难度必须是字符串' }).default('all'),
+  page: z.coerce
+    .number({ error: '页码必须是数字' })
+    .int('页码必须是整数')
+    .min(1, '页码必须大于等于 1')
+    .default(1),
+  pageSize: z.coerce
+    .number({ error: '每页数量必须是数字' })
+    .int('每页数量必须是整数')
+    .min(1, '每页数量最小为 1')
+    .max(100, '每页数量最大为 100')
+    .default(10),
 })

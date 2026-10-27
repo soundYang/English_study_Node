@@ -83,3 +83,24 @@ export function toResultDto(doc) {
     results,
   }
 }
+
+/**
+ * 历史列表条目。未提交的记录 score / accuracy / submittedAt 都是 null，
+ * 前端据此区分"继续作答"和"查看结果"。
+ */
+export function toHistoryItem(doc) {
+  const submitted = doc.status === 'submitted'
+
+  return {
+    id: String(doc._id),
+    title: doc.title,
+    level: doc.level,
+    questionCount: doc.questionCount,
+    status: doc.status,
+    score: submitted ? doc.score : null,
+    // 前端两个字段都读，必须同值
+    accuracy: submitted ? doc.score : null,
+    createdAt: doc.createdAt,
+    submittedAt: submitted ? doc.submittedAt : null,
+  }
+}

@@ -9,9 +9,13 @@ import { chatJson } from './ai.client.js'
 import { buildMessages, buildRepairMessages } from './ai.prompt.js'
 import { parseAiContent, validateAiReading } from './ai.schema.js'
 import { basicWords } from './basic-words.js'
-import { toResultDto, toSafeDto } from './reading.dto.js'
+import { toHistoryItem, toResultDto, toSafeDto } from './reading.dto.js'
 import { readingRepository as repo } from './reading.repository.js'
-import { generateReadingSchema, submitReadingSchema } from './reading.schema.js'
+import {
+  HISTORY_LEVEL_FILTERS,
+  generateReadingSchema,
+  submitReadingSchema,
+} from './reading.schema.js'
 import { validateArticle } from './vocabulary.service.js'
 
 /** vocabularySnapshot 的上限，与 Schema 注释一致 */
@@ -296,4 +300,64 @@ export async function submitReading({ userId, id, body }) {
   }
 
   return toResultDto(updated)
+}
+
+/**
+ * GET /api/readings/:id
+ *
+ * 两个分支：
+ *   generated → 安全 DTO（不含翻译与答案），刷新答题页可以继续作答
+ *   submitted → 完整结果（含翻译与解析），刷新结果页不丢内容
+ */
+export async function getReading({ userId, id }) {
+  if (!mongoose.isValidObjectId(id)) throw readingNotFound()
+
+  const doc = await repo.findByIdAndUser(id, userId)
+  if (!doc) throw readingNotFound()
+
+  return doc.status === 'submitted' ? toResultDto(doc) : toSafeDto(doc)
+}
+
+/**
+ * GET /api/readings/history
+ *
+ * 口径（全部接口里最容易做错的一条）：
+ *   stats —— 只统计已提交、且**不受 level 筛选影响**
+ *   total / items —— 受 level 筛选影响
+ * 筛选之后 stats 必须纹丝不动，否则统计卡片会跟着筛选跳动。
+ */
+export async function listHistory({ userId, query }) {
+  const level = HISTORY_LEVEL_FILTERS.includes(query.level) ? query.level : 'all'
+  const { page, pageSize } = query
+
+  const total = await repo.countHistory({ userId, level })
+  const lastPage = Math.max(1, Math.ceil(total / pageSize))
+  const currentPage = Math.min(page, lastPage)
+
+  const items =
+    total === 0
+      ? []
+      : await repo.findHistoryPage({
+          userId,
+          level,
+          skip: (currentPage - 1) * pageSize,
+          limit: pageSize,
+        })
+
+  const [row] = await repo.statsByUser(userId)
+  const totalCount = row?.totalCount ?? 0
+  const stats = {
+    totalCount,
+    averageAccuracy: totalCount ? Math.round(row.scoreSum / totalCount) : 0,
+    bestScore: row?.bestScore ?? 0,
+    totalWordsRead: row?.totalWordsRead ?? 0,
+  }
+
+  return {
+    items: items.map(toHistoryItem),
+    total,
+    page: currentPage,
+    pageSize,
+    stats,
+  }
 }
