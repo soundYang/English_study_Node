@@ -30,6 +30,19 @@ export const wordRepository = {
     return Word.findOne({ _id: id, userId })
   },
 
+  /** 生成文章用的可用词汇：只有 learning / mastered，new 不算 */
+  countVocabulary(userId) {
+    return Word.countDocuments({ userId, status: { $in: ['learning', 'mastered'] } })
+  },
+
+  findVocabulary(userId, limit) {
+    return Word.find({ userId, status: { $in: ['learning', 'mastered'] } })
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .select('word')
+      .lean()
+  },
+
   existsByWord(userId, word, excludeId) {
     const filter = { userId, word }
     if (excludeId) filter._id = { $ne: excludeId }
