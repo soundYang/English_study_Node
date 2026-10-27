@@ -38,13 +38,25 @@ function estimateMaxTokens(targetWords) {
 }
 
 async function callModel({ messages, targetWords, signal }) {
-  const { content, usage } = await chatJson({
+  return chatJson({
     messages,
     signal,
     maxTokens: estimateMaxTokens(targetWords),
   })
+}
 
-  return { content, usage }
+/**
+ * 失败时用来判断"是不是被截断了"。
+ * 只留长度和首尾片段，整篇正文不进日志。
+ */
+function describeContent(content) {
+  const text = String(content ?? '')
+
+  return {
+    length: text.length,
+    head: text.slice(0, 80),
+    tail: text.slice(-80),
+  }
 }
 
 /** 解析 + 结构校验一步到位，返回统一形状 */
@@ -138,14 +150,20 @@ export async function generateReading({ userId, body, signal }) {
     allowedWords,
   })
 
-  let { content, usage } = await callModel({
+  let { content, usage, finishReason } = await callModel({
     messages,
     targetWords: params.targetWords,
     signal,
   })
   let result = inspect(content, params)
 
-  if (result.insufficient) throw insufficientVocabularyError()
+  if (result.insufficient) {
+    logger.warn(
+      { ...describeContent(content), finishReason },
+      'reading generate failed: model reported INSUFFICIENT_VOCABULARY',
+    )
+    throw insufficientVocabularyError()
+  }
 
   // 第一轮：结构先过，再看用词。结构没过就没有稳定的正文可校验。
   let feedback = null
@@ -161,7 +179,10 @@ export async function generateReading({ userId, body, signal }) {
   let repairRounds = 0
   if (feedback && config.maxRepairRounds > 0) {
     repairRounds = 1
-    logger.warn(`reading repair round: ${feedback.reason}`)
+    logger.warn(
+      { reason: feedback.reason, violations: feedback.violations, ...describeContent(content), finishReason },
+      'reading repair round',
+    )
 
     const repaired = await callModel({
       messages: buildRepairMessages(messages, feedback),
@@ -171,12 +192,23 @@ export async function generateReading({ userId, body, signal }) {
 
     content = repaired.content
     usage = repaired.usage ?? usage
+    finishReason = repaired.finishReason ?? finishReason
     result = inspect(content, params)
   }
 
-  if (result.insufficient) throw insufficientVocabularyError()
+  if (result.insufficient) {
+    logger.warn(
+      { ...describeContent(content), finishReason, repairRounds },
+      'reading generate failed: model reported INSUFFICIENT_VOCABULARY',
+    )
+    throw insufficientVocabularyError()
+  }
 
   if (!result.ok) {
+    logger.warn(
+      { reason: result.reason, ...describeContent(content), finishReason, repairRounds },
+      'reading generate failed: AI_INVALID_RESPONSE',
+    )
     throw new ApiError(
       502,
       ERROR_CODES.AI_INVALID_RESPONSE,
@@ -185,6 +217,7 @@ export async function generateReading({ userId, body, signal }) {
   }
 
   const data = result.data
+  const actualWords = countWords(data.article)
 
   // 修正之后必须重新校验：结构合法不代表用词合法
   const vocabulary = validateArticle({
@@ -193,6 +226,16 @@ export async function generateReading({ userId, body, signal }) {
     names: data.names,
   })
   if (!vocabulary.valid) {
+    logger.warn(
+      {
+        violations: vocabulary.violations.slice(0, 20),
+        violationCount: vocabulary.unknownWords.length,
+        actualWords,
+        finishReason,
+        repairRounds,
+      },
+      'reading generate failed: VOCABULARY_VALIDATION_FAILED',
+    )
     throw new ApiError(
       422,
       ERROR_CODES.VOCABULARY_VALIDATION_FAILED,
@@ -202,13 +245,17 @@ export async function generateReading({ userId, body, signal }) {
     )
   }
 
-  const actualWords = countWords(data.article)
   const ratio = actualWords / params.targetWords
   if (ratio < WORD_COUNT_TOLERANCE.min || ratio > WORD_COUNT_TOLERANCE.max) {
     logger.warn(
       `article word count ${actualWords} deviates from target ${params.targetWords}`,
     )
   }
+
+  logger.info(
+    { actualWords, targetWords: params.targetWords, finishReason, repairRounds },
+    'reading generated',
+  )
 
   const doc = await repo.create({
     userId,
