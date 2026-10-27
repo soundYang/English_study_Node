@@ -10,6 +10,7 @@ import { basicWords } from './basic-words.js'
 import { toSafeDto } from './reading.dto.js'
 import { readingRepository as repo } from './reading.repository.js'
 import { generateReadingSchema } from './reading.schema.js'
+import { validateArticle } from './vocabulary.service.js'
 
 /** vocabularySnapshot 的上限，与 Schema 注释一致 */
 const VOCABULARY_SNAPSHOT_LIMIT = 200
@@ -50,14 +51,43 @@ function inspect(content, params) {
   return validateAiReading(payload, params)
 }
 
+function insufficientVocabularyError() {
+  return new ApiError(
+    422,
+    ERROR_CODES.INSUFFICIENT_VOCABULARY,
+    '当前词汇量不足以写出通顺的文章，请先添加更多单词',
+  )
+}
+
+/**
+ * 结构通过后检查用词。
+ * @returns {{ valid: true } | { valid: false, reason: string, violations: Array }}
+ */
+function inspectVocabulary(data, allowedWords) {
+  const result = validateArticle({
+    article: data.article,
+    allowedWords,
+    names: data.names,
+  })
+
+  if (result.valid) return { valid: true }
+
+  return {
+    valid: false,
+    reason: `使用了 ${result.unknownWords.length} 个不在 allowedWords 中的单词`,
+    violations: result.violations,
+  }
+}
+
 /**
  * POST /api/readings/generate
  *
- * 流程：参数校验 → 词汇量检查 → 组装允许词汇 → 调模型 → 结构校验
- *       →（最多 1 轮修正）→ 落库 → 返回安全 DTO。
+ * 流程：参数校验 → 词汇量检查 → 组装允许词汇 → 调模型
+ *       → 结构校验 → 词汇校验 →（最多 1 轮修正，结构与词汇共用这一轮）
+ *       → 落库 → 返回安全 DTO。
  *
- * 本步故意不接词汇校验（S7 再加）：先拿到「能被结构校验通过的文章」，
- * 再叠加用词校验，失败时才分得清是结构问题还是用词问题。
+ * 结构与词汇共用同一轮修正：上游调用总数硬上限是 2 次（MAX_REPAIR_ROUNDS=1），
+ * 不设"再试一次就好"的循环，否则一次生成就能把预算烧光。
  */
 export async function generateReading({ userId, body, signal }) {
   const params = parseOrThrow(generateReadingSchema, body)
@@ -92,14 +122,27 @@ export async function generateReading({ userId, body, signal }) {
     signal,
   })
   let result = inspect(content, params)
-  let repairRounds = 0
 
-  // 最多额外 1 轮（MAX_REPAIR_ROUNDS），防止无限烧钱
-  if (!result.ok && !result.insufficient && config.maxRepairRounds > 0) {
+  if (result.insufficient) throw insufficientVocabularyError()
+
+  // 第一轮：结构先过，再看用词。结构没过就没有稳定的正文可校验。
+  let feedback = null
+  if (!result.ok) {
+    feedback = { reason: result.reason }
+  } else {
+    const vocabulary = inspectVocabulary(result.data, allowedWords)
+    if (!vocabulary.valid) {
+      feedback = { reason: vocabulary.reason, violations: vocabulary.violations }
+    }
+  }
+
+  let repairRounds = 0
+  if (feedback && config.maxRepairRounds > 0) {
     repairRounds = 1
+    logger.warn(`reading repair round: ${feedback.reason}`)
 
     const repaired = await callModel({
-      messages: buildRepairMessages(messages, result.reason),
+      messages: buildRepairMessages(messages, feedback),
       targetWords: params.targetWords,
       signal,
     })
@@ -109,13 +152,7 @@ export async function generateReading({ userId, body, signal }) {
     result = inspect(content, params)
   }
 
-  if (!result.ok && result.insufficient) {
-    throw new ApiError(
-      422,
-      ERROR_CODES.INSUFFICIENT_VOCABULARY,
-      '当前词汇量不足以写出通顺的文章，请先添加更多单词',
-    )
-  }
+  if (result.insufficient) throw insufficientVocabularyError()
 
   if (!result.ok) {
     throw new ApiError(
@@ -126,6 +163,23 @@ export async function generateReading({ userId, body, signal }) {
   }
 
   const data = result.data
+
+  // 修正之后必须重新校验：结构合法不代表用词合法
+  const vocabulary = validateArticle({
+    article: data.article,
+    allowedWords,
+    names: data.names,
+  })
+  if (!vocabulary.valid) {
+    throw new ApiError(
+      422,
+      ERROR_CODES.VOCABULARY_VALIDATION_FAILED,
+      `文章使用了 ${vocabulary.unknownWords.length} 个不在词汇表内的单词：${vocabulary.unknownWords
+        .slice(0, 5)
+        .join('、')}`,
+    )
+  }
+
   const actualWords = countWords(data.article)
   const ratio = actualWords / params.targetWords
   if (ratio < WORD_COUNT_TOLERANCE.min || ratio > WORD_COUNT_TOLERANCE.max) {

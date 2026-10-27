@@ -17,16 +17,18 @@ const { Word } = await import('../modules/words/word.model.js')
 
 const app = createApp()
 
+/**
+ * 正文只用基础词表里有的词（+ 声明的人名 Tom），
+ * 否则词汇校验会把每个用例都拦在 422，测不到真正的分支。
+ */
 const ARTICLE =
-  'Tom is a good boy. He likes to play with his dog in the park. The dog runs fast and Tom runs fast too. They are happy all day. '.repeat(
-    2,
-  )
+  'Tom is a good boy. His dog is big and the boy is small. Tom and his dog play in the house. The dog runs and the boy runs too. They are good friends. Tom likes his dog very much.'
 
 /** 造一份合法的 AI 输出 */
-function makePayload({ questionCount = 3, title = 'A Good Day' } = {}) {
+function makePayload({ questionCount = 3, title = 'A Good Day', article = ARTICLE } = {}) {
   return {
     title,
-    article: ARTICLE,
+    article,
     translation:
       '汤姆是个好男孩。他喜欢和他的狗在公园里玩。狗跑得快，汤姆也跑得快。他们一整天都很开心。开心的一天。',
     names: ['Tom'],
@@ -200,8 +202,8 @@ describe('POST /api/readings/generate · 正常生成', () => {
     expect(doc.names).toEqual(['Tom'])
     expect(doc.status).toBe('generated')
     expect(doc.vocabularySnapshot).toHaveLength(20)
-    // 测试文章每段 29 词，重复两遍，正好 58 词
-    expect(doc.actualWords).toBe(58)
+    // 测试文章正好 40 个英文词
+    expect(doc.actualWords).toBe(40)
     expect(doc.aiMeta).toMatchObject({
       model: config.deepseekModel,
       promptTokens: 100,
@@ -309,6 +311,67 @@ describe('POST /api/readings/generate · 结构校验与修正轮', () => {
 
     expect(res.status).toBe(201)
     expect(chatJson).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('POST /api/readings/generate · 词汇校验', () => {
+  it('正文出现表外词 → 修正一轮后合规 → 201 且 repairRounds=1', async () => {
+    await seedWords(20)
+    chatJson
+      .mockResolvedValueOnce(reply(makePayload({ article: `${ARTICLE} Quizzical.` })))
+      .mockResolvedValueOnce(reply(makePayload()))
+
+    const res = await generate(VALID_BODY)
+
+    expect(res.status).toBe(201)
+    expect(chatJson).toHaveBeenCalledTimes(2)
+
+    const doc = await Reading.findById(res.body.id).lean()
+    expect(doc.aiMeta.repairRounds).toBe(1)
+  })
+
+  it('修正后仍含表外词 → 422 VOCABULARY_VALIDATION_FAILED，不留脏数据', async () => {
+    await seedWords(20)
+    const dirty = reply(makePayload({ article: `${ARTICLE} Quizzical.` }))
+    chatJson.mockResolvedValue(dirty)
+
+    const res = await generate(VALID_BODY)
+
+    expect(res.status).toBe(422)
+    expect(res.body.error.code).toBe('VOCABULARY_VALIDATION_FAILED')
+    expect(res.body.error.message).toContain('quizzical')
+    expect(chatJson).toHaveBeenCalledTimes(2)
+    expect(await Reading.countDocuments()).toBe(0)
+  })
+
+  it('违规词再多，错误信息也只列前 5 个', async () => {
+    await seedWords(20)
+    chatJson.mockResolvedValue(
+      reply(
+        makePayload({
+          article: `${ARTICLE} Quizzical zephyrish brontide crepuscule farrago.`,
+        }),
+      ),
+    )
+
+    const res = await generate(VALID_BODY)
+
+    expect(res.status).toBe(422)
+    const listed = res.body.error.message.split('：')[1]
+    expect(listed.split('、')).toHaveLength(5)
+  })
+
+  it('一个人名声明之外的大写词也按普通词校验', async () => {
+    await seedWords(20)
+    chatJson.mockResolvedValue(
+      reply(makePayload({ article: `${ARTICLE} Lina.` })),
+    )
+
+    const res = await generate(VALID_BODY)
+
+    // Lina 没有出现在 names 里，不能被句首/大写规则放行
+    expect(res.status).toBe(422)
+    expect(res.body.error.message).toContain('lina')
   })
 })
 

@@ -34,7 +34,7 @@ function undouble(stem) {
  */
 export function resolveBaseForms(word) {
   const w = String(word ?? '').toLowerCase()
-  if (w.length < 3) return []
+  if (!w) return []
 
   const forms = []
   const push = (candidate) => {
@@ -44,8 +44,13 @@ export function resolveBaseForms(word) {
     forms.push(candidate)
   }
 
+  // 不规则表必须在长度门槛之前查：is / am 只有两个字母，
+  // 先按长度返回空会让每篇文章的 "is" 都变成生词
   const irregular = IRREGULAR_FORMS[w]
   if (irregular) [irregular].flat().forEach(push)
+
+  // 两个字母的词没有可用的构词规则，查完不规则表就够了
+  if (w.length < 3) return forms
 
   // 复数 / 第三人称单数
   if (w.endsWith('ies')) {

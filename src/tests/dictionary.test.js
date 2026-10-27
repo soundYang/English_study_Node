@@ -166,7 +166,8 @@ describe('resolveBaseForms', () => {
     expect(resolveBaseForms('children')).toContain('child')
   })
 
-  it('太短的词不产生候选', () => {
-    expect(resolveBaseForms('is')).toEqual([])
+  it('两字母的词只查不规则表，不走构词规则', () => {
+    expect(resolveBaseForms('is')).toEqual(['be']) // 表里有，必须给出来
+    expect(resolveBaseForms('ha')).toEqual([]) // 表里没有，也不该瞎猜
   })
 })

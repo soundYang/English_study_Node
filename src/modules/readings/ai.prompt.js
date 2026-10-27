@@ -61,17 +61,33 @@ ${groupByLetter(words)}
   ]
 }
 
+/** 句子太长会把修正轮的 token 预算吃掉，截断即可定位问题 */
+function truncate(text, max = 160) {
+  const value = String(text ?? '').trim()
+  return value.length > max ? `${value.slice(0, max)}…` : value
+}
+
 /**
- * 结构不对时追加一条修正指令，让模型只改结构、不重写全文。
+ * 结构或词汇不合规时追加一条修正指令，让模型只改出问题的地方、不重写全文。
+ *
  * @param {Array} messages 原始消息
- * @param {string} reason 第一轮的失败原因
+ * @param {{ reason: string, violations?: Array<{ word: string, sentence: string }> }} feedback
  */
-export function buildRepairMessages(messages, reason) {
+export function buildRepairMessages(messages, { reason, violations = [] }) {
+  const details = violations.length
+    ? `\n\n以下单词不在允许词表中，请改写包含它们的句子，只替换这几处表达：\n${violations
+        .slice(0, 8)
+        .map(({ word, sentence }) =>
+          sentence ? `- "${word}"：${truncate(sentence)}` : `- "${word}"`,
+        )
+        .join('\n')}`
+    : ''
+
   return [
     ...messages,
     {
       role: 'user',
-      content: `你上一次的输出不符合约定：${reason}。请只修正不合法的地方，其余内容尽量保持不变，重新输出完整的 json 对象。`,
+      content: `你上一次的输出不符合约定：${reason}。${details}\n\n请只修正不合法的地方，其余内容尽量保持不变，重新输出完整的 json 对象。`,
     },
   ]
 }
