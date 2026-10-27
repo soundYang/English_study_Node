@@ -2,6 +2,8 @@ import mongoose from 'mongoose'
 
 import { createApp } from './app.js'
 import { config } from './config/index.js'
+import { Reading } from './modules/readings/reading.model.js'
+import { Word } from './modules/words/word.model.js'
 import { logger } from './shared/logger.js'
 
 async function main() {
@@ -11,6 +13,11 @@ async function main() {
   // 反过来的话，启动瞬间进来的请求会打到半初始化状态。
   await mongoose.connect(config.mongodbUri)
   logger.info(`mongo connected: ${mongoose.connection.name}`)
+
+  // 唯一索引没建上，去重就形同虚设——所以这里故意不 catch，
+  // 失败时让 main().catch 打全栈并退出，而不是带着"看起来能跑"的状态启动。
+  await Promise.all([Word.syncIndexes(), Reading.syncIndexes()])
+  logger.info('indexes synced')
 
   const server = app.listen(config.port, () => {
     logger.info(`api listening on http://localhost:${config.port}`)
