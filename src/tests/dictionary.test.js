@@ -13,9 +13,9 @@ const app = createApp()
 const search = (query) => request(app).get('/api/dictionary/search').query(query)
 
 describe('词库加载', () => {
-  it('过滤后剩 17417 条，剔除 212 条', () => {
-    expect(dictionaryStats).toEqual({ rawTotal: 17629, filtered: 212, searchable: 17417 })
-    expect(dictionary.size).toBe(17417)
+  it('过滤后剩 17419 条，剔除 212 条', () => {
+    expect(dictionaryStats).toEqual({ rawTotal: 17631, filtered: 212, searchable: 17419 })
+    expect(dictionary.size).toBe(17419)
   })
 
   it('26 个首字母分片都在', () => {

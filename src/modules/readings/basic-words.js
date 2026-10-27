@@ -6,10 +6,11 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
 const FILE = join(ROOT, 'data/basic-words.json')
 
 /**
- * COCA 词频前 800 的基础词白名单，由 scripts/build-basic-words.mjs 生成（S7）。
+ * 基础词白名单（当前 600 词：功能词 179 + 高频实词 421）。
+ * 清单与筛选规则见 md/基础词库_600词候选清单.md。
  *
- * 文件不存在时返回空数组而不是抛错：S6 阶段还没生成它，
- * 少了这些词只影响生成质量，不应该让服务起不来。
+ * 文件不存在时返回空数组而不是抛错：少了这些词只影响生成质量，
+ * 不应该让服务起不来。
  */
 function loadBasicWords() {
   if (!existsSync(FILE)) return []

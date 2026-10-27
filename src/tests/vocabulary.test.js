@@ -134,18 +134,19 @@ describe('validateArticle · 判定与统计', () => {
 })
 
 describe('基础词表', () => {
-  it('产出 2578 个词，全部是小写纯字母或撇号词', () => {
-    expect(basicWords).toHaveLength(2578)
+  it('产出 600 个词，全部是小写纯字母或撇号词', () => {
+    expect(basicWords).toHaveLength(600)
     expect(basicWords.every((word) => /^[a-z]+(?:'[a-z]+)?$/.test(word))).toBe(true)
   })
 
   it('补齐 COCA 词元表漏掉的虚词（an 漏了会让每篇含 an 的文章失败）', () => {
-    for (const word of ['an', 'onto', 'mine', 'whom', 'shall']) {
+    // 物主代词 mine / yours / hers / ours / theirs 是功能词，必须常驻
+    for (const word of ['an', 'onto', 'mine', 'yours', 'hers', 'ours', 'theirs', 'whom', 'shall']) {
       expect(basicWords.includes(word)).toBe(true)
     }
 
-    // 只用基础词 + an：apple / orange 本身在 800 名之外，会把用例引偏
-    const article = 'Tom has an old dog. An hour is a long time.'
+    // 只用基础词 + an：apple / orange 不在 600 词里，会把用例引偏
+    const article = 'Tom has an old book. An hour is a long time.'
 
     expect(validateArticle({ article, allowedWords: new Set(basicWords), names: ['Tom'] }).valid).toBe(
       true,
@@ -161,7 +162,7 @@ describe('基础词表', () => {
 
   it('一段只用基础词写的文章能通过校验', () => {
     const article =
-      'Tom is a good boy. His dog is big and the boy is small. Tom and his dog play in the house.'
+      'Tom is a good boy. His book is big and the boy is small. Tom and his book play in the house.'
 
     expect(validateArticle({ article, allowedWords: new Set(basicWords), names: ['Tom'] }).valid).toBe(
       true,

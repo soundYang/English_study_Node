@@ -18,11 +18,12 @@ const { Word } = await import('../modules/words/word.model.js')
 const app = createApp()
 
 /**
- * 正文只用基础词表里有的词（+ 声明的人名 Tom），
+ * 正文只用基础 600 词里有的词（+ 声明的人名 Tom），
  * 否则词汇校验会把每个用例都拦在 422，测不到真正的分支。
+ * 词数固定 40，落库断言依赖它。
  */
 const ARTICLE =
-  'Tom is a good boy. His dog is big and the boy is small. Tom and his dog play in the house. The dog runs and the boy runs too. They are good friends. Tom likes his dog very much.'
+  'Tom is a good boy. His book is big and the boy is small. Tom and his book play in the house. The book runs and the boy runs too. They are good friends. Tom likes his book very much.'
 
 /** 造一份合法的 AI 输出 */
 function makePayload({ questionCount = 3, title = 'A Good Day', article = ARTICLE } = {}) {
@@ -402,9 +403,9 @@ describe('POST /api/readings/generate · 词汇快照上限', () => {
 
     expect(res.status).toBe(201)
 
-    // 800 个用户词 + 2578 个基础词 + 19 个日历词（may 与基础词表重复，去重后是 18 个）
+    // 800 个用户词 + 600 个基础词 + 19 个日历词（may 与基础词表重复，去重后是 18 个）
     const prompt = chatJson.mock.calls[0][0].messages[1].content
-    expect(prompt).toContain(`共 ${800 + 2578 + 18} 个`)
+    expect(prompt).toContain(`共 ${800 + 600 + 18} 个`)
 
     const doc = await Reading.findById(res.body.id)
     expect(doc.vocabularySnapshot).toHaveLength(800)
