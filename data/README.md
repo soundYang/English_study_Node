@@ -3,7 +3,7 @@
 本目录的 `dictionary/a.json` … `dictionary/z.json` 是前端离线词库，由 `scripts/build-dictionary.mjs`
 从 COCA 词频表生成。页面运行时不访问任何外部接口，全部数据随前端打包。
 
-同目录另有两个生成物，本文件第 5 节单独说明：`basic-words.json`、`irregular-forms.json`。
+同目录另有三个生成物，本文件第 5 节单独说明：`basic-words.json`、`word-ranks.json`、`irregular-forms.json`。
 
 ## 1. 数据来源
 
@@ -89,7 +89,10 @@ node scripts/build-dictionary.mjs
 | ----------------------- | ---------------------------------------------------------- | ----------------------------------------- |
 | `dictionary/*.json`     | 查词与加词的离线词库，17,419 条可检索                      | `scripts/build-dictionary.mjs`            |
 | `basic-words.json`      | 生成文章时的基础词白名单（600 个 = 功能词 179 + 高频实词 421，人工筛选） | 见 `md/基础词库_600词候选清单.md`；**不是** `build-basic-words.mjs` 的直接产物 |
+| `word-ranks.json`       | COCA 词频排名（17,629 条），写入 `Word.cocaRank`、选池时按难度排序 | `scripts/build-word-ranks.mjs`，源数据同 `dictionary` |
 | `irregular-forms.json`  | 词形还原用的不规则变化表（约 238 条），词汇校验依赖它      | 手工维护                                  |
 
-三者不会自动同步：词库扩容后，`basic-words.json` 仍要按新的 `--rank` 单独重跑。
+四者不会自动同步：词库扩容后，`basic-words.json` 与 `word-ranks.json` 都要单独重跑。
+`word-ranks.json` 必须从 `coca-vocabulary` 源数据生成——`dictionary/*.json` 在按首字母
+切分时已经丢失了跨字母的绝对排名，反推出来的难度分级会完全失真。
 星期与月份名不在 COCA 源里，校验时由 `src/modules/readings/calendar-words.js` 单独放行。
