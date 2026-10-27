@@ -12,12 +12,16 @@ import { afterAll, afterEach, beforeAll } from 'vitest'
 process.env.NODE_ENV = 'test'
 process.env.MONGODB_URI = process.env.MONGODB_URI ?? 'mongodb://127.0.0.1:27017/unused'
 
+const { loadDictionary } = await import('../modules/dictionary/dictionary.loader.js')
 const { Reading } = await import('../modules/readings/reading.model.js')
 const { Word } = await import('../modules/words/word.model.js')
 
 let mongod
 
 beforeAll(async () => {
+  // 词库是进程级只读数据，每个测试文件加载一次即可（约 2.2MB，<100ms）
+  loadDictionary()
+
   mongod = await MongoMemoryServer.create()
   await mongoose.connect(mongod.getUri('word_reading_test'))
   // 唯一索引是「重复返回 409」的最终保险，测试里也必须真的建出来

@@ -212,8 +212,26 @@ describe('POST /api/words', () => {
     expect(res.body.error).toMatchObject({ code: 'INVALID_REQUEST', field: 'meaning' })
   })
 
-  it('source=dictionary 但词库为空 → 400 DICTIONARY_ENTRY_NOT_FOUND', async () => {
-    const res = await post({ word: 'abandon', source: 'dictionary', dictionaryId: 'dict_abandon' })
+  it('source=dictionary 时音标与义项以服务端词库为准，忽略请求体', async () => {
+    const res = await post({
+      word: 'Abandon',
+      source: 'dictionary',
+      dictionaryId: 'dict_fake',
+      phonetic: { uk: '假音标', us: '假音标' },
+      senses: [{ pos: '假词性', meaning: '假释义' }],
+    })
+
+    expect(res.status).toBe(201)
+    expect(res.body.word).toBe('abandon')
+    expect(res.body.source).toBe('dictionary')
+    expect(res.body.dictionaryId).toBe('dict_abandon')
+    expect(res.body.phonetic.uk).toMatch(/\//)
+    expect(res.body.senses.length).toBeGreaterThan(0)
+    expect(res.body.senses[0].meaning).not.toBe('假释义')
+  })
+
+  it('词库中查不到的词 → 400 DICTIONARY_ENTRY_NOT_FOUND', async () => {
+    const res = await post({ word: 'zzzznotaword', source: 'dictionary' })
 
     expect(res.status).toBe(400)
     expect(res.body.error.code).toBe('DICTIONARY_ENTRY_NOT_FOUND')
