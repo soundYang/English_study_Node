@@ -54,7 +54,8 @@ export const badRequest = (message, field) =>
 export const notFound = (code, message) => new ApiError(404, code, message)
 
 /** 409：状态冲突，例如单词重复、重复提交 */
-export const conflict = (code, message) => new ApiError(409, code, message)
+export const conflict = (code, message, field) =>
+  new ApiError(409, code, message, field)
 
 // 常用快捷方式，避免调用点漏写 code
 export const wordNotFound = () =>

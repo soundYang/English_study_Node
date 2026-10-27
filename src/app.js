@@ -5,8 +5,10 @@ import pinoHttp from 'pino-http'
 
 import { config } from './config/index.js'
 import healthRoutes from './modules/health/health.routes.js'
+import wordRoutes from './modules/words/word.routes.js'
 import { ERROR_CODES } from './shared/errors.js'
 import { logger } from './shared/logger.js'
+import { currentUser } from './shared/middleware/currentUser.js'
 import { errorHandler } from './shared/middleware/errorHandler.js'
 
 /**
@@ -37,8 +39,12 @@ export function createApp() {
     }),
   )
 
+  // MVP 无登录：所有请求归属 DEFAULT_USER_ID，下游一律读 req.userId
+  app.use(currentUser)
+
   // 路由挂载区（后续步骤往里加）
   app.use('/api', healthRoutes)
+  app.use('/api/words', wordRoutes)
 
   // 404 兜底：Express 5 里 app.use('*', ...) 已失效，直接写无路径中间件。
   // 这里的 NOT_FOUND 只表示"没有这个路由"，不属于 §4.7 的业务错误码。
