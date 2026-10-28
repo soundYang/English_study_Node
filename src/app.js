@@ -4,6 +4,8 @@ import helmet from 'helmet'
 import pinoHttp from 'pino-http'
 
 import { config } from './config/index.js'
+import authRoutes from './modules/auth/auth.routes.js'
+import { requireAuth } from './modules/auth/auth.middleware.js'
 import basicWordRoutes from './modules/basic-words/basic-words.routes.js'
 import dictionaryRoutes from './modules/dictionary/dictionary.routes.js'
 import healthRoutes from './modules/health/health.routes.js'
@@ -42,15 +44,20 @@ export function createApp() {
     }),
   )
 
-  // MVP 无登录：所有请求归属 DEFAULT_USER_ID，下游一律读 req.userId
+  // 解析令牌 → req.userId（md/33 §7.1）。只解析不拦截，见 currentUser.js
   app.use(currentUser)
 
   // 路由挂载区（后续步骤往里加）
+  // 公开：健康检查与词典是静态数据，验证码/登录必须在没有身份时也能调
   app.use('/api', healthRoutes)
-  app.use('/api/words', wordRoutes)
-  app.use('/api/basic-words', basicWordRoutes)
+  app.use('/api/auth', authRoutes)
   app.use('/api/dictionary', dictionaryRoutes)
-  app.use('/api/readings', readingRoutes)
+
+  // 需要身份。AUTH_ENFORCED=false 时 currentUser 会把 req.userId 回落成 DEFAULT_USER_ID，
+  // 所以这三个 requireAuth 现在等于放行——打开开关才开始真正 401（md/33 §7.3）
+  app.use('/api/words', requireAuth, wordRoutes)
+  app.use('/api/basic-words', requireAuth, basicWordRoutes)
+  app.use('/api/readings', requireAuth, readingRoutes)
 
   // 404 兜底：Express 5 里 app.use('*', ...) 已失效，直接写无路径中间件。
   // 这里的 NOT_FOUND 只表示"没有这个路由"，不属于 §4.7 的业务错误码。

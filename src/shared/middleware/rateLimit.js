@@ -16,34 +16,51 @@ import { ApiError, ERROR_CODES } from '../errors.js'
  * 计的是**请求次数**，不看最终响应码：400 也占配额。这是故意的——
  * 参数写错后脚本反复重跑，一样会把一次 1–5 次付费模型调用的接口打爆。
  */
+/**
+ * 通用的按 IP 限流器。
+ *
+ * 与生成限流共用一个实现：响应头格式、错误形状、测试开关都必须一致，
+ * 三份拷贝迟早会长出三种行为。
+ *
+ * @param {{ windowMs: number, limit: number, message: string, enabled?: boolean }} options
+ */
+export function createIpLimiter({
+  windowMs,
+  limit,
+  message,
+  enabled = config.rateLimitEnabled,
+}) {
+  return rateLimit({
+    windowMs,
+    limit,
+    standardHeaders: 'draft-7',
+    legacyHeaders: false,
+    skip: () => !enabled,
+    handler: (req, res, next) => {
+      next(
+        new ApiError(429, ERROR_CODES.RATE_LIMITED, message, '', {
+          limit,
+          windowSeconds: Math.round(windowMs / 1000),
+        }),
+      )
+    },
+  })
+}
+
 export function createGenerateLimiter({
   windowMs = 60_000,
   limit = config.rateLimitGenerate,
   enabled = config.rateLimitEnabled,
 } = {}) {
-  return rateLimit({
+  // 响应头与错误形状统一由 createIpLimiter 负责：
+  // `RateLimit: limit=2, remaining=0, reset=60` + `RateLimit-Policy: 2;w=60`。
+  // draft-8 是结构化字段（`"2-in-1min"; r=0; t=60`），curl 一眼看不出剩余几次；
+  // 旧版 X-RateLimit-* 不再发，两套都发只会让响应头更难认。
+  return createIpLimiter({
     windowMs,
     limit,
-    // `RateLimit: limit=2, remaining=0, reset=60` + `RateLimit-Policy: 2;w=60`。
-    // draft-8 是结构化字段（`"2-in-1min"; r=0; t=60`），curl 一眼看不出剩余几次；
-    // 旧版 X-RateLimit-* 不再发，两套都发只会让响应头更难认。
-    standardHeaders: 'draft-7',
-    legacyHeaders: false,
-    // 测试环境整体关闭：否则一次打满配额的用例会让同文件后面的用例全部 429
-    skip: () => !enabled,
-    // 走统一错误出口，响应体与其它业务错误同形：
-    // { error: { code, message, details }, requestId }
-    handler: (req, res, next) => {
-      next(
-        new ApiError(
-          429,
-          ERROR_CODES.RATE_LIMITED,
-          `生成太频繁：每分钟最多 ${limit} 次，请稍后再试。`,
-          '',
-          { limit, windowSeconds: Math.round(windowMs / 1000) },
-        ),
-      )
-    },
+    enabled,
+    message: `生成太频繁：每分钟最多 ${limit} 次，请稍后再试。`,
   })
 }
 

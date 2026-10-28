@@ -66,6 +66,13 @@ export const ERROR_CODES = Object.freeze({
   // 合成一个码的话，前端分不清「提示输错」还是「换图」。
   CAPTCHA_INVALID: 'CAPTCHA_INVALID',
   CAPTCHA_EXPIRED: 'CAPTCHA_EXPIRED',
+  // 连续登录失败后强制要求验证码。与 CAPTCHA_INVALID 分开：
+  // 那个是「你填错了」，这个是「你还没填」——前端据此决定要不要把验证码区显示出来
+  CAPTCHA_REQUIRED: 'CAPTCHA_REQUIRED',
+  AUTH_REQUIRED: 'AUTH_REQUIRED',
+  AUTH_INVALID_CREDENTIALS: 'AUTH_INVALID_CREDENTIALS',
+  AUTH_USERNAME_TAKEN: 'AUTH_USERNAME_TAKEN',
+  AUTH_PHONE_TAKEN: 'AUTH_PHONE_TAKEN',
   INTERNAL_ERROR: 'INTERNAL_ERROR',
 })
 
@@ -310,3 +317,36 @@ export const captchaInvalid = () =>
 /** 400：验证码过期，或者已经被用过一次（含刚才失败的那次） */
 export const captchaExpired = () =>
   new ApiError(400, ERROR_CODES.CAPTCHA_EXPIRED, '验证码已过期，请换一张', 'captchaCode')
+
+export const captchaRequired = () =>
+  new ApiError(
+    400,
+    ERROR_CODES.CAPTCHA_REQUIRED,
+    '登录失败次数较多，请输入图形验证码后重试',
+    'captchaCode',
+  )
+
+/**
+ * 401：需要登录（md/33 §6.3）。
+ *
+ * **前端请按 `err.code === 'AUTH_REQUIRED'` 判断**，不要用 `instanceof AuthError`：
+ * `normalizeApiError` 先命中 `payload.code` 分支，带 code 的 401 会被归一化成
+ * BusinessError，AuthError 那段走不到（见 md/33 §6.4）。
+ */
+export const authRequired = () =>
+  new ApiError(401, ERROR_CODES.AUTH_REQUIRED, '请先登录')
+
+/**
+ * 401：用户名或密码错。
+ *
+ * **不区分是哪一个错**，也不区分「用户不存在」：分开报等于把账号枚举做成了功能。
+ * 用户不存在时也要跑一次 scrypt（用 getDummyHash 陪跑），否则响应耗时差异同样能枚举。
+ */
+export const invalidCredentials = () =>
+  new ApiError(401, ERROR_CODES.AUTH_INVALID_CREDENTIALS, '用户名或密码不正确', 'password')
+
+export const usernameTaken = () =>
+  conflict(ERROR_CODES.AUTH_USERNAME_TAKEN, '这个用户名已经被使用了', 'username')
+
+export const phoneTaken = () =>
+  conflict(ERROR_CODES.AUTH_PHONE_TAKEN, '这个手机号已经注册过了', 'phone')

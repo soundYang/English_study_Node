@@ -95,26 +95,43 @@ describe('TTL 索引', () => {
 })
 
 describe('sessions', () => {
+  /**
+   * ttlSeconds 是滑动续期的依据（「还剩不到一半就续满」），不存就没法知道续多久：
+   * 1 天和 30 天的会话在某一时刻的 expiresAt 看起来是一样的。
+   */
+  const makeSession = (userId, overrides = {}) => ({
+    userId,
+    tokenHash: 'hash-a',
+    expiresAt: new Date(Date.now() + 60_000),
+    ttlSeconds: 24 * 60 * 60,
+    ...overrides,
+  })
+
   it('tokenHash 不能重复', async () => {
     const user = await User.create(makeUser())
-    const expiresAt = new Date(Date.now() + 60_000)
 
-    await Session.create({ userId: user._id, tokenHash: 'hash-a', expiresAt })
-    const err = await Session.create({ userId: user._id, tokenHash: 'hash-a', expiresAt }).catch(
-      (error) => error,
-    )
+    await Session.create(makeSession(user._id))
+    const err = await Session.create(makeSession(user._id)).catch((error) => error)
 
     expect(err.code).toBe(11000)
   })
 
-  it('userAgent 超过 200 字被拒', async () => {
+  it('缺 ttlSeconds 被拒（续期逻辑依赖它）', async () => {
     const user = await User.create(makeUser())
     const err = await Session.create({
       userId: user._id,
-      tokenHash: 'hash-b',
+      tokenHash: 'hash-c',
       expiresAt: new Date(Date.now() + 60_000),
-      userAgent: 'm'.repeat(201),
     }).catch((error) => error)
+
+    expect(err.name).toBe('ValidationError')
+  })
+
+  it('userAgent 超过 200 字被拒', async () => {
+    const user = await User.create(makeUser())
+    const err = await Session.create(
+      makeSession(user._id, { tokenHash: 'hash-b', userAgent: 'm'.repeat(201) }),
+    ).catch((error) => error)
 
     expect(err.name).toBe('ValidationError')
   })

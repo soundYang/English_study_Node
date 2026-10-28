@@ -2,6 +2,10 @@ import mongoose from 'mongoose'
 
 import { createApp } from './app.js'
 import { config } from './config/index.js'
+import { AppMeta } from './modules/auth/appmeta.model.js'
+import { Captcha } from './modules/auth/captcha.model.js'
+import { Session } from './modules/auth/session.model.js'
+import { User } from './modules/auth/user.model.js'
 import { loadDictionary } from './modules/dictionary/dictionary.loader.js'
 import { basicWordsByLevel } from './modules/readings/basic-words.js'
 import { GenerationTask } from './modules/readings/generation-task.model.js'
@@ -24,7 +28,18 @@ async function main() {
 
   // 唯一索引没建上，去重就形同虚设——所以这里故意不 catch，
   // 失败时让 main().catch 打全栈并退出，而不是带着"看起来能跑"的状态启动。
-  await Promise.all([Word.syncIndexes(), Reading.syncIndexes(), GenerationTask.syncIndexes()])
+  //
+  // users 尤其关键：注册**不做**「先查再建」，重名完全靠 usernameLower 唯一索引兜住。
+  // 索引漏建的话，同名的第二个用户会直接建成功，而应用层不会有任何报错。
+  await Promise.all([
+    Word.syncIndexes(),
+    Reading.syncIndexes(),
+    GenerationTask.syncIndexes(),
+    User.syncIndexes(),
+    Session.syncIndexes(),
+    Captcha.syncIndexes(),
+    AppMeta.syncIndexes(),
+  ])
   logger.info('indexes synced')
 
   // 任务执行器在进程内：失联实例留下的 queued / running 不会再有人推进，

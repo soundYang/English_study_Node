@@ -20,6 +20,10 @@ const sessionSchema = new Schema(
     // 鉴权时必须自己判 expiresAt > now，不能只看「查得到就是有效」。
     expiresAt: { type: Date, required: true },
 
+    // 这个会话原本发的是多久（1 天 / 30 天）。滑动续期要知道「续多久」，
+    // 光看 expiresAt 推不出来——1 天的会话和 30 天的会话在同一时刻看起来是一样的
+    ttlSeconds: { type: Number, required: true },
+
     // 每次请求都写库会拖慢读接口（生成页 1 秒一次轮询），service 里按分钟节流
     lastSeenAt: { type: Date, default: () => new Date() },
     userAgent: { type: String, default: '', maxlength: 200 },

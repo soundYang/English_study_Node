@@ -29,6 +29,10 @@ process.env.MAX_OUTPUT_TOKENS = '8192'
 // 失败位置还跟限流看不出关系。需要验证限流的用例自己改成 true 再动态 import。
 // 这里显式写 false 而不是留给 config 的默认值，是为了挡住开发机 .env 里的 RATE_LIMIT_ENABLED。
 process.env.RATE_LIMIT_ENABLED = 'false'
+// 强制鉴权默认关闭（md/33 §7.3）。测试同样显式写 false：
+// 开发机 .env 里若已打开，所有不带令牌的用例会集体变成 401，失败位置还看不出原因。
+// 要验证强制鉴权的用例（auth-enforced.test.js）在文件顶部自己改 true 再动态 import。
+process.env.AUTH_ENFORCED = 'false'
 
 // 绝大多数用例测的是整篇路径的行为（修正轮、结构错误、失败样本），
 // 打桩也只认识「一次返回整篇文章」的形状。生产默认是 segmented，
@@ -39,6 +43,10 @@ process.env.SEGMENT_CONCURRENCY = '4'
 process.env.SEGMENT_MAX_ATTEMPTS = '2'
 process.env.SEGMENT_TEMPERATURE = '0.5'
 
+const { AppMeta } = await import('../modules/auth/appmeta.model.js')
+const { Captcha } = await import('../modules/auth/captcha.model.js')
+const { Session } = await import('../modules/auth/session.model.js')
+const { User } = await import('../modules/auth/user.model.js')
 const { loadDictionary } = await import('../modules/dictionary/dictionary.loader.js')
 const { Reading } = await import('../modules/readings/reading.model.js')
 const { Word } = await import('../modules/words/word.model.js')
@@ -51,8 +59,16 @@ beforeAll(async () => {
 
   mongod = await MongoMemoryServer.create()
   await mongoose.connect(mongod.getUri('word_reading_test'))
-  // 唯一索引是「重复返回 409」的最终保险，测试里也必须真的建出来
-  await Promise.all([Word.syncIndexes(), Reading.syncIndexes()])
+  // 唯一索引是「重复返回 409」的最终保险，测试里也必须真的建出来。
+  // 鉴权三张表同理：重名注册靠的是 usernameLower 的唯一索引，不是那段先查再建
+  await Promise.all([
+    Word.syncIndexes(),
+    Reading.syncIndexes(),
+    User.syncIndexes(),
+    Session.syncIndexes(),
+    Captcha.syncIndexes(),
+    AppMeta.syncIndexes(),
+  ])
 })
 
 afterEach(async () => {

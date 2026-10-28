@@ -157,4 +157,14 @@ export const config = Object.freeze({
   // 前端每拖一次滑块就要调一次的 /capacity。dictionary / global 两个旋钮没有
   // 任何中间件在读，已于 2026-10-28 删除——留着只会让人以为它们生效。
   rateLimitGenerate: toNumber('RATE_LIMIT_GENERATE', 20),
+
+  // ——— 鉴权（md/33）———
+  // 强制鉴权开关。默认 false = 行为与无登录时完全一致（回落 DEFAULT_USER_ID）。
+  // 打开前前端必须先上线登录页，否则整站立刻 401（md/33 §7.3）。
+  authEnforced: readBoolean('AUTH_ENFORCED', false),
+  // 验证码是纯计算、不花钱，可以宽松；注册与登录直接决定账号安全，必须紧。
+  // 注册按小时计：一个人正常只注册一次，10 次/时已经宽得离谱。
+  rateLimitCaptcha: toNumber('RATE_LIMIT_CAPTCHA', 30),
+  rateLimitRegister: toNumber('RATE_LIMIT_REGISTER', 10),
+  rateLimitLogin: toNumber('RATE_LIMIT_LOGIN', 10),
 })
