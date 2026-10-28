@@ -15,6 +15,7 @@
     "build:dictionary": "node scripts/build-dictionary.mjs",
     "build:basic-words": "node scripts/build-basic-words.mjs",
     "seed:fixtures": "node scripts/seed-test-fixtures.mjs",
+    "clean:readings": "node scripts/clean-debug-readings.mjs",
     "batch:generate": "node scripts/batch-generate.mjs",
     "fixtures:export": "node scripts/export-replay-fixtures.mjs",
     "replay": "node scripts/replay-suite.mjs",

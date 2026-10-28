@@ -120,7 +120,6 @@ export const config = Object.freeze({
     : null,
   // 兼容字段：文档与旧脚本还引用它，新代码不再读。
   maxUnknownWords: toNumber('MAX_UNKNOWN_WORDS', 5),
-  basicWordsRank: toNumber('BASIC_WORDS_RANK', 3000),
 
   // 限流（次 / 分钟）
   // 总开关：测试环境默认关闭。开着的话一个 50 次预检的验收用例会把后面的用例

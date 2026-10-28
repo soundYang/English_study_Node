@@ -135,8 +135,8 @@ const EMPTY_META = Object.freeze({ midSentenceCapitalized: false, dottedAbbr: fa
 /**
  * 「常用词」的判定线（COCA 排名）。
  *
- * 刻意不读 `config.basicWordsRank`：那个值决定基础词表怎么生成，本机 .env 里是 800，
- * 换台机器就成了另一套分类，报告没法横向比。诊断口径必须和部署环境无关。
+ * 刻意做成模块常量而不是环境变量（`BASIC_WORDS_RANK` 已在 W10 删除）：诊断口径
+ * 必须和部署环境无关，本机 .env 改一个数字就换一套分类，报告没法横向比。
  */
 const COMMON_WORD_RANK = 3000
 
