@@ -167,4 +167,6 @@ export const config = Object.freeze({
   rateLimitCaptcha: toNumber('RATE_LIMIT_CAPTCHA', 30),
   rateLimitRegister: toNumber('RATE_LIMIT_REGISTER', 10),
   rateLimitLogin: toNumber('RATE_LIMIT_LOGIN', 10),
+  // 改密码要跑两次 scrypt（校验旧的 + 生成新的），比只读接口贵得多
+  rateLimitPassword: toNumber('RATE_LIMIT_PASSWORD', 5),
 })

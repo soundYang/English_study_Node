@@ -35,3 +35,16 @@ export function requireAuth(req, res, next) {
   if (req.userId) return next()
   next(authRequired())
 }
+
+/**
+ * 401 unless the request carries a real session（md/33 §7.2）。
+ *
+ * 和 requireAuth 的区别只有一个，但很关键：`AUTH_ENFORCED=false` 时 currentUser 会把
+ * `req.userId` 回落成 DEFAULT_USER_ID，requireAuth 因此是放行的。
+ * 个人中心没有「默认用户」可言——它必须属于一个真登了录的人，
+ * 所以这条链在开关打开之前也是硬的。
+ */
+export function requireSession(req, res, next) {
+  if (req.auth?.user) return next()
+  next(authRequired())
+}

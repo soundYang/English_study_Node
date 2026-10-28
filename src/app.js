@@ -5,7 +5,8 @@ import pinoHttp from 'pino-http'
 
 import { config } from './config/index.js'
 import authRoutes from './modules/auth/auth.routes.js'
-import { requireAuth } from './modules/auth/auth.middleware.js'
+import { requireAuth, requireSession } from './modules/auth/auth.middleware.js'
+import profileRoutes from './modules/auth/profile.routes.js'
 import basicWordRoutes from './modules/basic-words/basic-words.routes.js'
 import dictionaryRoutes from './modules/dictionary/dictionary.routes.js'
 import healthRoutes from './modules/health/health.routes.js'
@@ -52,6 +53,10 @@ export function createApp() {
   app.use('/api', healthRoutes)
   app.use('/api/auth', authRoutes)
   app.use('/api/dictionary', dictionaryRoutes)
+
+  // 个人中心必须是真的登录了（不是 req.userId 回落出来的 local-user），
+  // 所以两道都挂：requireAuth 管开关打开后的统一 401，requireSession 管开关没开时的漏网
+  app.use('/api/profile', requireAuth, requireSession, profileRoutes)
 
   // 需要身份。AUTH_ENFORCED=false 时 currentUser 会把 req.userId 回落成 DEFAULT_USER_ID，
   // 所以这三个 requireAuth 现在等于放行——打开开关才开始真正 401（md/33 §7.3）
