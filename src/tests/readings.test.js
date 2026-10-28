@@ -43,8 +43,8 @@ function makePayload({ questionCount = 3, title = 'A Good Day', article = ARTICL
     questions: Array.from({ length: questionCount }, (_, index) => ({
       id: index + 1,
       question: `Question number ${index + 1} about the story?`,
-      // W7：type / evidence 必填，且 evidence 必须是正文里真实存在的句子；
-      // detail 题的正确答案还要与 evidence 有实词重合，所以正确答案统一取 Tom
+      // W7：type / evidence 必填，且 evidence 必须是正文里真实存在的句子。
+      // 正确答案统一取 Tom，避免顺带触发 detail 重合度警告（那只是警告，不影响 201）
       type: 'detail',
       evidence: 'Tom is a good boy.',
       options: ['Tom', 'book', 'house', 'friends'],
@@ -250,12 +250,35 @@ describe('POST /api/readings/generate · 正常生成', () => {
     expect(doc.questions[0].evidence).toBe('Tom is a good boy.')
     expect(doc.aiMeta.difficulty.score).toEqual(expect.any(Number))
     expect(doc.aiMeta.difficulty.metrics.avgSentenceLength).toBeGreaterThan(0)
+    // 题目没问题也要落一个空数组：undefined 在老文档里表示「当时没检查」
+    expect(doc.aiMeta.questionWarnings).toEqual([])
     expect(doc.aiMeta).toMatchObject({
       model: config.deepseekModel,
       promptTokens: 100,
       completionTokens: 200,
       repairRounds: 0,
     })
+  })
+
+  it('detail 答案与依据重合不足时仍然 201，警告落进 aiMeta', async () => {
+    await seedWords(400)
+    const payload = makePayload()
+    // 正确选项与 evidence「Tom is a good boy.」零实词重合：
+    // 旧实现会在这判 502，现在只记一条警告（md/30 §10-7）
+    payload.questions[0].options = ['A blue car', 'book', 'house', 'friends']
+    chatJson.mockResolvedValue(reply(payload))
+
+    const res = await generate(VALID_BODY)
+
+    expect(res.status).toBe(201)
+    expect(chatJson).toHaveBeenCalledTimes(1)
+
+    const doc = await Reading.findById(res.body.id).lean()
+    expect(doc.status).toBe('generated')
+    expect(doc.aiMeta.repairRounds).toBe(0)
+    expect(doc.aiMeta.questionWarnings).toEqual([
+      expect.objectContaining({ questionId: 1, code: 'detail_answer_overlap' }),
+    ])
   })
 
   it('vocabularySnapshot 只收 learning / mastered，不含 new', async () => {

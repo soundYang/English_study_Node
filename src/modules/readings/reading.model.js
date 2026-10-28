@@ -105,6 +105,25 @@ const difficultySchema = new Schema(
 )
 
 /**
+ * 题目质量的非阻断提示（md/30 §10-7）。
+ *
+ * `detail_answer_overlap` = detail 题的正确答案与 evidence 实词重合不足一半。
+ * 它**不再**触发 502：词面比较分不清「同义改写」和「毫无关系」，
+ * 先攒频率，样本够了再决定要不要恢复成阻断规则。
+ *
+ * 故意不设 `default: []`：老文档上这个字段是 undefined，表示「当时没有检查」；
+ * 新文档一定是 `[]`（检查过、没问题）。两者混成同一个值，统计时就没法排除旧样本。
+ */
+const questionWarningSchema = new Schema(
+  {
+    questionId: Number,
+    code: String,
+    message: String,
+  },
+  { _id: false },
+)
+
+/**
  * 分段明细（W4）。只保留排查需要的数字：
  * 哪一段重写了几次、最后收没收、被丢掉的段里还有哪些生词。
  */
@@ -226,6 +245,8 @@ const readingSchema = new Schema(
       minKnown: Number, // 写 targetWords 词所需的最低 knownWords
       personalWords: Number, // 个人词库条数（learning + mastered），最终模式的解锁口径
       finalMode: Boolean, // true = 最终模式（无目标词）
+      // 题目质量的非阻断提示；`[]` = 检查过没问题，undefined = 老文档未检查
+      questionWarnings: { type: [questionWarningSchema] },
       // true = 在跳过已知词门槛的采样实例上生成（md/27 阶段二容量采样）。
       // 这类样本不能和线上样本一起算成功率：它们是刻意在门槛以下跑的
       knownGateSkipped: Boolean,

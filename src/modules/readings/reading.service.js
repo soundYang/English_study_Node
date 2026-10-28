@@ -860,6 +860,14 @@ async function generateReadingInner({ userId, body, signal, diag }) {
   const data = state.result.data
   const actualWords = countWords(data.article)
 
+  // 题目质量的非阻断提示（md/30 §10-7）：detail 答案与 evidence 的实词重合不足时
+  // 只记录，不判失败。这条规则是词面比较，语义正确的同义改写会被误判，
+  // 先攒样本再决定阈值（md/23 D9）。
+  const questionWarnings = state.result.warnings ?? []
+  if (questionWarnings.length > 0) {
+    logger.warn({ questionWarnings }, 'question quality warnings')
+  }
+
   // 难度客观化（W7）：六项纯代码指标加权成 0–100 分。
   // 只记录、不设闸门——先让每次生成都留下分数，阈值等采样之后再定，
   // 否则「按现在的成功率反推阈值」等于让数据迁就实现。
@@ -1017,6 +1025,9 @@ async function generateReadingInner({ userId, body, signal, diag }) {
       personalWords,
       // true = 最终模式（hard + > 600 词 + 个人词库 ≥ 3000），没有目标词
       finalMode,
+      // 题目质量的非阻断提示（detail 答案与 evidence 重合不足）。
+      // 与 violationsCount 不同：它们不参与失败判定，只是采样时的观察项
+      questionWarnings,
       // true = 这篇是在跳过 B 门的采样实例上跑出来的（md/27 阶段二）。
       // 它与线上样本不可比，报表/回归必须能一眼区分开。
       knownGateSkipped: config.skipKnownWordsGate,

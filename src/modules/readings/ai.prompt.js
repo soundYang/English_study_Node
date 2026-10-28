@@ -59,7 +59,7 @@ ${targetRule}
     - type：detail（原文能直接找到答案）/ paraphrase（换一种说法）/ inference（需要跨句推断）/ main_idea（概括主旨）；
     - evidence：从正文**原样复制**一句作为依据，不要改写、不要加引号之外的内容。
     ${questionTypeRule(level)}
-    detail 题的正确答案必须能在 evidence 里找到对应词，不能只靠常识判断。
+    detail 题的正确答案最好能在 evidence 里找到对应词（同义改写、反义表达也算），不能只靠常识判断。
 11. 中文翻译必须与英文正文逐段对应，不得增删内容。
 12. 如果三份清单里的词太少、确实无法写出通顺文章，返回 {"error": "INSUFFICIENT_VOCABULARY"}，不要强行编造。
 13. 只输出一个 JSON 对象，不要输出 Markdown 代码块标记或任何解释性文字。`
@@ -234,7 +234,7 @@ ${targetRule}
 7. 分段写作时，每段控制在本段要求的词数附近，每句约 ${wordsPerSentenceFor(level)} 个英文单词（本难度的句长基准）；各段合起来要接近全篇目标（约 ${targetWords} 词）。
 8. 需要人名时最多使用 3 个，并在 names 字段里声明；除人名和星期、月份名称外，不得出现其他专有名词。
 9. 题目必须能根据文章内容回答，每题只有一个正确答案，四个选项互不重复。
-10. 每道题必须给出 type（detail / paraphrase / inference / main_idea）与 evidence（从正文原样复制的一句）。${questionTypeRule(level)}detail 题的正确答案必须能在 evidence 里找到对应词。
+10. 每道题必须给出 type（detail / paraphrase / inference / main_idea）与 evidence（从正文原样复制的一句）。${questionTypeRule(level)}detail 题的正确答案最好能在 evidence 里找到对应词（同义改写也算）。
 11. 中文翻译必须与英文正文逐段对应，不得增删内容。
 12. 只输出当前步骤要求的 json 对象，不要输出 Markdown 代码块标记或任何解释性文字。
 
@@ -465,7 +465,7 @@ export function buildRepairMessages(
       + '请保持 title、article、translation 与 names 完全不变，只重写 questions：\n'
       + '- 每道题都要有 type 与 evidence；evidence 必须从正文里**原样复制**一句，不要改写\n'
       + `- ${questionTypeRule(level)}\n`
-      + '- detail 题的正确答案必须能在 evidence 里找到对应词\n'
+      + '- detail 题的正确答案最好能在 evidence 里找到对应词（同义改写也算）\n'
       + '- 题目数量、id 从 1 开始连续、四个选项互不重复这几条照旧\n'
       + '重新输出完整的 json 对象。'
   } else if (type === 'word_count') {

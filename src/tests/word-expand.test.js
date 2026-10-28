@@ -39,7 +39,7 @@ function makePayload({ article = SHORT_ARTICLE, questionCount = 3 } = {}) {
     questions: Array.from({ length: questionCount }, (_, index) => ({
       id: index + 1,
       question: `Question number ${index + 1} about the story?`,
-      // W7：evidence 必须是正文里的句子，detail 的正确答案要与它有实词重合
+      // W7：evidence 必须是正文里的句子；detail 答案与 evidence 的重合度只记警告，不再阻断
       type: 'detail',
       evidence: 'Tom is a good boy.',
       options: ['Tom', 'book', 'house', 'friends'],

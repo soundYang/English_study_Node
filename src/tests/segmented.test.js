@@ -66,17 +66,15 @@ const FINISH = {
   })),
 }
 
-/** 第 2 题是 detail，但正确答案（big / book）与 evidence（good / friends）没有共同实词 */
+/**
+ * 第 2 题的 evidence 是编的（正文里没有自行车）。
+ * 用「编造引文」而不是「答案与 evidence 无重合」来造不合格样本：
+ * 后者只记警告不阻断（md/30 §10-7），拿它做失败用例测不到修正轮。
+ */
 const FINISH_BAD_QUESTION = {
   ...FINISH,
   questions: FINISH.questions.map((question) =>
-    question.id === 2
-      ? {
-          ...question,
-          options: ['A big book', 'A small boy', 'A house', 'A good day'],
-          correctAnswer: 0,
-        }
-      : question,
+    question.id === 2 ? { ...question, evidence: 'The boy has a red bike.' } : question,
   ),
 }
 

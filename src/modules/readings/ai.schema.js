@@ -1,5 +1,7 @@
 import { z } from 'zod'
 
+import { resolveBaseForms } from '../../shared/utils/word.js'
+
 /**
  * 题目类型（md/21 W7）。
  *
@@ -61,6 +63,23 @@ function contentTokens(text) {
     .filter((word) => word.length > 1 && !STOPWORDS.has(word))
 }
 
+/**
+ * 词形无关的实词集合：原形 + 还原候选（walked / walking → walk）。
+ *
+ * 旧实现直接拿小写原词比，「correct: repaired」与 evidence 里的 `repair` 算零重合，
+ * 长文里这种形态差比短文更多（md/30 §10-7 的误判来源之一）。
+ */
+function contentStems(text) {
+  const stems = new Set()
+
+  for (const word of contentTokens(text)) {
+    stems.add(word)
+    for (const base of resolveBaseForms(word)) stems.add(base)
+  }
+
+  return stems
+}
+
 const TYPE_QUOTA = Object.freeze({
   // easy 的题目必须能从原文直接找到答案，至少两道细节题
   easy: (question) => question.type === 'detail',
@@ -78,11 +97,15 @@ const QUOTA_HINT = Object.freeze({
 /**
  * 题目质量的确定性校验（md/21 W7）：不调模型，纯字符串计算。
  *
- * 三条规则：
+ * 两条**阻断**规则（客观可验证）：
  *   1. evidence 必须是正文里真实存在的片段——编造的引文说明题目也不是从原文来的；
- *   2. 每档有题型配额：easy 至少 2 道 detail，hard 至少 1 道 inference / main_idea；
- *   3. detail 题的正确答案选项要与 evidence 有 ≥50% 的实词重合——
- *      选项与依据毫无关系时，只能靠背题，不能靠读文章。
+ *   2. 每档有题型配额：easy 至少 2 道 detail，hard 至少 1 道 inference / main_idea。
+ *
+ * 「detail 题的正确答案要与 evidence 有实词重合」原本也是阻断规则，现已降级为
+ * 警告（见 `checkQuestionWarnings`）。原因：它是词面比较，语义正确的同义改写
+ * 会被判成「毫无关系」——700 词采样第 3 次就是这么失败的，
+ * evidence 写「stomach drop」，正确选项写「Shocked and deeply disappointed」。
+ * 为一条无法判断语义的启发式付 502 的代价不划算；先留痕，等样本够再定阈值。
  *
  * @returns {string|null} 不合法时返回原因，合法返回 null
  */
@@ -103,21 +126,50 @@ export function checkQuestionQuality(questions, article, level) {
     }
   }
 
+  return null
+}
+
+/** detail 题的答案与 evidence 至少共享一半实词，低于这条线才记警告 */
+const DETAIL_OVERLAP_RATIO = 0.5
+
+/**
+ * 题目质量的**非阻断**提示（md/30 §10-7）。
+ *
+ * 只检查 detail 题：正确选项与 evidence 的实词重合不足一半时，
+ * 记一条 `detail_answer_overlap`。它不再阻止生成，只落进 `aiMeta.questionWarnings`，
+ * 用来回答「这种题在长文里到底多常见」——样本够之前，不拿它决定 502。
+ *
+ * 比较用的是词形无关的集合（`contentStems`），
+ * 这样 `walked` / `walking` / `walk` 算同一次命中，减少形态差异造成的假警告。
+ *
+ * @param {Array} questions
+ * @returns {Array<{ questionId: number, code: 'detail_answer_overlap', message: string }>}
+ */
+export function checkQuestionWarnings(questions) {
+  const warnings = []
+
   for (const question of questions) {
     if (question.type !== 'detail') continue
 
-    const answer = contentTokens(question.options[question.correctAnswer])
+    const answer = contentTokens(question.options?.[question.correctAnswer])
     if (!answer.length) continue
 
-    const evidence = new Set(contentTokens(question.evidence))
-    const hits = answer.filter((word) => evidence.has(word)).length
+    const evidence = contentStems(question.evidence)
+    const hits = answer.filter((word) => {
+      if (evidence.has(word)) return true
+      return resolveBaseForms(word).some((base) => evidence.has(base))
+    }).length
 
-    if (hits / answer.length < 0.5) {
-      return `第 ${question.id} 题是 detail 题，但正确答案与 evidence 几乎无关`
+    if (hits / answer.length < DETAIL_OVERLAP_RATIO) {
+      warnings.push({
+        questionId: question.id,
+        code: 'detail_answer_overlap',
+        message: `第 ${question.id} 题是 detail 题，正确答案与 evidence 的实词重合不足一半`,
+      })
     }
   }
 
-  return null
+  return warnings
 }
 
 /**
@@ -138,7 +190,7 @@ const articleLevelSchema = aiReadingSchema.omit({ questions: true })
  * @param {object} raw 模型输出的 JSON
  * @param {{ questionCount: number, level?: string, checkQuestions?: boolean }} options
  *   `checkQuestions: false` 只校验正文层面（历史样本回放，见 articleLevelSchema）
- * @returns {{ ok: true, data: object } | { ok: false, kind?: 'questions', reason: string }}
+ * @returns {{ ok: true, data: object, warnings: Array } | { ok: false, kind?: 'questions', reason: string }}
  */
 export function validateAiReading(raw, { questionCount, level, checkQuestions = true }) {
   if (!checkQuestions) {
@@ -149,7 +201,7 @@ export function validateAiReading(raw, { questionCount, level, checkQuestions = 
       return { ok: false, reason: `${issue.path.join('.') || '结构'}：${issue.message}` }
     }
 
-    return { ok: true, data: articleOnly.data }
+    return { ok: true, data: articleOnly.data, warnings: [] }
   }
 
   const parsed = aiReadingSchema.safeParse(raw)
@@ -183,7 +235,8 @@ export function validateAiReading(raw, { questionCount, level, checkQuestions = 
   const questionIssue = checkQuestionQuality(data.questions, data.article, level)
   if (questionIssue) return { ok: false, kind: 'questions', reason: questionIssue }
 
-  return { ok: true, data }
+  // 不阻断生成，只随结果带出去（调用方落 aiMeta + 日志）
+  return { ok: true, data, warnings: checkQuestionWarnings(data.questions) }
 }
 
 /** 去掉模型偶尔加上的 ```json 代码块标记 */
