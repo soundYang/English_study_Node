@@ -213,10 +213,10 @@ describe('validateArticle · 违规词分类', () => {
       ])
   })
 
-  it('规则还原漏掉的词形 → wordform（lying → lie 是现有实现的真实缺口）', () => {
-    // resolveBaseForms('lying') 只给 ly / lye，命中不了 lie
+  it('词形闭包补上还原缺口：lying 不再违规（W1）', () => {
+    // resolveBaseForms('lying') 只给 ly / lye；闭包从 lie 正向生成 lying
     expect(categoriesOf('He was lying on the bed.', ['he', 'was', 'on', 'the', 'bed', 'lie'])).toEqual(
-      [['lying', 'wordform']],
+      [],
     )
   })
 
@@ -227,10 +227,10 @@ describe('validateArticle · 违规词分类', () => {
     ])
   })
 
-  it('连字符词各段都放行 → wordform：切词没拆开，属于校验器的 bug', () => {
-    // 实测真实文章里 part(178) + time(52) 都在表内，part-time 却被判违规
+  it('连字符词各段都放行 → 直接合法（W1 起不再进统计）', () => {
+    // 实测真实文章里 part(178) + time(52) 都在表内，此前却被判违规
     expect(categoriesOf('It was a part-time job.', ['it', 'was', 'a', 'job', 'part', 'time'])).toEqual(
-      [['part-time', 'wordform']],
+      [],
     )
   })
 

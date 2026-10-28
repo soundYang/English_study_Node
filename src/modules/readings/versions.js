@@ -52,4 +52,12 @@ function readCodeVersion() {
 }
 
 export const basicWordsVersion = hashFile(join(ROOT, 'data/basic-words.json'))
+/**
+ * 不规则变形表的版本号。
+ *
+ * 它和基础词表一样会改变「哪些词算表外」：补一条 went→go，
+ * 同一篇文章从 1 个违规变成 0 个。不记版本号时，两组采样数字并排看
+ * 根本看不出差异来自词表还是模型。
+ */
+export const irregularFormsVersion = hashFile(join(ROOT, 'data/irregular-forms.json'))
 export const codeVersion = readCodeVersion()

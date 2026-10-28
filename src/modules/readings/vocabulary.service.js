@@ -1,6 +1,7 @@
 import { resolveBaseForms } from '../../shared/utils/word.js'
 import { getWordRank } from '../words/word-ranks.js'
 import { ABBREVIATION_WORDS } from './abbreviations.js'
+import { buildWordClosure, isHyphenatedAllowed } from './word-closure.js'
 
 /**
  * 词汇校验：文章里的每个词都必须能落到「用户词 + 基础词」里。
@@ -99,11 +100,20 @@ function expandToken(rawToken) {
   return [token]
 }
 
-function isAllowed(word, allowed) {
+/**
+ * 允许判定，三条路径按代价从低到高：
+ *   1. 表内直接命中；
+ *   2. 反向还原（larger → large 这类，含不规则表）；
+ *   3. 正向闭包（large → larger、simple → simplest）。
+ *
+ * 第 3 条是新加的：反向还原对「原形只改一个字母」的变形是漏的，
+ * 而闭环生成天然覆盖它。闭包只在这里用，不参与 classify()。
+ */
+function isAllowed(word, allowed, closure) {
   if (allowed.has(word)) return true
+  if (resolveBaseForms(word).some((form) => allowed.has(form))) return true
 
-  // 直接命中失败时再看词形候选；resolveBaseForms 已包含不规则表
-  return resolveBaseForms(word).some((form) => allowed.has(form))
+  return closure?.has(word) ?? false
 }
 
 function splitSentences(article) {
@@ -254,19 +264,11 @@ function classify({ word, allowed, meta }) {
   // 2. 专名：句中首字母大写。放行策略在 §4.1，这里只负责认出来
   if (meta.midSentenceCapitalized) return 'proper_noun'
 
-  // 3. 词形 / 切词：命中说明问题在还原规则，不在词表
-  //    3a. 朴素还原能命中允许词表
+  // 3. 词形：朴素还原能命中允许词表，说明问题在还原规则，不在词表。
+  //    连字符词已经在放行阶段按段拆开（isHyphenatedAllowed），
+  //    走到这里说明至少有一段真的不在表里，不再单独归为 wordform——
+  //    否则「sixty-year-oldx」也会被算成校验器的锅。
   if (naiveStems(word).some((stem) => allowed.has(stem))) return 'wordform'
-
-  //    3b. 连字符词按段拆开后每段都放行（part-time、well-known），
-  //        说明是切词没拆开。**只改分类不改放行**：真拆词是策略改动，
-  //        会让这类词直接合规，属于 §4.3 的范围。
-  if (word.includes('-')) {
-    const parts = word.split('-')
-    if (parts.length > 1 && parts.every((part) => part && isAllowed(part, allowed))) {
-      return 'wordform'
-    }
-  }
 
   const rank = rankOf(word)
 
@@ -321,6 +323,9 @@ export function validateArticle({ article, allowedWords, names = [] }) {
   const nameSet = new Set(
     names.map((name) => String(name).replace(/’/g, "'").toLowerCase()),
   )
+  // 闭包每次校验只建一次：允许词几千个，逐词建会白烧几十倍的时间
+  const closure = buildWordClosure(allowed)
+  const allow = (word) => isAllowed(word, allowed, closure)
 
   const sentences = splitSentences(article)
   const meta = scanMeta(article)
@@ -339,7 +344,9 @@ export function validateArticle({ article, allowedWords, names = [] }) {
 
       // 人名不区分大小写放行——句首大写同理，普通词该在表里还是在表里
       if (nameSet.has(word)) continue
-      if (isAllowed(word, allowed)) continue
+      if (allow(word)) continue
+      // 连字符词拆一层看：sixty-year-old 的每一段都在表里就算合法（md/16 §4.3）
+      if (isHyphenatedAllowed(word, allow)) continue
       if (unknownWords.includes(word)) continue
 
       const category = classify({ word, allowed, meta: tokenMeta })

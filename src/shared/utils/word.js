@@ -86,10 +86,12 @@ export function resolveBaseForms(word) {
   else if (w.endsWith('ier')) push(`${w.slice(0, -3)}y`) // happier → happy
   if (w.endsWith('est')) {
     push(w.slice(0, -3))
+    push(w.slice(0, -2)) // largest → large（原形只改一个字母，去 -est 得到 larg）
     push(undouble(w.slice(0, -3))) // biggest → big
   }
   if (w.endsWith('er')) {
     push(w.slice(0, -2))
+    push(w.slice(0, -1)) // larger → large；simpler → simple
     push(undouble(w.slice(0, -2))) // bigger → big
   }
 
