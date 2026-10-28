@@ -55,6 +55,36 @@ export const wordRepository = {
     return Word.exists(filter)
   },
 
+  /**
+   * 文章曝光：生成成功后记一次「这个词今天在正文里出现过」。
+   *
+   * 只写时间与次数，不改 status / lastReviewedAt——
+   * 看了不等于复习了，真正算复习要等提交练习。
+   */
+  markExposure({ userId, words, at }) {
+    if (!words.length) return Promise.resolve({ modifiedCount: 0 })
+
+    return Word.updateMany(
+      { userId, word: { $in: words } },
+      { $set: { lastArticleExposureAt: at }, $inc: { articleExposureCount: 1 } },
+    )
+  },
+
+  /**
+   * 复习回写：提交练习时把这次练到的词标记为「已复习」。
+   *
+   * `vocabScope=today_reviewed` 完全依赖这个字段；不写它，
+   * 用户「按今天复习的词生成文章」这条主链路永远是空池。
+   */
+  markReviewed({ userId, words, at }) {
+    if (!words.length) return Promise.resolve({ modifiedCount: 0 })
+
+    return Word.updateMany(
+      { userId, word: { $in: words } },
+      { $set: { lastReviewedAt: at } },
+    )
+  },
+
   create(data) {
     return Word.create(data)
   },

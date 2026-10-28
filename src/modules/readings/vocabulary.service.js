@@ -371,3 +371,26 @@ export function validateArticle({ article, allowedWords, names = [] }) {
     detectedNames,
   }
 }
+
+/**
+ * 正文里实际出现过的词形，连同它们的还原形式。
+ *
+ * 复习回写不能只做字符串包含：文章写的是 running，用户词库里存的是 run。
+ * 所以每个出现过的 token 都把 resolveBaseForms 一并算进来，
+ * 调用方只需要拿它和候选词做一次集合交集，不必逐词扫描正文。
+ *
+ * 与 validateArticle 用同一套 tokenize / expandToken，
+ * 保证「校验算进去的词」和「回写算进去的词」永远是同一批。
+ */
+export function collectWordForms(article) {
+  const forms = new Set()
+
+  for (const rawToken of tokenize(article)) {
+    for (const word of expandToken(rawToken)) {
+      forms.add(word)
+      for (const base of resolveBaseForms(word)) forms.add(base)
+    }
+  }
+
+  return forms
+}

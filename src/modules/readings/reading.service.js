@@ -30,7 +30,7 @@ import {
   submitReadingSchema,
 } from './reading.schema.js'
 import { buildTargetPlan } from './target-plan.js'
-import { validateArticle } from './vocabulary.service.js'
+import { collectWordForms, validateArticle } from './vocabulary.service.js'
 import { selectVocabularyPool } from './vocabulary-pool.js'
 import { basicWordsVersion, codeVersion } from './versions.js'
 
@@ -41,6 +41,23 @@ import { basicWordsVersion, codeVersion } from './versions.js'
  * 按实际 completion_tokens 计费，估小了反而会被截断成 AI_INVALID_RESPONSE，
  * 用户看到的是「生成失败」而不是「文章有点长」。
  */
+/**
+ * 候选词里，哪几个真的出现在这篇正文中。
+ *
+ * 用集合交集而不是 candidates.filter(w => article.includes(w))：
+ * 文章几百个 token、词表几千个词，逐词 includes 是 O(n×m) 的字符串扫描。
+ *
+ * @param {string[]} candidates 候选词（用户词库 / 本篇候选池）
+ * @param {string} article 正文
+ * @returns {string[]} 命中的候选词，去重
+ */
+function pickUsedWords(candidates, article) {
+  const candidateSet = new Set(candidates.map((word) => String(word).toLowerCase()))
+  const forms = collectWordForms(article)
+
+  return [...forms].filter((word) => candidateSet.has(word))
+}
+
 async function callModel({ kind, messages, signal, rounds, repairFor = null }) {
   const startedAt = Date.now()
   const response = await chatJson({
@@ -676,6 +693,18 @@ async function generateReadingInner({ userId, body, signal, diag }) {
     },
   })
 
+  // 曝光回写：文章生成了，就不该再被 today_new / 复习优先级当成「没见过」。
+  // 统计失败只记日志，绝不影响已经生成好的文章——和 recordFailure 同一原则。
+  try {
+    await wordRepository.markExposure({
+      userId,
+      words: pickUsedWords(learnedWords, data.article),
+      at: new Date(),
+    })
+  } catch (error) {
+    logger.error({ err: error, userId }, 'reading generate: markExposure failed')
+  }
+
   return toSafeDto(doc)
 }
 
@@ -796,6 +825,20 @@ export async function submitReading({ userId, id, body }) {
     if (!exists) throw readingNotFound()
 
     throw conflict(ERROR_CODES.ALREADY_SUBMITTED, '这份练习已提交过')
+  }
+
+  // 复习回写：只在 vocabScope 里「本篇候选池」中的词才记账。
+  // 不能拿整库取交集——the / is 这类词每篇都有，写进去等于把 today_reviewed 泡成第二份全库。
+  // submitIfGenerated 已经保证只有第一次提交能走到这里，重复提交不会二次写时间。
+  try {
+    const usedWords = pickUsedWords(updated.vocabularySnapshot ?? [], updated.article)
+    await wordRepository.markReviewed({
+      userId,
+      words: usedWords,
+      at: updated.submittedAt ?? new Date(),
+    })
+  } catch (error) {
+    logger.error({ err: error, userId, id }, 'reading submit: markReviewed failed')
   }
 
   return toResultDto(updated)
