@@ -49,22 +49,25 @@ const detail = (id) => request(app).get(`/api/readings/${id}`)
 const history = (query) => request(app).get('/api/readings/history').query(query)
 
 describe('GET /api/readings/:id · 未提交分支', () => {
-  it('返回安全 DTO：恰好 9 个字段，不含翻译与答案', async () => {
+  it('返回安全 DTO：恰好 12 个字段，不含翻译与答案', async () => {
     const reading = await makeReading()
 
     const res = await detail(reading._id)
 
     expect(res.status).toBe(200)
     expect(Object.keys(res.body).sort()).toEqual([
+      'actualWords',
       'article',
       'createdAt',
       'id',
       'level',
+      'newWords',
       'questionCount',
       'questions',
       'status',
       'targetWords',
       'title',
+      'tokenUsage',
     ])
     expect(res.body.status).toBe('generated')
     expect(res.body.questions).toHaveLength(3)
@@ -221,6 +224,7 @@ describe('GET /api/readings/history · 列表', () => {
       'status',
       'submittedAt',
       'title',
+      'tokenUsage',
     ])
     expect(res.body.items[0].accuracy).toBe(res.body.items[0].score)
   })

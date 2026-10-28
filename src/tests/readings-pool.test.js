@@ -121,6 +121,118 @@ describe('候选池与目标词计划', () => {
   })
 })
 
+describe('校验词表与提示词词表分离', () => {
+  it('池外但用户学过的词不算表外', async () => {
+    await seedWords(200)
+    // cocaRank 极大 → easy 按排名升序取前 71 个，这个词必然落在池外
+    await Word.create({
+      userId: config.defaultUserId,
+      word: 'zephyrous',
+      status: 'learning',
+      source: 'manual',
+      cocaRank: 99999,
+      senses: [{ pos: '', meaning: '测试释义' }],
+    })
+    chatJson.mockResolvedValue({
+      ...reply,
+      content: JSON.stringify({ ...payload, article: `${ARTICLE} Zephyrous.` }),
+    })
+
+    const res = await generate({ level: 'easy', targetWords: 100, questionCount: 3 })
+
+    // 旧行为：这个词不在候选池里 → 422 VOCABULARY_VALIDATION_FAILED
+    expect(res.status).toBe(201)
+
+    // 它确实没进提示词（提示词只列候选池）……
+    const prompt = chatJson.mock.calls[0][0].messages[1].content
+    expect(prompt).not.toContain('zephyrous')
+
+    // ……但校验放行了，因为用户本来就学过
+    const doc = await Reading.findById(res.body.id).lean()
+    expect(doc.vocabularySnapshot).not.toContain('zephyrous')
+  })
+
+  it('超过额度的真正生词仍然要被拦下', async () => {
+    await seedWords(200)
+    // 6 个 > maxUnknownWords(5)：才会进入修正轮，两轮后仍超额 → 422
+    const unknown = 'Quizzical zephyrish brontide crepuscule farrago panopticon.'
+    chatJson.mockResolvedValue({
+      ...reply,
+      content: JSON.stringify({ ...payload, article: `${ARTICLE} ${unknown}` }),
+    })
+
+    const res = await generate({ level: 'easy', targetWords: 100, questionCount: 3 })
+
+    expect(res.status).toBe(422)
+    expect(res.body.error.code).toBe('VOCABULARY_VALIDATION_FAILED')
+  })
+})
+
+describe('生成前预检 GET /capacity', () => {
+  const capacity = (query) => request(app).get('/api/readings/capacity').query(query)
+
+  it('200 词时返回三档门槛与预计篇幅', async () => {
+    await seedWords(200)
+
+    const res = await capacity({ targetWords: 200 })
+
+    expect(res.status).toBe(200)
+    expect(res.body).toMatchObject({
+      targetWords: 200,
+      available: 200,
+      maxUnknownWords: 5,
+      wordRange: { min: 200, target: 220, max: 230, label: '200–230 词' },
+      levels: {
+        easy: { required: 58, sufficient: true, shortage: 0 },
+        medium: { required: 40, sufficient: true, shortage: 0 },
+        hard: { required: 29, sufficient: true, shortage: 0 },
+      },
+    })
+  })
+
+  it('词量不够时给出差额，且与真实闸门同数字', async () => {
+    await seedWords(45)
+
+    const res = await capacity({ targetWords: 800 })
+
+    expect(res.body.levels.hard).toEqual({ required: 115, sufficient: false, shortage: 70 })
+
+    // 同一组参数真的去生成，422 里回的数字必须一致
+    const rejected = await generate({ level: 'hard', targetWords: 800, questionCount: 3 })
+    expect(rejected.status).toBe(422)
+    expect(rejected.body.error.details.required).toBe(res.body.levels.hard.required)
+    expect(rejected.body.error.details.available).toBe(res.body.available)
+  })
+
+  it('单个 vocabScope 写成字符串也能收', async () => {
+    await seedWords(200)
+
+    const res = await capacity({ targetWords: 200, vocabScope: 'today_new' })
+
+    expect(res.status).toBe(200)
+    // 刚建的 200 个词本来就落在今天，所以够用
+    expect(res.body.levels.hard.sufficient).toBe(true)
+  })
+
+  it('非法 vocabScope → 400，field 指向 vocabScope', async () => {
+    await seedWords(200)
+
+    const res = await capacity({ targetWords: 200, vocabScope: 'bogus' })
+
+    expect(res.status).toBe(400)
+    expect(res.body.error.field).toBe('vocabScope')
+  })
+
+  it('targetWords 不合法 → 400，field 指向 targetWords', async () => {
+    await seedWords(200)
+
+    const res = await capacity({ targetWords: 55 })
+
+    expect(res.status).toBe(400)
+    expect(res.body.error.field).toBe('targetWords')
+  })
+})
+
 describe('词源筛选', () => {
   it('vocabScope=today_new 时只从今天新增的词里取', async () => {
     await seedWords(200, 'old')

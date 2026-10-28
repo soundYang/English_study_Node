@@ -63,6 +63,16 @@ describe('buildMessages · 三段式词表', () => {
     expect(system).toContain('【补充可用词】')
     expect(system).toContain('【基础词】')
   })
+
+  it('篇幅写成绝对区间，不再是「±5%」', () => {
+    const system = build()[0].content
+    const prompt = userMessage(build())
+
+    // targetWords 300 → 目标 330、上限 345
+    expect(system).toContain('300–345 个英文单词')
+    expect(system).not.toContain('5%')
+    expect(prompt).toContain('300–345 词')
+  })
 })
 
 describe('buildRepairMessages', () => {
@@ -83,6 +93,31 @@ describe('buildRepairMessages', () => {
     expect(assistant.content).toBe('上一轮的正文')
     expect(repaired.at(-2)).toBe(assistant)
     expect(repaired.at(-1).role).toBe('user')
+  })
+
+  it('word_count 反馈生成「只删不增」的压缩指令', () => {
+    const repaired = buildRepairMessages(base, {
+      type: 'word_count',
+      reason: '正文有 429 个英文单词，超过上限 345',
+      actualWords: 429,
+      range: { min: 300, max: 345, target: 330 },
+    })
+    const content = repaired.at(-1).content
+
+    expect(content).toContain('删减')
+    expect(content).toContain('不要新增')
+    expect(content).toContain('300–345')
+    // 压缩轮不该再重复「表外词」那套话术
+    expect(content).not.toContain('不在允许词表中')
+  })
+
+  it('用词反馈会重申字数区间，防止越修越长', () => {
+    const repaired = buildRepairMessages(
+      base,
+      { type: 'vocabulary', reason: '出现表外词', range: { min: 300, max: 345, target: 330 } },
+    )
+
+    expect(repaired.at(-1).content).toContain('300–345')
   })
 
   it('违规词最多列 8 条，并附上原句片段', () => {

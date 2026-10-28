@@ -25,6 +25,12 @@ const app = createApp()
 const ARTICLE =
   'Tom is a good boy. His book is big and the boy is small. Tom and his book play in the house. The book runs and the boy runs too. They are good friends. Tom likes his book very much.'
 
+/** 6 个必然不在词表里的词：超过 maxUnknownWords(5)，才会进入修正轮 */
+const OVER_LIMIT_ARTICLE = `${ARTICLE} Quizzical Zephyrish Brontide Crepuscule Farrago Panopticon.`
+
+/** 4 遍基础正文 = 160 词，超过 100 词请求的上限 115 */
+const LONG_ARTICLE = Array.from({ length: 4 }, () => ARTICLE).join(' ')
+
 /** 造一份合法的 AI 输出 */
 function makePayload({ questionCount = 3, title = 'A Good Day', article = ARTICLE } = {}) {
   return {
@@ -132,7 +138,7 @@ describe('POST /api/readings/generate · 词汇量闸门', () => {
 })
 
 describe('POST /api/readings/generate · 正常生成', () => {
-  it('返回 201，且 DTO 恰好 9 个字段', async () => {
+  it('返回 201，且 DTO 恰好 12 个字段', async () => {
     await seedWords(29)
     chatJson.mockResolvedValue(reply(makePayload()))
 
@@ -140,15 +146,18 @@ describe('POST /api/readings/generate · 正常生成', () => {
 
     expect(res.status).toBe(201)
     expect(Object.keys(res.body).sort()).toEqual([
+      'actualWords',
       'article',
       'createdAt',
       'id',
       'level',
+      'newWords',
       'questionCount',
       'questions',
       'status',
       'targetWords',
       'title',
+      'tokenUsage',
     ])
     expect(res.body.status).toBe('generated')
     expect(res.body.level).toBe('easy')
@@ -184,10 +193,17 @@ describe('POST /api/readings/generate · 正常生成', () => {
       'score',
       'vocabularySnapshot',
       'names',
-      'promptTokens',
     ]) {
       expect(res.text).not.toContain(forbidden)
     }
+
+    // tokenUsage 是**故意**回给用户的，和 aiMeta 不是一回事：
+    // 只允许这三个字段，其他 aiMeta 内容一个都不能漏
+    expect(Object.keys(res.body.tokenUsage).sort()).toEqual([
+      'completionTokens',
+      'promptTokens',
+      'totalTokens',
+    ])
   })
 
   it('落库内容完整，只把安全字段回给前端', async () => {
@@ -328,26 +344,56 @@ describe('POST /api/readings/generate · 结构校验与修正轮', () => {
 })
 
 describe('POST /api/readings/generate · 词汇校验', () => {
-  it('正文出现表外词 → 修正一轮后合规 → 201 且 repairRounds=1', async () => {
+  it('表外词不超过额度时直接放行，不进入修正轮', async () => {
+    await seedWords(29)
+    chatJson.mockResolvedValue(reply(makePayload({ article: `${ARTICLE} Quizzical.` })))
+
+    const res = await generate(VALID_BODY)
+
+    expect(res.status).toBe(201)
+    // 额度是兜底不是配额：一个生词不值得再花一轮调用
+    expect(chatJson).toHaveBeenCalledTimes(1)
+    expect(res.body.newWords).toHaveLength(1)
+    expect(res.body.newWords[0].word).toBe('quizzical')
+
+    const doc = await Reading.findById(res.body.id).lean()
+    expect(doc.aiMeta.repairRounds).toBe(0)
+    expect(doc.aiMeta.violationsCount).toBe(1)
+  })
+
+  it('放行的生词带词典音标与释义', async () => {
+    await seedWords(29)
+    chatJson.mockResolvedValue(reply(makePayload({ article: `${ARTICLE} Hospital.` })))
+
+    const res = await generate(VALID_BODY)
+
+    expect(res.status).toBe(201)
+    expect(res.body.newWords[0]).toMatchObject({ word: 'hospital', source: 'dictionary' })
+    expect(res.body.newWords[0].phonetic.us).toBeTruthy()
+    expect(res.body.newWords[0].senses[0].meaning).toBeTruthy()
+  })
+
+  it('超过额度 → 修正一轮后合规 → 201 且 repairRounds=1', async () => {
     await seedWords(29)
     chatJson
-      .mockResolvedValueOnce(reply(makePayload({ article: `${ARTICLE} Quizzical.` })))
+      .mockResolvedValueOnce(reply(makePayload({ article: OVER_LIMIT_ARTICLE })))
       .mockResolvedValueOnce(reply(makePayload()))
 
     const res = await generate(VALID_BODY)
 
     expect(res.status).toBe(201)
     expect(chatJson).toHaveBeenCalledTimes(2)
+    expect(res.body.newWords).toEqual([])
 
     const doc = await Reading.findById(res.body.id).lean()
     expect(doc.aiMeta.repairRounds).toBe(1)
   })
 
-  it('第 1 轮仍违规、第 2 轮修好 → 201 且 repairRounds=2', async () => {
+  it('第 1 轮仍超额、第 2 轮修好 → 201 且 repairRounds=2', async () => {
     await seedWords(29)
     chatJson
-      .mockResolvedValueOnce(reply(makePayload({ article: `${ARTICLE} Quizzical.` })))
-      .mockResolvedValueOnce(reply(makePayload({ article: `${ARTICLE} Zephyrish.` })))
+      .mockResolvedValueOnce(reply(makePayload({ article: OVER_LIMIT_ARTICLE })))
+      .mockResolvedValueOnce(reply(makePayload({ article: OVER_LIMIT_ARTICLE })))
       .mockResolvedValueOnce(reply(makePayload()))
 
     const res = await generate(VALID_BODY)
@@ -362,7 +408,7 @@ describe('POST /api/readings/generate · 词汇校验', () => {
   it('结构合法的修正轮会带上模型自己的上一轮输出', async () => {
     await seedWords(29)
     chatJson
-      .mockResolvedValueOnce(reply(makePayload({ article: `${ARTICLE} Quizzical.` })))
+      .mockResolvedValueOnce(reply(makePayload({ article: OVER_LIMIT_ARTICLE })))
       .mockResolvedValueOnce(reply(makePayload()))
 
     await generate(VALID_BODY)
@@ -372,10 +418,9 @@ describe('POST /api/readings/generate · 词汇校验', () => {
     expect(assistant.content).toContain('Quizzical')
   })
 
-  it('两轮修正后仍含表外词 → 422 VOCABULARY_VALIDATION_FAILED，不留脏数据', async () => {
+  it('两轮修正后仍超额 → 422 VOCABULARY_VALIDATION_FAILED，不留脏数据', async () => {
     await seedWords(29)
-    const dirty = reply(makePayload({ article: `${ARTICLE} Quizzical.` }))
-    chatJson.mockResolvedValue(dirty)
+    chatJson.mockResolvedValue(reply(makePayload({ article: OVER_LIMIT_ARTICLE })))
 
     const res = await generate(VALID_BODY)
 
@@ -391,7 +436,7 @@ describe('POST /api/readings/generate · 词汇校验', () => {
     chatJson.mockResolvedValue(
       reply(
         makePayload({
-          article: `${ARTICLE} Quizzical zephyrish brontide crepuscule farrago.`,
+          article: `${ARTICLE} Quizzical zephyrish brontide crepuscule farrago panopticon umbratile kernelly.`,
         }),
       ),
     )
@@ -403,17 +448,81 @@ describe('POST /api/readings/generate · 词汇校验', () => {
     expect(listed.split('、')).toHaveLength(5)
   })
 
-  it('一个人名声明之外的大写词也按普通词校验', async () => {
+  it('大写词不在 names 里时，仍按普通词处理并标注为未学', async () => {
     await seedWords(29)
-    chatJson.mockResolvedValue(
-      reply(makePayload({ article: `${ARTICLE} Lina.` })),
-    )
+    chatJson.mockResolvedValue(reply(makePayload({ article: `${ARTICLE} Lina.` })))
 
     const res = await generate(VALID_BODY)
 
-    // Lina 没有出现在 names 里，不能被句首/大写规则放行
-    expect(res.status).toBe(422)
-    expect(res.body.error.message).toContain('lina')
+    // 不能被句首/大写规则悄悄放行：它进了 newWords，说明确实按普通词校验过
+    expect(res.status).toBe(201)
+    expect(res.body.newWords).toHaveLength(1)
+    expect(res.body.newWords[0].word).toBe('lina')
+  })
+})
+
+describe('POST /api/readings/generate · 篇幅与 token', () => {
+  it('安全 DTO 带回真实词数', async () => {
+    await seedWords(29)
+    chatJson.mockResolvedValue(reply(makePayload()))
+
+    const res = await generate(VALID_BODY)
+
+    expect(res.body.actualWords).toBe(40)
+  })
+
+  it('超过上限时追加一轮压缩，指令要求只删不增', async () => {
+    await seedWords(29)
+    chatJson
+      .mockResolvedValueOnce(reply(makePayload({ article: LONG_ARTICLE })))
+      .mockResolvedValueOnce(reply(makePayload()))
+
+    const res = await generate(VALID_BODY)
+
+    expect(res.status).toBe(201)
+    expect(chatJson).toHaveBeenCalledTimes(2)
+
+    const instruction = chatJson.mock.calls[1][0].messages.at(-1).content
+    expect(instruction).toContain('删减')
+    expect(instruction).toContain('100–115')
+
+    const doc = await Reading.findById(res.body.id).lean()
+    expect(doc.aiMeta.repairRounds).toBe(1)
+    // 压缩后的正文落库，不再是被截断的 160 词版本
+    expect(doc.actualWords).toBe(40)
+  })
+
+  it('多轮调用的 token 是累加，不是只留最后一轮', async () => {
+    await seedWords(29)
+    chatJson
+      .mockResolvedValueOnce(reply(makePayload({ article: OVER_LIMIT_ARTICLE })))
+      .mockResolvedValueOnce(reply(makePayload()))
+
+    const res = await generate(VALID_BODY)
+
+    // 每次打桩 usage 都是 prompt 100 / completion 200
+    expect(res.body.tokenUsage).toEqual({
+      promptTokens: 200,
+      completionTokens: 400,
+      totalTokens: 600,
+    })
+
+    const doc = await Reading.findById(res.body.id).lean()
+    expect(doc.aiMeta.rounds.map((round) => round.kind)).toEqual(['generate', 'repair'])
+    expect(doc.aiMeta.rounds[0]).toMatchObject({
+      promptTokens: 100,
+      completionTokens: 200,
+      maxTokens: 8192,
+    })
+  })
+
+  it('上限固定 8192，不再按篇幅估算', async () => {
+    await seedWords(29)
+    chatJson.mockResolvedValue(reply(makePayload()))
+
+    await generate(VALID_BODY)
+
+    expect(chatJson.mock.calls[0][0].maxTokens).toBe(8192)
   })
 })
 

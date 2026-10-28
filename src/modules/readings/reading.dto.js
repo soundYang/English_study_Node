@@ -1,16 +1,23 @@
+import { countWords } from './word-count.js'
+
 /**
  * 阅读 DTO。**白名单构造**，不写「删除敏感字段」的逻辑——
  * 「删除法」在新增字段时一定会漏，白名单法不会。
  */
 
 /**
- * 安全 DTO：9 个字段，一个都不能少。
+ * 安全 DTO：12 个字段，一个都不能少。
  *
  * 绝对不包含：translation、correctAnswer、explanation、userAnswers、
  * score、correctCount、names、aiMeta。
  *
  * `status` 必须有——前端拿它判断是否需要重定向到结果页，
  * 漏掉就会停在「答题中」却渲染不出内容。
+ *
+ * 新增三样都是给用户看的，不是内部数据：
+ *   actualWords —— 文章页显示「全文 218 词」
+ *   newWords    —— 折叠提示「本文含 4 个未学单词」
+ *   tokenUsage  —— 显示「本次消耗 N tokens」
  */
 export function toSafeDto(doc) {
   return {
@@ -19,9 +26,22 @@ export function toSafeDto(doc) {
     article: doc.article,
     level: doc.level,
     targetWords: doc.targetWords,
+    // 老文档也一定有这个字段；兜底是为了防御手工写入的脏数据
+    actualWords: doc.actualWords ?? countWords(doc.article),
     questionCount: doc.questionCount,
     status: doc.status,
     createdAt: doc.createdAt,
+    newWords: (doc.newWords ?? []).map((item) => ({
+      word: item.word,
+      phonetic: { uk: item.phonetic?.uk ?? '', us: item.phonetic?.us ?? '' },
+      senses: (item.senses ?? []).map(({ pos, meaning }) => ({ pos, meaning })),
+      source: item.source,
+    })),
+    tokenUsage: {
+      promptTokens: doc.aiMeta?.promptTokens ?? 0,
+      completionTokens: doc.aiMeta?.completionTokens ?? 0,
+      totalTokens: doc.aiMeta?.totalTokens ?? 0,
+    },
     questions: (doc.questions || []).map((question) => ({
       id: question.id,
       question: question.question,
@@ -102,5 +122,7 @@ export function toHistoryItem(doc) {
     accuracy: submitted ? doc.score : null,
     createdAt: doc.createdAt,
     submittedAt: submitted ? doc.submittedAt : null,
+    // 历史页要能显示「这一篇花了多少 token」，只给总数，拆分留在详情里
+    tokenUsage: { totalTokens: doc.aiMeta?.totalTokens ?? 0 },
   }
 }

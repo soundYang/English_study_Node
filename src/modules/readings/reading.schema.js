@@ -13,14 +13,20 @@ export const HISTORY_LEVEL_FILTERS = ['all', ...LEVELS]
  * 约束与前端 unit/validators.js 完全一致——前端已经限过一遍，
  * 但接口是公开的，后端必须再校验一次。
  */
+/**
+ * targetWords 的取值规则。生成与预检共用同一份，
+ * 否则会出现「预检说能生成、点下去 400」。
+ */
+const targetWordsRules = z
+  .number({ error: 'targetWords 必须是数字' })
+  .int('targetWords 必须是整数')
+  .min(100, 'targetWords 最小为 100')
+  .max(800, 'targetWords 最大为 800')
+  .refine((value) => value % 10 === 0, 'targetWords 必须是 10 的倍数')
+
 export const generateReadingSchema = z.object({
   level: z.enum(LEVELS, { error: 'level 只能是 easy / medium / hard' }),
-  targetWords: z
-    .number({ error: 'targetWords 必须是数字' })
-    .int('targetWords 必须是整数')
-    .min(100, 'targetWords 最小为 100')
-    .max(800, 'targetWords 最大为 800')
-    .refine((value) => value % 10 === 0, 'targetWords 必须是 10 的倍数'),
+  targetWords: targetWordsRules,
   // 词源多选。default 只兜 undefined，显式传 [] 仍会被 min(1) 拦成 400——
   // 这正是契约要的：前端不该发空数组，发了就是前端 bug，宁可报错也别悄悄全选。
   vocabScope: z
@@ -39,6 +45,23 @@ export const generateReadingSchema = z.object({
       (value) => QUESTION_COUNTS.includes(value),
       'questionCount 只能是 3 / 5 / 8',
     ),
+})
+
+/**
+ * GET /api/readings/capacity 的查询参数。
+ *
+ * 两处差异都由「query 里全是字符串」造成：
+ *   targetWords 需要 coerce，再交给 generate 的同一套规则校验；
+ *   vocabScope 单值时是字符串、多值时是数组，先统一成数组再复用枚举。
+ */
+export const capacityQuerySchema = z.object({
+  targetWords: z
+    .coerce.number({ error: 'targetWords 必须是数字' })
+    .pipe(targetWordsRules),
+  vocabScope: z.preprocess(
+    (value) => (value === undefined ? undefined : [].concat(value)),
+    generateReadingSchema.shape.vocabScope,
+  ),
 })
 
 /**

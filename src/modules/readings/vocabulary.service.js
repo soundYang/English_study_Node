@@ -65,8 +65,21 @@ const CONTRACTIONS = Object.freeze({
 /** 正文切句：句末标点或换行都算断句，用于把违规词所在句反馈给模型 */
 const SENTENCE_RE = /[^.!?\n]+[.!?]*/g
 
+/**
+ * 连续两个及以上的「字母 + 点」，如 U.S. / U.S.A. / e.g. / i.e.。
+ *
+ * 不归一的话 U.S. 会被切成 u、s 两个单字母词，双双判成生词。
+ * Dr. 只有一个点，不命中这条规则，仍按原逻辑切成 dr，由缩写表放行。
+ */
+const DOTTED_ABBR_RE = /\b(?:[A-Za-z]\.){2,}/g
+
 function tokenize(article) {
-  return String(article ?? '').normalize('NFKC').match(TOKEN_RE) ?? []
+  return (
+    String(article ?? '')
+      .normalize('NFKC')
+      .replace(DOTTED_ABBR_RE, (match) => match.replace(/\./g, ''))
+      .match(TOKEN_RE) ?? []
+  )
 }
 
 /** 撇号归一 + 展开缩写 + 去所有格，返回需要逐个校验的词 */

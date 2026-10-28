@@ -117,15 +117,21 @@ describe('POST /api/readings/:id/submit · 判分', () => {
     expect(res.body.questions[0]).not.toHaveProperty('correctAnswer')
   })
 
-  it('响应不含 vocabularySnapshot / names / aiMeta', async () => {
+  it('响应不含 vocabularySnapshot / names / aiMeta，但保留 tokenUsage', async () => {
     const reading = await makeReading()
 
     const res = await submit(reading._id, { answers: answersOf(0, 1, 2) })
 
-    for (const forbidden of ['vocabularySnapshot', 'aiMeta', 'promptTokens']) {
+    for (const forbidden of ['vocabularySnapshot', 'aiMeta', 'repairRounds', 'candidatePoolSize']) {
       expect(res.text).not.toContain(forbidden)
     }
     expect(res.body).not.toHaveProperty('names')
+    // tokenUsage 是给用户看的白名单字段，和 aiMeta 是两回事
+    expect(Object.keys(res.body.tokenUsage).sort()).toEqual([
+      'completionTokens',
+      'promptTokens',
+      'totalTokens',
+    ])
   })
 
   it('提交不改 article / translation / questions', async () => {

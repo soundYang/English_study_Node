@@ -61,13 +61,19 @@ export const config = Object.freeze({
   deepseekBaseUrl: process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com',
   deepseekModel: process.env.DEEPSEEK_MODEL || 'deepseek-chat',
   deepseekTimeoutMs: toNumber('DEEPSEEK_TIMEOUT_MS', 60_000),
-  deepseekMaxTokens: toNumber('DEEPSEEK_MAX_TOKENS', 2600),
+  // 输出 token 上限。这是**上限不是计费项**，按实际 completion_tokens 计费，
+  // 所以给足模型上限（deepseek-chat 为 8192）比按篇幅估算更安全：
+  // 估小了会被截断成 AI_INVALID_RESPONSE，用户看到的是「生成失败」而不是「文章有点长」。
+  maxOutputTokens: toNumber('MAX_OUTPUT_TOKENS', 8192),
 
   // 生成策略
   vocabularyThreshold: toNumber('VOCABULARY_THRESHOLD', 20),
   // P0 基线：修 1 轮后 4/5 次只剩 1 个违规词，再给一轮的命中率远高于成本。
   // 2 轮意味着最坏情况一次生成调 3 次模型（方案 §12）
   maxRepairRounds: toNumber('MAX_REPAIR_ROUNDS', 2),
+  // 文章允许出现的「用户没学过」的词数。刻意不写进提示词：
+  // 一旦告诉模型有这个额度，它会稳定用满 5 个；放行只是兜底，不是配额。
+  maxUnknownWords: toNumber('MAX_UNKNOWN_WORDS', 5),
   basicWordsRank: toNumber('BASIC_WORDS_RANK', 3000),
 
   // 限流（次 / 分钟）

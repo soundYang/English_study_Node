@@ -10,16 +10,21 @@ import {
 } from '../../shared/errors.js'
 import { logger } from '../../shared/logger.js'
 import { parseOrThrow } from '../../shared/utils/validation.js'
+import { findEntry } from '../dictionary/dictionary.loader.js'
 import { wordRepository } from '../words/word.repository.js'
+import { ABBREVIATIONS, ABBREVIATION_WORDS } from './abbreviations.js'
 import { chatJson } from './ai.client.js'
 import { buildMessages, buildRepairMessages } from './ai.prompt.js'
 import { parseAiContent, validateAiReading } from './ai.schema.js'
 import { basicWords } from './basic-words.js'
 import { calendarWords } from './calendar-words.js'
+import { countWords, planWordRange } from './word-count.js'
 import { toHistoryItem, toResultDto, toSafeDto } from './reading.dto.js'
 import { readingRepository as repo } from './reading.repository.js'
 import {
   HISTORY_LEVEL_FILTERS,
+  LEVELS,
+  capacityQuerySchema,
   generateReadingSchema,
   submitReadingSchema,
 } from './reading.schema.js'
@@ -28,32 +33,50 @@ import { validateArticle } from './vocabulary.service.js'
 import { selectVocabularyPool } from './vocabulary-pool.js'
 
 /**
- * 输出 token 上限。
+ * 调一次模型，并把这一轮的用量记进 rounds。
  *
- * 原来的 2600 是按 300 词上限定的；篇幅放开到 800 词后，英文正文约 1100 token、
- * 中文翻译约 1200 token，加题目和 JSON 结构已超过 2600，必然被截断成
- * AI_INVALID_RESPONSE。取 6000 留足余量（DeepSeek chat 上限 8192）。
- * 这只是上限不是消耗：100 词的请求仍然按 estimateMaxTokens 算出来约 1200。
+ * 上限固定读 config.maxOutputTokens（默认 8192）。它是**上限不是计费项**：
+ * 按实际 completion_tokens 计费，估小了反而会被截断成 AI_INVALID_RESPONSE，
+ * 用户看到的是「生成失败」而不是「文章有点长」。
  */
-const MAX_TOKENS_CAP = 6000
-/** article 实际词数允许偏离目标的范围，超出只记 warning 不判错 */
-const WORD_COUNT_TOLERANCE = { min: 0.7, max: 1.4 }
-
-function countWords(article) {
-  return (String(article).match(/[A-Za-z]+(?:['’-][A-Za-z]+)*/g) ?? []).length
-}
-
-/** 按 targetWords 估算输出上限，避免写 300 词时被截断 */
-function estimateMaxTokens(targetWords) {
-  return Math.min(MAX_TOKENS_CAP, 600 + targetWords * 6)
-}
-
-async function callModel({ messages, targetWords, signal }) {
-  return chatJson({
+async function callModel({ kind, messages, signal, rounds }) {
+  const startedAt = Date.now()
+  const response = await chatJson({
     messages,
     signal,
-    maxTokens: estimateMaxTokens(targetWords),
+    maxTokens: config.maxOutputTokens,
   })
+  const usage = response.usage ?? {}
+  const promptTokens = usage.prompt_tokens ?? 0
+  const completionTokens = usage.completion_tokens ?? 0
+
+  rounds.push({
+    kind,
+    promptTokens,
+    completionTokens,
+    // 上游一定给 total_tokens；兜底是为了打桩测试与个别代理不返回这个字段
+    totalTokens: usage.total_tokens ?? promptTokens + completionTokens,
+    // DeepSeek 会返回，命中前缀缓存的输入单价更低
+    cacheHitTokens: usage.prompt_cache_hit_tokens ?? 0,
+    cacheMissTokens: usage.prompt_cache_miss_tokens ?? 0,
+    finishReason: response.finishReason ?? null,
+    maxTokens: config.maxOutputTokens,
+    durationMs: Date.now() - startedAt,
+  })
+
+  return response
+}
+
+/** 多轮累加。以前写成 `usage = repaired.usage ?? usage` 是覆盖，前几轮的费用会凭空消失 */
+function sumUsage(rounds) {
+  return rounds.reduce(
+    (acc, round) => ({
+      promptTokens: acc.promptTokens + round.promptTokens,
+      completionTokens: acc.completionTokens + round.completionTokens,
+      totalTokens: acc.totalTokens + round.totalTokens,
+    }),
+    { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+  )
 }
 
 /**
@@ -93,23 +116,92 @@ function insufficientVocabularyError() {
 }
 
 /**
- * 结构通过后检查用词。
- * @returns {{ valid: true } | { valid: false, reason: string, violations: Array }}
+ * 把一轮产出判成「还能更好」或「可以收工」。
+ *
+ * 三种反馈共用 maxRepairRounds 那点额度，优先级：结构 → 用词 → 篇幅。
+ * 用词优先于篇幅：生词多说明方向错了，先换词再谈长短，压缩轮才有意义。
+ *
+ * @returns {{
+ *   result: object,
+ *   vocabulary?: { unknownWords: string[], violations: Array },
+ *   actualWords?: number,
+ *   feedback: null | { type: 'structure'|'vocabulary'|'word_count', reason: string, violations?: Array, actualWords?: number, range?: object },
+ * }}
  */
-function inspectVocabulary(data, allowedWords) {
-  const result = validateArticle({
-    article: data.article,
+function evaluate({ content, params, allowedWords, range }) {
+  const result = inspect(content, params)
+
+  if (result.insufficient) return { result, feedback: null }
+  if (!result.ok) {
+    // 结构不合法时全文重写，顺便把篇幅区间重申一遍
+    return { result, feedback: { type: 'structure', reason: result.reason, range } }
+  }
+
+  const vocabulary = validateArticle({
+    article: result.data.article,
     allowedWords,
-    names: data.names,
+    names: result.data.names,
   })
 
-  if (result.valid) return { valid: true }
-
-  return {
-    valid: false,
-    reason: `使用了 ${result.unknownWords.length} 个不在 allowedWords 中的单词`,
-    violations: result.violations,
+  // 不超过额度的生词直接放行：这是兜底，不是配额
+  if (vocabulary.unknownWords.length > config.maxUnknownWords) {
+    return {
+      result,
+      vocabulary,
+      feedback: {
+        type: 'vocabulary',
+        reason: `使用了 ${vocabulary.unknownWords.length} 个不在词汇表内的单词`,
+        violations: vocabulary.violations,
+        range,
+      },
+    }
   }
+
+  const actualWords = countWords(result.data.article)
+  if (actualWords > range.max) {
+    return {
+      result,
+      vocabulary,
+      actualWords,
+      feedback: {
+        type: 'word_count',
+        actualWords,
+        range,
+        reason: `正文有 ${actualWords} 个英文单词，超过上限 ${range.max}`,
+      },
+    }
+  }
+
+  return { result, vocabulary, actualWords, feedback: null }
+}
+
+/**
+ * 把一个未学词补全成前端能直接渲染的条目。
+ * 词典 → 缩写表 → 兜底，三级都查不到时 source 为 unknown，前端显示「暂无释义」。
+ */
+function describeNewWord(word) {
+  const entry = findEntry(word)
+
+  if (entry) {
+    return {
+      word,
+      phonetic: { uk: entry.phonetic?.uk ?? '', us: entry.phonetic?.us ?? '' },
+      senses: (entry.senses ?? []).map(({ pos, meaning }) => ({ pos, meaning })),
+      source: 'dictionary',
+    }
+  }
+
+  const abbreviation = ABBREVIATIONS[word]
+  if (abbreviation) {
+    return {
+      word,
+      phonetic: { uk: '', us: '' },
+      senses: [{ pos: 'abbr.', meaning: `${abbreviation.expansion}；${abbreviation.meaning}` }],
+      source: 'abbreviation',
+    }
+  }
+
+  return { word, phonetic: { uk: '', us: '' }, senses: [], source: 'unknown' }
 }
 
 /**
@@ -117,8 +209,11 @@ function inspectVocabulary(data, allowedWords) {
  *
  * 流程：参数校验 → 词汇量总闸 → 选池（scope + 优先级 + 难度比例）
  *       → 定目标词计划 → 组装允许词汇 → 调模型
- *       → 结构校验 → 词汇校验 →（最多 1 轮修正，结构与词汇共用这一轮）
+ *       → 结构校验 → 用词校验 → 篇幅校验 →（最多 2 轮修正，三者共用）
  *       → 落库 → 返回安全 DTO。
+ *
+ * 放行规则：用词校验不再要求「一个生词都没有」，允许 maxUnknownWords 个（默认 5），
+ * 它们会带音标与释义落进 newWords，由前端做折叠提示。
  *
  * 两道闸门顺序不能换：
  *   1. 词数 < 20 → INSUFFICIENT_VOCABULARY（和以前一样，最前面拦）
@@ -176,24 +271,43 @@ export async function generateReading({ userId, body, signal }) {
     targetWords: params.targetWords,
   })
 
+  // 篇幅口径：目标 ×1.1、上限 ×1.15，提示词、校验、DTO 全从这里取
+  const range = planWordRange(params.targetWords)
+
   // vocabularySnapshot 的语义变了：不再是「最新 800 个词」，而是「本次选出的候选池」。
   // 老文章存的是前者，两者都只是快照，不影响回放。
   const vocabularySnapshot = selection.pool
 
+  // 提示词词表与校验词表故意不同：
+  //   提示词只列候选池 —— 聚焦「这次要复习哪些词」；
+  //   校验放行用户全部已学词 —— 模型偶尔会用上池外、但用户确实认识的词。
+  //
+  // 实测（hard / 200，词库 1177）：候选池封顶 800，被截掉的 377 个恰好是
+  // **最简单**的那批（hard 按排名倒序取，留下的全是难的），而它们正是写作时
+  // 最顺手的词。首批违规里 serious / hospital / pressure / lamp 全在这一批里。
+  // 把这些判成"表外"，等于让选池策略自己制造失败。
+  //
   // 日历词单独放行：COCA 源里没有它们，既进不了基础词表也搜不到（见 calendar-words.js）
+  // 缩写同理：dr / usa 这类是「词的简写」，词典和基础词表都不收（见 abbreviations.js）
+  const learnedWords = words.map((item) => item.word)
   const allowedWords = new Set([
-    ...selection.pool,
+    ...learnedWords,
     ...basicWords,
     ...calendarWords,
+    ...ABBREVIATION_WORDS,
   ])
 
   logger.info(
     {
       level: params.level,
       targetWords: params.targetWords,
+      wordRange: range.label,
       scope: selection.scope,
       available: selection.available,
       poolSize: selection.poolSize,
+      // 提示词里的词数（池）与校验放行的词数（全部已学词）不是一回事，都记下来
+      promptWordCount: selection.poolSize + basicWords.length + calendarWords.length,
+      allowedWordCount: allowedWords.size,
       requiredWords: plan.requiredWords,
       focusCount: plan.focusWords.length,
     },
@@ -210,42 +324,25 @@ export async function generateReading({ userId, body, signal }) {
     basicWords,
   })
 
-  let { content, usage, finishReason } = await callModel({
-    messages,
-    targetWords: params.targetWords,
-    signal,
-  })
-  let result = inspect(content, params)
+  const rounds = []
+  const first = await callModel({ kind: 'generate', messages, signal, rounds })
 
-  if (result.insufficient) {
-    logger.warn(
-      { ...describeContent(content), finishReason },
-      'reading generate failed: model reported INSUFFICIENT_VOCABULARY',
-    )
-    throw insufficientVocabularyError()
-  }
+  let content = first.content
+  let finishReason = first.finishReason
+  let state = evaluate({ content, params, allowedWords, range })
 
-  // 第一轮：结构先过，再看用词。结构没过就没有稳定的正文可校验。
-  let feedback = null
-  if (!result.ok) {
-    feedback = { reason: result.reason }
-  } else {
-    const vocabulary = inspectVocabulary(result.data, allowedWords)
-    if (!vocabulary.valid) {
-      feedback = { reason: vocabulary.reason, violations: vocabulary.violations }
-    }
-  }
-
-  // 修正轮循环：P0 基线显示修 1 轮后 4/5 次只剩 1 个违规词，再给一轮的
-  // 命中率远高于成本，因此 maxRepairRounds 默认 2（总调用 ≤ 3）。
+  // 修正轮：结构 / 用词 / 篇幅共用 maxRepairRounds 那点额度（默认 2，总调用 ≤ 3）。
+  // 每一轮都重新完整判断一次，避免旧实现里「上一轮的 feedback 没被更新」。
   let repairRounds = 0
-  while (feedback && repairRounds < config.maxRepairRounds) {
+  while (state.feedback && repairRounds < config.maxRepairRounds) {
     repairRounds += 1
     logger.warn(
       {
         round: repairRounds,
-        reason: feedback.reason,
-        violations: feedback.violations,
+        type: state.feedback.type,
+        reason: state.feedback.reason,
+        violations: state.feedback.violations,
+        actualWords: state.feedback.actualWords,
         ...describeContent(content),
         finishReason,
       },
@@ -254,44 +351,35 @@ export async function generateReading({ userId, body, signal }) {
 
     // 结构合法时把它自己的输出放回上下文；结构不合法时不放，避免把半截 JSON
     // 当成"自己的话"喂回去，反而诱导模型照抄。
-    const previous = result.ok ? content : ''
-
+    const previous = state.result.ok ? content : ''
     const repaired = await callModel({
-      messages: buildRepairMessages(messages, feedback, previous),
-      targetWords: params.targetWords,
+      kind: 'repair',
+      messages: buildRepairMessages(messages, state.feedback, previous),
       signal,
+      rounds,
     })
 
     content = repaired.content
-    usage = repaired.usage ?? usage
     finishReason = repaired.finishReason ?? finishReason
-    result = inspect(content, params)
+    state = evaluate({ content, params, allowedWords, range })
 
     // 模型主动认输时再修也没用，跳出去交给下面的统一处理
-    if (result.insufficient) break
-
-    if (!result.ok) {
-      feedback = { reason: result.reason }
-      continue
-    }
-
-    const vocabulary = inspectVocabulary(result.data, allowedWords)
-    feedback = vocabulary.valid
-      ? null
-      : { reason: vocabulary.reason, violations: vocabulary.violations }
+    if (state.result.insufficient) break
   }
 
-  if (result.insufficient) {
+  const tokenUsage = sumUsage(rounds)
+
+  if (state.result.insufficient) {
     logger.warn(
-      { ...describeContent(content), finishReason, repairRounds },
+      { ...describeContent(content), finishReason, repairRounds, tokenUsage },
       'reading generate failed: model reported INSUFFICIENT_VOCABULARY',
     )
     throw insufficientVocabularyError()
   }
 
-  if (!result.ok) {
+  if (!state.result.ok) {
     logger.warn(
-      { reason: result.reason, ...describeContent(content), finishReason, repairRounds },
+      { reason: state.result.reason, ...describeContent(content), finishReason, repairRounds },
       'reading generate failed: AI_INVALID_RESPONSE',
     )
     throw new ApiError(
@@ -301,20 +389,16 @@ export async function generateReading({ userId, body, signal }) {
     )
   }
 
-  const data = result.data
+  const data = state.result.data
   const actualWords = countWords(data.article)
+  const unknownWords = state.vocabulary?.unknownWords ?? []
 
-  // 修正之后必须重新校验：结构合法不代表用词合法
-  const vocabulary = validateArticle({
-    article: data.article,
-    allowedWords,
-    names: data.names,
-  })
-  if (!vocabulary.valid) {
+  // evaluate() 已经保证不超过额度，这里是防御：任何路径下都不该写出满篇生词
+  if (unknownWords.length > config.maxUnknownWords) {
     logger.warn(
       {
-        violations: vocabulary.violations.slice(0, 20),
-        violationCount: vocabulary.unknownWords.length,
+        violations: state.vocabulary.violations.slice(0, 20),
+        violationCount: unknownWords.length,
         actualWords,
         finishReason,
         repairRounds,
@@ -324,21 +408,33 @@ export async function generateReading({ userId, body, signal }) {
     throw new ApiError(
       422,
       ERROR_CODES.VOCABULARY_VALIDATION_FAILED,
-      `文章使用了 ${vocabulary.unknownWords.length} 个不在词汇表内的单词：${vocabulary.unknownWords
-        .slice(0, 5)
-        .join('、')}`,
+      `文章使用了 ${unknownWords.length} 个不在词汇表内的单词：${unknownWords.slice(0, 5).join('、')}`,
     )
   }
 
-  const ratio = actualWords / params.targetWords
-  if (ratio < WORD_COUNT_TOLERANCE.min || ratio > WORD_COUNT_TOLERANCE.max) {
+  // 放行的未学词：带着音标与释义回给前端做折叠提示
+  const newWords = unknownWords.map(describeNewWord)
+  const deviation = Number((actualWords / params.targetWords).toFixed(3))
+
+  // 压不下来不判失败：界面展示的是区间，用户能看到真实词数
+  if (actualWords > range.max) {
     logger.warn(
-      `article word count ${actualWords} deviates from target ${params.targetWords}`,
+      { actualWords, max: range.max, repairRounds },
+      'article still exceeds word range after repair',
     )
   }
 
   logger.info(
-    { actualWords, targetWords: params.targetWords, finishReason, repairRounds },
+    {
+      actualWords,
+      targetWords: params.targetWords,
+      wordRange: range.label,
+      deviation,
+      unknownWordCount: newWords.length,
+      finishReason,
+      repairRounds,
+      tokenUsage,
+    },
     'reading generated',
   )
 
@@ -353,6 +449,7 @@ export async function generateReading({ userId, body, signal }) {
     actualWords,
     questions: data.questions,
     vocabularySnapshot,
+    newWords,
     targetPlan: {
       scope: selection.scope,
       poolSize: selection.poolSize,
@@ -363,15 +460,56 @@ export async function generateReading({ userId, body, signal }) {
     status: 'generated',
     aiMeta: {
       model: config.deepseekModel,
-      promptTokens: usage?.prompt_tokens ?? null,
-      completionTokens: usage?.completion_tokens ?? null,
+      // 累计值，含所有修正轮——用户看到的「本次消耗 N tokens」就是它
+      ...tokenUsage,
+      rounds,
+      maxTokens: config.maxOutputTokens,
       repairRounds,
+      finishReason,
+      violationsCount: newWords.length,
+      wordCountDeviation: deviation,
       candidatePoolSize: selection.poolSize,
       requiredWords: plan.requiredWords,
     },
   })
 
   return toSafeDto(doc)
+}
+
+/**
+ * GET /api/readings/capacity
+ *
+ * 生成前的预检：前端据此禁用做不到的难度，并显示「还需 N 个单词解锁」。
+ *
+ * 直接调用 selectVocabularyPool——和 generate 用的是**同一个函数**，
+ * 所以预检数字与真实闸门永远一致，不存在「预检说能、点下去 422」。
+ * 代价是要把用户词表读进内存；单用户、万词量级足够，破 2 万再改聚合计数。
+ */
+export async function getCapacity({ userId, query }) {
+  const { targetWords, vocabScope } = parseOrThrow(capacityQuerySchema, query)
+  const words = await wordRepository.findVocabulary(userId)
+  const range = planWordRange(targetWords)
+
+  const levels = {}
+  let available = 0
+
+  for (const level of LEVELS) {
+    const selection = selectVocabularyPool({ words, level, scope: vocabScope, targetWords })
+    available = selection.available
+    levels[level] = {
+      required: selection.neededVocab,
+      sufficient: selection.sufficient,
+      shortage: Math.max(0, selection.neededVocab - selection.available),
+    }
+  }
+
+  return {
+    targetWords,
+    wordRange: range,
+    available,
+    maxUnknownWords: config.maxUnknownWords,
+    levels,
+  }
 }
 
 /** answers 的格式错误统一用 INVALID_ANSWER，前端据此提示"答案格式不对" */

@@ -18,6 +18,43 @@ const questionSchema = new Schema(
 )
 
 /**
+ * 正文里出现、但用户没学过的词（本次新增）。
+ * 数量受 config.maxUnknownWords 限制（默认 5），随文章一起回给前端做折叠提示。
+ */
+const newWordSchema = new Schema(
+  {
+    word: { type: String, required: true },
+    phonetic: {
+      uk: { type: String, default: '' },
+      us: { type: String, default: '' },
+    },
+    senses: [{ pos: String, meaning: String, _id: false }],
+    // dictionary = 词典查到；abbreviation = 缩写表；unknown = 都没有，前端显示「暂无释义」
+    source: { type: String, enum: ['dictionary', 'abbreviation', 'unknown'], default: 'unknown' },
+  },
+  { _id: false },
+)
+
+/**
+ * 一次模型调用的用量明细（本次新增）。
+ * 只记累计值会把「修了两轮」的真实成本抹掉，所以每轮单独一条。
+ */
+const roundSchema = new Schema(
+  {
+    kind: { type: String, enum: ['generate', 'repair'], required: true },
+    promptTokens: Number, // 输入 token
+    completionTokens: Number, // 输出 token
+    totalTokens: Number, // 输入 + 输出
+    cacheHitTokens: Number, // 命中前缀缓存的输入 token，单价更低
+    cacheMissTokens: Number, // 未命中的输入 token
+    finishReason: String, // stop / length
+    maxTokens: Number, // 当次请求的上限，排查截断用
+    durationMs: Number, // 单次调用耗时
+  },
+  { _id: false },
+)
+
+/**
  * 本次生成的选池与目标词计划（P1 新增）。
  * 排查「这篇文章为什么这么难写」时，光看正文没用，得知道当时给了模型什么条件。
  */
@@ -69,6 +106,8 @@ const readingSchema = new Schema(
     // ——— P1 新增：生成计划与实际复现，老文档没有时分别取 null / [] ———
     targetPlan: { type: targetPlanSchema, default: null },
     usedWords: { type: [usedWordSchema], default: [] },
+    // 放行给用户看的未学词（≤ maxUnknownWords），默认空数组，老文档不需要迁移
+    newWords: { type: [newWordSchema], default: [] },
 
     status: {
       type: String,
@@ -85,10 +124,13 @@ const readingSchema = new Schema(
     submittedAt: { type: Date, default: null }, // 提交时间
 
     aiMeta: {
-      // 排查用，任何 DTO 都不返回
+      // 排查用；只有 tokenUsage / actualWords 通过安全 DTO 回给前端
       model: String, // 实际调用的模型名
-      promptTokens: Number, // 输入 token
-      completionTokens: Number, // 输出 token
+      promptTokens: Number, // 输入 token（**累计**，含所有修正轮）
+      completionTokens: Number, // 输出 token（累计）
+      totalTokens: Number, // 输入 + 输出（累计），用户看到的就是这个数
+      rounds: { type: [roundSchema], default: [] }, // 每轮明细，排查费用与截断
+      maxTokens: Number, // 当次请求的输出上限
       repairRounds: Number, // 触发了几轮修正
 
       // ——— P1 扩展：P3 的覆盖度指标，也是 P6 回归对比的观察项 ———
