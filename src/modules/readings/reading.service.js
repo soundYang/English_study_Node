@@ -13,9 +13,8 @@ import {
 } from '../../shared/errors.js'
 import { logger } from '../../shared/logger.js'
 import { parseOrThrow } from '../../shared/utils/validation.js'
-import { findEntry } from '../dictionary/dictionary.loader.js'
 import { wordRepository } from '../words/word.repository.js'
-import { ABBREVIATIONS, ABBREVIATION_WORDS } from './abbreviations.js'
+import { ABBREVIATION_WORDS } from './abbreviations.js'
 import {
   buildExpandMessages,
   buildFinishMessages,
@@ -56,6 +55,7 @@ import {
 } from './reading.schema.js'
 import { buildTargetPlan } from './target-plan.js'
 import { collectWordForms, validateArticle } from './vocabulary.service.js'
+import { describeNewWord } from './word-detail.js'
 import { selectVocabularyPool } from './vocabulary-pool.js'
 import {
   basicWordsVersions,
@@ -237,35 +237,6 @@ function recordRound({ rounds, state, content, diag }) {
 }
 
 /**
- * 把一个未学词补全成前端能直接渲染的条目。
- * 词典 → 缩写表 → 兜底，三级都查不到时 source 为 unknown，前端显示「暂无释义」。
- */
-function describeNewWord(word) {
-  const entry = findEntry(word)
-
-  if (entry) {
-    return {
-      word,
-      phonetic: { uk: entry.phonetic?.uk ?? '', us: entry.phonetic?.us ?? '' },
-      senses: (entry.senses ?? []).map(({ pos, meaning }) => ({ pos, meaning })),
-      source: 'dictionary',
-    }
-  }
-
-  const abbreviation = ABBREVIATIONS[word]
-  if (abbreviation) {
-    return {
-      word,
-      phonetic: { uk: '', us: '' },
-      senses: [{ pos: 'abbr.', meaning: `${abbreviation.expansion}；${abbreviation.meaning}` }],
-      source: 'abbreviation',
-    }
-  }
-
-  return { word, phonetic: { uk: '', us: '' }, senses: [], source: 'unknown' }
-}
-
-/**
  * 把一次失败落进 GenerationFailure。
  *
  * 原则：诊断数据永远不能盖过原始错误。写库失败只记日志，
@@ -352,11 +323,11 @@ async function recordFailure(diag, error) {
  * 想统计「违规词长什么样、属于哪一类」时既没有分母也没法回查。
  * 薄壳保证任何业务异常都落一条 GenerationFailure，同时原错误原样抛给调用方。
  */
-export async function generateReading({ userId, body, signal }) {
+export async function generateReading({ userId, body, signal, onProgress }) {
   const diag = { userId, startedAt: Date.now(), rounds: [] }
 
   try {
-    return await generateReadingInner({ userId, body, signal, diag })
+    return await generateReadingInner({ userId, body, signal, diag, onProgress })
   } catch (error) {
     // 用户主动断开不是「生成失败」，记下来只会污染成功率的分母
     if (signal?.aborted || error?.name === 'AbortError') throw error
@@ -375,12 +346,47 @@ export async function generateReading({ userId, body, signal }) {
 }
 
 /**
+ * 进度上报的统一入口（md/31 §6）。
+ *
+ * 三件事必须成立：
+ *   1. 不传回调 = 老行为。`/readings/generate` 与 493 个测试都是这么调的。
+ *   2. 回调抛错不能打断生成——进度丢了可以再轮询一次，文章丢了要重花钱。
+ *   3. 回调是 await 的：一次 `$set` 约 1 ms，相对模型调用可忽略，
+ *      换来的是轮询看到的阶段不会倒退。
+ */
+function makeReporter(onProgress) {
+  if (typeof onProgress !== 'function') return async () => {}
+
+  return async (patch) => {
+    try {
+      await onProgress(patch)
+    } catch (error) {
+      logger.warn({ err: error, stage: patch?.stage }, 'generation progress writeback failed')
+    }
+  }
+}
+
+/**
+ * 目标词条目只保留前端渲染需要的三样。
+ * `source`（dictionary / abbreviation / unknown）是 newWords 的诊断口径，
+ * 任务表不存——义项为空本身就表示「查不到」。
+ */
+function pickWordDetail(word) {
+  const { phonetic, senses } = describeNewWord(word)
+
+  return { word, phonetic, senses }
+}
+
+/**
  * 真正的生成流程。诊断信息走 diag 这个可变对象回传给外壳，
  * 用不到返回值——异常路径下根本没有返回值可用。
  */
-async function generateReadingInner({ userId, body, signal, diag }) {
+async function generateReadingInner({ userId, body, signal, diag, onProgress }) {
   const params = parseOrThrow(generateReadingSchema, body)
   diag.params = params
+
+  const report = makeReporter(onProgress)
+  await report({ stage: 'planning' })
 
   // 篇幅上限曾经放在读库之前（纯参数判定）。md/30 §7 之后它要依赖个人词库规模
   // （hard 攒够 3000 词才能写到 1000），只能挪到读完词库之后，
@@ -564,6 +570,22 @@ async function generateReadingInner({ userId, body, signal, diag }) {
   // 老文章存的是前者，两者都只是快照，不影响回放。
   const vocabularySnapshot = selection.pool
 
+  // 「本次抽到了哪些词」是产品硬要求（《设计方案》§6.2）：规划一结束就推给前端，
+  // 不等到文章生成完——否则选词动画要等四十秒才开场。
+  // 最终模式不挑目标词，这里自然是空数组。
+  const selectedWords = [
+    ...plan.focusWords.map((word) => ({ ...pickWordDetail(word), kind: 'focus' })),
+    ...plan.targetWords.map((word) => ({ ...pickWordDetail(word), kind: 'target' })),
+  ]
+  await report({
+    stage: 'planning',
+    selectedWords,
+    progress: {
+      done: 0,
+      total: config.generationStrategy === 'segmented' ? planSegmentCount(params.targetWords) : 0,
+    },
+  })
+
   // 提示词词表与校验词表故意不同：
   //   提示词只列候选池 —— 聚焦「这次要复习哪些词」；
   //   校验放行用户全部已学词 —— 模型偶尔会用上池外、但用户确实认识的词。
@@ -663,6 +685,13 @@ async function generateReadingInner({ userId, body, signal, diag }) {
       mustUseCount: mustUse.length,
     }))
 
+    // 段数与进度在这里一次性给全：前端要画出「10 个格子」才知道总量是多少。
+    // 段级状态由 onSegment 回来时逐格点亮（每格对应真实的模型调用批次）。
+    await report({
+      stage: 'generating',
+      progress: { done: 0, total: segments.length },
+    })
+
     const names = new Set()
     const generated = await generateSegmented({
       segments,
@@ -670,6 +699,8 @@ async function generateReadingInner({ userId, body, signal, diag }) {
       allowedWords,
       names,
       signal,
+      // 段级进度：每批跑完、每轮补段后各回调一次，参数是单段的状态
+      onSegment: (segment) => report({ segment }),
       rounds,
       questionCount: params.questionCount,
       range,
@@ -831,6 +862,9 @@ async function generateReadingInner({ userId, body, signal, diag }) {
     }
   }
 
+  // 模型调用到此为止，剩下全是本地校验与统计——两条路径共用同一个阶段
+  await report({ stage: 'checking' })
+
   // 分段路径的「修正」是段内重写，与整篇修正分开计数但对外同口径
   const repairRounds =
     contentRounds + lengthRounds + expandRounds + questionsRounds + segmentRepairCount
@@ -988,6 +1022,9 @@ async function generateReadingInner({ userId, body, signal, diag }) {
     },
     'reading generated',
   )
+
+  // 落库前最后一条进度：之后 frontend 会立刻拿到 readingId
+  await report({ stage: 'saving' })
 
   const doc = await repo.create({
     userId,

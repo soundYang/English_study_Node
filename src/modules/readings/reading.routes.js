@@ -2,6 +2,10 @@ import { Router } from 'express'
 
 import { generateRateLimit } from '../../shared/middleware/rateLimit.js'
 import { parseOrThrow } from '../../shared/utils/validation.js'
+import {
+  createGenerationTask,
+  getGenerationTask,
+} from './generation-task.service.js'
 import { listHistoryQuerySchema } from './reading.schema.js'
 import {
   generateReading,
@@ -37,6 +41,32 @@ router.post('/generate', generateRateLimit, async (req, res) => {
 
     throw err
   }
+})
+
+/**
+ * 任务化生成（md/31）：建任务立刻回 202，进度靠轮询。
+ *
+ * 限流与 /generate 共用同一个桶——它们花的是同一份模型调用，
+ * 分开计数等于把「每分钟最多花 20 次」变成 40 次。任务化的意义是
+ * 「看得见、不丢」，不是「可以更频繁地点」。
+ */
+router.post('/generate/tasks', generateRateLimit, async (req, res) => {
+  const { task, reused } = await createGenerationTask({
+    userId: req.userId,
+    body: req.body ?? {},
+  })
+
+  res.status(202).json({
+    taskId: String(task._id),
+    status: task.status,
+    stage: task.stage,
+    reused,
+    params: task.params,
+  })
+})
+
+router.get('/generate/tasks/:taskId', async (req, res) => {
+  res.json(await getGenerationTask({ userId: req.userId, id: req.params.taskId }))
 })
 
 // /capacity 与 /history 必须排在 /:id 之前，否则会被当成 id 去查，直接 404

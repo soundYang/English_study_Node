@@ -4,6 +4,7 @@ Word Reading 的 API 服务：Express 5 + MongoDB + 本地 COCA 词库 + DeepSee
 主要能力是「按用户的个人词库，用受限词表生成一篇英语短文 + 阅读理解题」。
 
 接口字段见 [md/05_后端接口说明.md](md/05_后端接口说明.md)，
+任务化生成（建任务 + 轮询进度）见 [md/31_生成任务化_方案.md](md/31_生成任务化_方案.md)，
 代码结构与不变量见 [md/24_后端代码说明.md](md/24_后端代码说明.md)，
 功能边界与已知限制见 [md/13_AI生成文章_功能与限制.md](md/13_AI生成文章_功能与限制.md)，
 现存缺陷台账见 [md/23_核心功能现存不足.md](md/23_核心功能现存不足.md)。
@@ -164,6 +165,7 @@ md/                     设计、实施、限制与缺陷文档
 | 生成 502 `AI_INVALID_RESPONSE` | 模型输出结构或题目不合格，修正轮也没救回来 | 失败样本在 `GenerationFailure` 里，`finalArticle` 可复查 |
 | 生成 429 `RATE_LIMITED` | 同一 IP 超过 20 次/分 | 等窗口结束；批量脚本要设 `RATE_LIMIT_ENABLED=false` |
 | 生成 422 `VOCABULARY_TOO_SMALL` | 已知词不够写这么长（门槛随篇幅走，见 `capacity-table.js` 的 `minKnownFor`） | 缩篇幅或加词；这是预期拦截，不是故障 |
+| 任务一直 `running` 不动 | 服务重启过，旧任务已被标成 `TASK_INTERRUPTED` | 重新提交；任务执行器在进程内，不做断点恢复（md/31 §11） |
 | 生成 400 `final_mode_locked` | hard 写 601–1000 词，但个人词库不足 3000 | 继续攒词；解锁后上限从 600 抬到 1000（md/30 §2.2） |
 | 生成 400 `target_words_cap` | 篇幅超过该难度上限（300 / 450 / 600；hard 已解锁时 1000） | 前端滑块上限读 `/capacity` 的 `levels[level].maxTargetWords` |
 | 测试首次跑卡住几分钟 | 正在下载 mongodb-memory-server 二进制 | 等它下完；断网环境需要预置缓存 |

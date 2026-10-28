@@ -311,7 +311,20 @@ export async function generateSegmented({
   range,
   level,
   acceptedMax,
+  // 段级进度回调（md/31 §6）：每批跑完、每轮补段后各调一次，
+  // 参数是单段状态 { index, status, words }。不传则整条链路行为不变。
+  onSegment = null,
 }) {
+  const emitSegment = async (index, stats) => {
+    if (typeof onSegment !== 'function') return
+
+    await onSegment({
+      index: index + 1, // 对外 1 起，与提示词里的段号一致
+      status: stats.accepted ? 'accepted' : 'dropped',
+      words: stats.actualWords ?? 0,
+    })
+  }
+
   // 每段都带上完整计划：并发生成拿不到「上一段的最后一句」，
   // 但至少要知道全文走向，否则四段各写各的（md/20 §5.3，见 md/21 §9 偏离）
   //
@@ -349,6 +362,12 @@ export async function generateSegmented({
     writeSegment(index, false),
   )
 
+  // 首轮跑完就把每段的真实结果推出去：被丢弃的段也要报「dropped」，
+  // 否则进度条会永远差最后几格，用户以为卡死了
+  for (const [index, result] of results.entries()) {
+    await emitSegment(index, result.stats)
+  }
+
   // 补段（md/27 §3.2 M1）：丢一段不是「这段不重要」，而是整篇少 60 个词。
   // 用空 mustUse 再写一次，成功就补回原位。只补 config.segmentRefillRounds 轮，
   // 每段只给一次调用——它刚走完一整条重写链，再走一遍是重复烧钱。
@@ -376,6 +395,11 @@ export async function generateSegmented({
           refilled: true,
         },
       }
+    }
+
+    // 补段改变了这几段的最终状态，重新推一次（同一格以最后一次为准）
+    for (const index of missing) {
+      await emitSegment(index, results[index].stats)
     }
   }
 

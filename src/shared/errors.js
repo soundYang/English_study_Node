@@ -54,6 +54,12 @@ export const ERROR_CODES = Object.freeze({
   // 与 AI_INVALID_RESPONSE 分开，前端才能给「换短一点的篇幅再试」这类文案。
   ARTICLE_TOO_INCOMPLETE: 'ARTICLE_TOO_INCOMPLETE',
   RATE_LIMITED: 'RATE_LIMITED',
+  // ——— 生成任务（md/31）：任务外壳自己的三个码，与生成侧业务码并存 ———
+  // 生成失败仍然复用上面的错误码（VOCABULARY_TOO_SMALL 等），
+  // 这三个只描述「任务本身」的状态，前端不必为它们重写分支。
+  TASK_NOT_FOUND: 'TASK_NOT_FOUND',
+  TASK_IN_PROGRESS: 'TASK_IN_PROGRESS',
+  TASK_INTERRUPTED: 'TASK_INTERRUPTED',
   INTERNAL_ERROR: 'INTERNAL_ERROR',
 })
 
@@ -77,6 +83,31 @@ export const wordNotFound = () =>
 
 export const readingNotFound = () =>
   notFound(ERROR_CODES.READING_NOT_FOUND, '练习不存在')
+
+/**
+ * 404：任务不存在或已被 TTL 清掉（md/31 §7）。
+ *
+ * 与 READING_NOT_FOUND 分开：任务过期 24 h 后必然出现，前端要引导去历史页，
+ * 而不是显示「练习不存在」。
+ */
+export const taskNotFound = () =>
+  notFound(ERROR_CODES.TASK_NOT_FOUND, '生成任务不存在或已过期，请重新生成')
+
+/**
+ * 409：同用户已有任务在跑，且这次请求的参数不同（md/31 §5）。
+ *
+ * 不直接复用跑到一半的任务——用户要的是 300 词，给他 200 词的进度是错的。
+ * `details.taskId` 让前端能切到那个任务的轮询上。
+ */
+export const taskInProgress = ({ taskId }) =>
+  // conflict() 只到 field 为止，这里要带 details 只能直接用 ApiError
+  new ApiError(
+    409,
+    ERROR_CODES.TASK_IN_PROGRESS,
+    '上一个生成任务还在进行中，请等它结束后再试',
+    '',
+    { taskId },
+  )
 
 /**
  * 难度英文枚举 → 中文。不要把 easy/hard 直接塞进给用户看的提示语。

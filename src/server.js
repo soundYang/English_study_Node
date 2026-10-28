@@ -4,6 +4,8 @@ import { createApp } from './app.js'
 import { config } from './config/index.js'
 import { loadDictionary } from './modules/dictionary/dictionary.loader.js'
 import { basicWordsByLevel } from './modules/readings/basic-words.js'
+import { GenerationTask } from './modules/readings/generation-task.model.js'
+import { failInterruptedTasks } from './modules/readings/generation-task.service.js'
 import { Reading } from './modules/readings/reading.model.js'
 import { basicWordsVersions } from './modules/readings/versions.js'
 import { Word } from './modules/words/word.model.js'
@@ -19,8 +21,12 @@ async function main() {
 
   // 唯一索引没建上，去重就形同虚设——所以这里故意不 catch，
   // 失败时让 main().catch 打全栈并退出，而不是带着"看起来能跑"的状态启动。
-  await Promise.all([Word.syncIndexes(), Reading.syncIndexes()])
+  await Promise.all([Word.syncIndexes(), Reading.syncIndexes(), GenerationTask.syncIndexes()])
   logger.info('indexes synced')
+
+  // 任务执行器在进程内：上一次进程留下的 queued / running 不会再有人推进，
+  // 留着只会让前端轮询到一个永远不动的进度条（md/31 §7）
+  await failInterruptedTasks()
 
   // 词库必须在 listen 之前加载完，否则第一个进单词页的用户会遇到空词库
   const stats = loadDictionary()

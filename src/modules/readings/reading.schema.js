@@ -59,6 +59,26 @@ export const generateReadingSchema = z.object({
 })
 
 /**
+ * POST /api/readings/generate/tasks 的请求体（md/31 §3.1）。
+ *
+ * 生成参数**直接复用** `generateReadingSchema` 的字段，不另抄一份：
+ * 上限从 600 改到 1000 那次已经证明，两处手抄的校验一定会分叉。
+ *
+ * `clientToken` 是前端生成的幂等键。它只在一处起作用——
+ * 同一个 token 重复提交只跑一次（双击、网络重发）。故意不设成必填：
+ * 没有它也能用「同参数复用」兜住绝大部分重复。
+ */
+export const createTaskSchema = z.object({
+  ...generateReadingSchema.shape,
+  clientToken: z
+    .string({ error: 'clientToken 必须是字符串' })
+    .trim()
+    .min(8, 'clientToken 至少 8 个字符')
+    .max(128, 'clientToken 最多 128 个字符')
+    .optional(),
+})
+
+/**
  * GET /api/readings/capacity 的查询参数。
  *
  * 两处差异都由「query 里全是字符串」造成：
