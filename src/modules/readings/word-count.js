@@ -96,3 +96,43 @@ export function planAcceptedRange(targetWords) {
     label: `${Math.round(targetWords * WORD_COUNT.ACCEPT_RATIO)}–${Math.round(targetWords * WORD_COUNT.MAX_RATIO)} 词`,
   }
 }
+
+/**
+ * 篇幅三态（md/21 W6）。
+ *
+ * 判定用**验收区间**（`planAcceptedRange`），不是提示词区间：
+ * 100 词请求写 90 词属于「模型没听清」，写 60 词才是「这篇不够读」。
+ * 拿提示词区间判，绝大部分正常文章都会被标成 short，指标就没有信号了。
+ *
+ * @param {number} actualWords
+ * @param {{ min: number, max: number }} acceptedRange
+ * @returns {'ok' | 'short' | 'long'}
+ */
+export function classifyLength(actualWords, acceptedRange) {
+  if (actualWords > acceptedRange.max) return 'long'
+  if (actualWords < acceptedRange.min) return 'short'
+  return 'ok'
+}
+
+/** 扩写轮最多补几句：按每句 15 词折算，1–3 句封顶（补太多等于重写） */
+export const MAX_EXPAND_SENTENCES = 3
+
+/**
+ * 扩写预算：还差多少词、补几句。
+ *
+ * 目标是 `range.target`（1.1 倍）而不是验收下限，因为补到下界仍会在下一轮被判 short；
+ * 但句子数封顶 3，差得多时宁可只补一轮再收，也不让扩写变成整篇重写。
+ *
+ * @param {number} actualWords
+ * @param {{ min: number, target: number, max: number }} range 提示词区间
+ * @returns {{ shortfall: number, sentences: number }}
+ */
+export function planExpandBudget(actualWords, range) {
+  const shortfall = Math.max(0, range.target - actualWords)
+  const sentences = Math.min(
+    MAX_EXPAND_SENTENCES,
+    Math.max(1, Math.ceil(shortfall / SENTENCE.WORDS_PER_SENTENCE)),
+  )
+
+  return { shortfall, sentences }
+}

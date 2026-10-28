@@ -500,6 +500,21 @@ describe('POST /api/readings/generate · 篇幅与 token', () => {
     expect(res.body.actualWords).toBe(40)
   })
 
+  it('正文偏短时默认不追加调用，只把 lengthStatus 记为 short', async () => {
+    await seedWords(400)
+    chatJson.mockResolvedValue(reply(makePayload())) // 40 词，100 词请求的验收下限是 85
+
+    const res = await generate(VALID_BODY)
+
+    expect(res.status).toBe(201)
+    // MAX_EXPAND_ROUNDS 默认 0：短文章照旧放行，不花一次调用去补
+    expect(chatJson).toHaveBeenCalledTimes(1)
+
+    const doc = await Reading.findById(res.body.id).lean()
+    expect(doc.aiMeta.lengthStatus).toBe('short')
+    expect(doc.aiMeta.repairRounds).toBe(0)
+  })
+
   it('超过上限时追加一轮重写，指令给句子预算且不带上一篇', async () => {
     await seedWords(400)
     chatJson

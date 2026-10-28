@@ -16,6 +16,7 @@ import { findEntry } from '../dictionary/dictionary.loader.js'
 import { wordRepository } from '../words/word.repository.js'
 import { ABBREVIATIONS, ABBREVIATION_WORDS } from './abbreviations.js'
 import {
+  buildExpandMessages,
   buildMessages,
   buildPlanMessages,
   buildRepairMessages,
@@ -29,7 +30,7 @@ import { callModel, sumUsage } from './model-call.js'
 import { buildSegmentPlan, planSegmentCount } from './plan.service.js'
 import { generateSegmented } from './segmented.service.js'
 import { measureTargetCoverage } from './target-coverage.js'
-import { countWords, planAcceptedRange, planWordRange } from './word-count.js'
+import { classifyLength, countWords, planAcceptedRange, planWordRange } from './word-count.js'
 import { generationFailureRepository as failureRepo } from './generation-failure.repository.js'
 import { toHistoryItem, toResultDto, toSafeDto } from './reading.dto.js'
 import { readingRepository as repo } from './reading.repository.js'
@@ -120,7 +121,7 @@ function insufficientVocabularyError() {
  *   result: object,
  *   vocabulary?: { unknownWords: string[], violations: Array },
  *   actualWords?: number,
- *   feedback: null | { type: 'structure'|'vocabulary'|'word_count', reason: string, violations?: Array, actualWords?: number, range?: object },
+ *   feedback: null | { type: 'structure'|'vocabulary'|'word_count'|'word_expand', reason: string, violations?: Array, actualWords?: number, range?: object },
  * }}
  */
 function evaluate({ content, params, allowedWords, range, unknownBudget }) {
@@ -134,6 +135,7 @@ function evaluate({ content, params, allowedWords, range, unknownBudget }) {
 
   // 每轮都数一次：写进 rounds[]，调篇幅策略时能看出「首轮 290 → 重写 228」
   const actualWords = countWords(result.data.article)
+  const acceptedRange = planAcceptedRange(params.targetWords)
 
   // 篇幅优先于用词：实测用词修正会稳定把文章改长（231→234、277→279），
   // 先修词等于把超长的问题放大。先重写成目标篇幅，篇幅短了带出的高级词也少。
@@ -168,6 +170,24 @@ function evaluate({ content, params, allowedWords, range, unknownBudget }) {
         reason: `使用了 ${vocabulary.unknownWords.length} 个不在词汇表内的单词`,
         violations: vocabulary.violations,
         range,
+      },
+    }
+  }
+
+  // 偏短（W6，md/21）：放在用词之后，因为用词修正天然会把文章写长
+  // （实测 231→234、277→279），先扩写再把词改回去等于白做。
+  // 默认 MAX_EXPAND_ROUNDS=0，这里只留一个可观察的 feedbackType，不追加调用。
+  if (actualWords < acceptedRange.min) {
+    return {
+      result,
+      vocabulary,
+      actualWords,
+      feedback: {
+        type: 'word_expand',
+        actualWords,
+        range,
+        acceptedRange,
+        reason: `正文只有 ${actualWords} 个英文单词，低于验收下限 ${acceptedRange.min}`,
       },
     }
   }
@@ -532,6 +552,7 @@ async function generateReadingInner({ userId, body, signal, diag }) {
   // 整篇路径的修正额度，分段路径保持 0
   let contentRounds = 0
   let lengthRounds = 0
+  let expandRounds = 0
 
   if (config.generationStrategy === 'segmented') {
     const systemPrompt = buildSegmentedSystem({
@@ -619,27 +640,32 @@ async function generateReadingInner({ userId, body, signal, diag }) {
     state = evaluate({ content, params, allowedWords, range, unknownBudget })
     recordRound({ rounds, state, content, diag })
 
-    // 修正轮分两种额度：
+    // 修正轮分三种额度：
     //   content —— 结构 / 用词，默认 2 轮（发生过重写时 +1）
-    //   length  —— 篇幅重写，默认 1 轮
-    // 原来两者共用 maxRepairRounds，实测「先用词后压缩」时压缩只剩一次机会，
-    // 253 词只删到 239。分开计数后篇幅总有独立的一次机会。
-    // 最坏 1 生成 + 2 用词 + 1 重写 + 1 用词 = 5 次调用（只有重写带出大量生词时才会走到）。
+    //   length  —— 篇幅重写（超长），默认 1 轮
+    //   expand  —— 扩写（偏短），默认 **0** 轮（md/21 W6）
+    // 原来 content/length 共用 maxRepairRounds，实测「先用词后压缩」时压缩只剩一次机会，
+    // 253 词只删到 239。分开计数后每种问题总有独立的一次机会。
+    // 最坏 1 生成 + 2 用词 + 1 重写 + 1 用词 = 5 次调用（默认配置下 expand=0，不开扩写）。
     // 每一轮都重新完整判断一次，避免旧实现里「上一轮的 feedback 没被更新」。
     while (state.feedback) {
       const isLength = state.feedback.type === 'word_count'
+      const isExpand = state.feedback.type === 'word_expand'
       // 重写是「重新编故事」，实测会带出十几个表外词。发生过重写时多给一轮
       // 用词修正，避免「压短了但满篇生词 → 422」这种比超长更糟的结果。
       const contentBudget = config.maxRepairRounds + (lengthRounds > 0 ? 1 : 0)
       const budgetLeft = isLength
         ? lengthRounds < config.maxLengthRounds
-        : contentRounds < contentBudget
+        : isExpand
+          ? expandRounds < config.maxExpandRounds
+          : contentRounds < contentBudget
       if (!budgetLeft) break
 
       if (isLength) lengthRounds += 1
+      else if (isExpand) expandRounds += 1
       else contentRounds += 1
 
-      const round = contentRounds + lengthRounds
+      const round = contentRounds + lengthRounds + expandRounds
       logger.warn(
         {
           round,
@@ -660,7 +686,10 @@ async function generateReadingInner({ userId, body, signal, diag }) {
         kind: 'repair',
         // 记下这一轮是被什么催出来的，和它自己又判出什么分开存
         repairFor: state.feedback.type,
-        messages: buildRepairMessages(messages, state.feedback, previous),
+        // 扩写与原稿是同一篇：带上一篇正文当锚点；压缩必须不带（见 buildRepairMessages）
+        messages: isExpand
+          ? buildExpandMessages(messages, state.feedback, previous)
+          : buildRepairMessages(messages, state.feedback, previous),
         signal,
         rounds,
       })
@@ -676,7 +705,7 @@ async function generateReadingInner({ userId, body, signal, diag }) {
   }
 
   // 分段路径的「修正」是段内重写，与整篇修正分开计数但对外同口径
-  const repairRounds = contentRounds + lengthRounds + segmentRepairCount
+  const repairRounds = contentRounds + lengthRounds + expandRounds + segmentRepairCount
   const tokenUsage = sumUsage(rounds)
   // 后面的三条 throw 都在预算耗尽之后，这两个数要让它们能看见
   diag.repairRounds = repairRounds
@@ -784,12 +813,13 @@ async function generateReadingInner({ userId, body, signal, diag }) {
   const deviation = Number((actualWords / params.targetWords).toFixed(3))
 
   // 超出 ±15% 不判失败：界面展示真实词数，用户自己能判断。
-  // 验收下界比提示词下界低（200 词请求允许 170），因为重写天然偏短，
-  // 再花一轮扩写更容易失控。这里只记日志，供后续调参。
+  // 验收下界比提示词下界低（200 词请求允许 170），因为重写天然偏短。
+  // 三态（W6）落库 + 告警；偏短的扩写由 MAX_EXPAND_ROUNDS 控制，默认关闭。
   const accepted = planAcceptedRange(params.targetWords)
-  if (actualWords < accepted.min || actualWords > accepted.max) {
+  const lengthStatus = classifyLength(actualWords, accepted)
+  if (lengthStatus !== 'ok') {
     logger.warn(
-      { actualWords, acceptedRange: accepted.label, repairRounds },
+      { actualWords, acceptedRange: accepted.label, lengthStatus, repairRounds },
       'article outside accepted word range',
     )
   }
@@ -800,6 +830,7 @@ async function generateReadingInner({ userId, body, signal, diag }) {
       targetWords: params.targetWords,
       wordRange: range.label,
       deviation,
+      lengthStatus,
       unknownWordCount: newWords.length,
       // W5：一行摘要，采样报告直接读日志也能看到覆盖度
       coverageRate: targetUsage.coverageRate,
@@ -858,6 +889,8 @@ async function generateReadingInner({ userId, body, signal, diag }) {
       finishReason,
       violationsCount: newWords.length,
       wordCountDeviation: deviation,
+      // W6：ok / short / long。short 默认只记录，开了 MAX_EXPAND_ROUNDS 才会补写
+      lengthStatus,
       candidatePoolSize: selection.poolSize,
       requiredWords: plan.requiredWords,
       // W5：六项覆盖度指标。只记录（M2），不参与重试判断

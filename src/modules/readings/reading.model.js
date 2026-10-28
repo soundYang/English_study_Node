@@ -171,6 +171,8 @@ const readingSchema = new Schema(
       focusWordHits: Number, // 重点词平均复现次数
       userWordTokenRatio: Number, // 个人词占正文词次的比例
       wordCountDeviation: Number, // 实际篇幅 / targetWords，1 表示刚好
+      // W6：按验收区间判的三态。short 默认只记录，MAX_EXPAND_ROUNDS>0 才补写
+      lengthStatus: String, // ok / short / long
       violationsCount: Number, // 最终仍有几个违规词
       finishReason: String, // stop / length，用于判断是否被截断
 

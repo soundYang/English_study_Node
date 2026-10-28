@@ -5,7 +5,12 @@
  */
 
 import { REPEAT_PLAN } from './target-plan.js'
-import { formatWordsPerSentence, planSentenceBudget, planWordRange } from './word-count.js'
+import {
+  formatWordsPerSentence,
+  planExpandBudget,
+  planSentenceBudget,
+  planWordRange,
+} from './word-count.js'
 
 /**
  * 第 7 条必须是**绝对数字**。
@@ -425,6 +430,43 @@ export function buildRepairMessages(
   return [
     ...messages,
     ...(includePrevious ? [{ role: 'assistant', content: previousContent }] : []),
+    { role: 'user', content: instruction },
+  ]
+}
+
+/**
+ * 扩写指令（W6）：正文偏短时在原稿上补几句，而不是重写。
+ *
+ * 与 `word_count`（超长）刚好相反：那里必须**不带**上一篇，因为带锚点模型只会做减法；
+ * 这里必须**带上**上一篇，因为扩写的语义就是"在这篇文章上补"，
+ * 重写一遍反而更容易换情节、带出表外词。
+ *
+ * @param {Array} messages 原始消息
+ * @param {{
+ *   actualWords: number,
+ *   range: { min: number, target: number, max: number },
+ *   acceptedRange: { min: number, max: number, label: string },
+ * }} feedback
+ * @param {string} previousContent 上一轮（结构合法的）完整输出
+ */
+export function buildExpandMessages(messages, { actualWords, range, acceptedRange }, previousContent) {
+  const { shortfall, sentences } = planExpandBudget(actualWords, range)
+  const shortfallText = shortfall > 0 ? `，约 ${shortfall} 词` : ''
+
+  const instruction = `你上一次的正文偏短：只有 ${actualWords} 个英文单词，验收下限是 ${acceptedRange.min}。\n\n`
+    + `请保留原来的情节和已有的每一句，只在合适的位置补写 ${sentences} 个英文句子${shortfallText}：\n`
+    + '- 补细节：人物的动作、看到或听到的东西、当时的环境\n'
+    + '- 补因果：这件事为什么发生、后来怎么样了\n'
+    + '- 补感受：人物当时在想什么\n\n'
+    + '要求：\n'
+    + '- 不要删掉已有的句子，也不要靠重复同一句话凑字数\n'
+    + '- 补写的部分只能使用【目标词】【补充可用词】【基础词】里的词\n'
+    + `- 改完后全文要落在 ${range.min}–${range.max} 个英文单词之间（目标约 ${range.target} 词）\n`
+    + '- 标题保持不变，中文翻译和题目跟着正文更新，重新输出完整的 json 对象'
+
+  return [
+    ...messages,
+    ...(previousContent ? [{ role: 'assistant', content: previousContent }] : []),
     { role: 'user', content: instruction },
   ]
 }

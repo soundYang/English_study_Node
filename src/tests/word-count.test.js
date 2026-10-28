@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest'
 
 import {
   WORD_COUNT,
+  classifyLength,
   countWords,
   formatWordsPerSentence,
   planAcceptedRange,
+  planExpandBudget,
   planSentenceBudget,
   planWordRange,
 } from '../modules/readings/word-count.js'
@@ -94,6 +96,43 @@ describe('planAcceptedRange', () => {
 
     expect(accepted.min).toBeLessThan(asked.min)
     expect(accepted.max).toBe(asked.max)
+  })
+})
+
+describe('classifyLength', () => {
+  const accepted = planAcceptedRange(200) // 170–230
+
+  it('落在验收区间内是 ok，边界含进去', () => {
+    expect(classifyLength(170, accepted)).toBe('ok')
+    expect(classifyLength(200, accepted)).toBe('ok')
+    expect(classifyLength(230, accepted)).toBe('ok')
+  })
+
+  it('低于验收下限是 short，高于上限是 long', () => {
+    expect(classifyLength(169, accepted)).toBe('short')
+    expect(classifyLength(0, accepted)).toBe('short')
+    expect(classifyLength(231, accepted)).toBe('long')
+  })
+
+  it('90 词的 100 词请求算 ok：验收下界比提示词下界低', () => {
+    // 用提示词区间（100–115）判的话，这类正常文章会全被标成 short，指标失去信号
+    expect(classifyLength(90, planAcceptedRange(100))).toBe('ok')
+    expect(classifyLength(84, planAcceptedRange(100))).toBe('short')
+  })
+})
+
+describe('planExpandBudget', () => {
+  it('按目标词（1.1 倍）算缺口，每 15 词一句', () => {
+    expect(planExpandBudget(90, planWordRange(100))).toEqual({ shortfall: 20, sentences: 2 })
+    expect(planExpandBudget(60, planWordRange(100))).toEqual({ shortfall: 50, sentences: 3 })
+  })
+
+  it('句子数封顶 3：补太多等于重写', () => {
+    expect(planExpandBudget(10, planWordRange(400)).sentences).toBe(3)
+  })
+
+  it('已经很接近目标时至少补一句', () => {
+    expect(planExpandBudget(109, planWordRange(100))).toEqual({ shortfall: 1, sentences: 1 })
   })
 })
 

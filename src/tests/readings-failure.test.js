@@ -166,7 +166,13 @@ describe('生成失败留痕 · 只有生成流程内的失败才入库', () => 
 
     const doc = await Reading.findById(res.body.id).lean()
     expect(doc.aiMeta.rounds).toHaveLength(1)
-    expect(doc.aiMeta.rounds[0]).toMatchObject({ kind: 'generate', repairFor: null, feedbackType: null })
+    // feedbackType 是「这一轮自己判出什么」，不是「因此一定又调了一次」：
+    // 40 词对 100 词请求必然偏短，默认 MAX_EXPAND_ROUNDS=0 时只标 word_expand、不补写
+    expect(doc.aiMeta.rounds[0]).toMatchObject({
+      kind: 'generate',
+      repairFor: null,
+      feedbackType: 'word_expand',
+    })
     expect(doc.aiMeta.rounds[0].unknownWords).toEqual([])
     expect(doc.aiMeta.rounds[0].actualWords).toBe(40)
     // 查过了、没有违规：六个分类全 0，而不是 undefined
@@ -225,7 +231,12 @@ describe('生成失败留痕 · 只有生成流程内的失败才入库', () => 
     expect(doc.aiMeta.rounds[0].unknownWords).toEqual([])
     // counts 同理：没查就是 undefined，不能是六个 0，否则统计里会多出一批"干净"的轮次
     expect(doc.aiMeta.rounds[0].counts).toBeUndefined()
-    expect(doc.aiMeta.rounds[1]).toMatchObject({ kind: 'repair', repairFor: 'word_count', feedbackType: null })
+    // 重写后只有 40 词 → 判 short（word_expand），但默认不补写，所以仍停在第二轮
+    expect(doc.aiMeta.rounds[1]).toMatchObject({
+      kind: 'repair',
+      repairFor: 'word_count',
+      feedbackType: 'word_expand',
+    })
     expect(doc.aiMeta.rounds[1].counts).toMatchObject({ unknown_token: 0, missing_common: 0 })
   })
 

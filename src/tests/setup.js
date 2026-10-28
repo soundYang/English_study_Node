@@ -17,6 +17,9 @@ process.env.MONGODB_URI = process.env.MONGODB_URI ?? 'mongodb://127.0.0.1:27017/
 process.env.MAX_REPAIR_ROUNDS = '2'
 // 篇幅压缩有独立额度；调成 0 会让「超长应触发压缩轮」的用例退化成一次调用
 process.env.MAX_LENGTH_ROUNDS = '1'
+// 扩写默认关闭（md/21 W6）：开着会给出「40 词配 100 词请求」的老用例追加调用。
+// 需要验证扩写的用例在文件顶部自行改成 1 再动态 import。
+process.env.MAX_EXPAND_ROUNDS = '0'
 // 生词预算按难度取（easy 0 / medium 3 / hard 5），不再是全局数字。
 // 这里显式留空而不删除：dotenv 不会覆盖已存在的变量，留空能挡住开发机 .env
 // 里的 MAX_UNKNOWN_WORDS（那会变成全局覆盖，把三档压成同一个数，W3 的断言全失效）。

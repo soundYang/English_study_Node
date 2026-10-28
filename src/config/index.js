@@ -96,6 +96,9 @@ export const config = Object.freeze({
   // 篇幅压缩单独计数：实测一轮修完用词后只剩一次压缩机会，253 词只删到 239。
   // 给篇幅独立的一次机会，最坏情况 1 + 2 + 1 = 4 次调用。
   maxLengthRounds: toNumber('MAX_LENGTH_ROUNDS', 1),
+  // 偏短扩写（md/21 W6）：默认 0 = 只记录 `aiMeta.lengthStatus`，不追加调用。
+  // 实测扩写一轮只多写十几词，收益不高；先靠采样看 short 的比例再决定是否默认开。
+  maxExpandRounds: toNumber('MAX_EXPAND_ROUNDS', 0),
   // 生词预算按难度取 level-limits.js：easy 0 / medium 3 / hard 5（md/20 §3）。
   // MAX_UNKNOWN_WORDS 仍然有效，但只作为**全局覆盖**：显式设置时三档压成同一个数，
   // 用于调试与回归对比；没设置时是 null，表示「按难度」。代码里请用
