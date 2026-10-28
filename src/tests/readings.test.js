@@ -133,7 +133,7 @@ describe('POST /api/readings/generate · 词汇量闸门', () => {
 
 describe('POST /api/readings/generate · 正常生成', () => {
   it('返回 201，且 DTO 恰好 9 个字段', async () => {
-    await seedWords(20)
+    await seedWords(29)
     chatJson.mockResolvedValue(reply(makePayload()))
 
     const res = await generate(VALID_BODY)
@@ -158,7 +158,7 @@ describe('POST /api/readings/generate · 正常生成', () => {
   })
 
   it('题目只暴露 id / question / options', async () => {
-    await seedWords(20)
+    await seedWords(29)
     chatJson.mockResolvedValue(reply(makePayload()))
 
     const res = await generate(VALID_BODY)
@@ -169,7 +169,7 @@ describe('POST /api/readings/generate · 正常生成', () => {
   })
 
   it('响应文本里不出现任何敏感字段名', async () => {
-    await seedWords(20)
+    await seedWords(29)
     chatJson.mockResolvedValue(reply(makePayload()))
 
     const res = await generate(VALID_BODY)
@@ -191,7 +191,7 @@ describe('POST /api/readings/generate · 正常生成', () => {
   })
 
   it('落库内容完整，只把安全字段回给前端', async () => {
-    await seedWords(20)
+    await seedWords(29)
     chatJson.mockResolvedValue(reply(makePayload()))
 
     const res = await generate(VALID_BODY)
@@ -202,7 +202,9 @@ describe('POST /api/readings/generate · 正常生成', () => {
     expect(doc.questions[0].explanation).toBe('根据文章内容可知。')
     expect(doc.names).toEqual(['Tom'])
     expect(doc.status).toBe('generated')
-    expect(doc.vocabularySnapshot).toHaveLength(20)
+    // easy + 100 词：目标词 10 个，门槛 ceil(10 ÷ 0.35) = 29 个已学词，
+    // 池子按比例取 max(10, ceil(29 × 0.35)) = 11 个
+    expect(doc.vocabularySnapshot).toHaveLength(11)
     // 测试文章正好 40 个英文词
     expect(doc.actualWords).toBe(40)
     expect(doc.aiMeta).toMatchObject({
@@ -214,7 +216,7 @@ describe('POST /api/readings/generate · 正常生成', () => {
   })
 
   it('vocabularySnapshot 只收 learning / mastered，不含 new', async () => {
-    await seedWords(20)
+    await seedWords(29)
     await Word.insertMany(
       Array.from({ length: 5 }, (_, index) => ({
         userId: config.defaultUserId,
@@ -229,14 +231,16 @@ describe('POST /api/readings/generate · 正常生成', () => {
     const res = await generate(VALID_BODY)
 
     const doc = await Reading.findById(res.body.id).lean()
-    expect(doc.vocabularySnapshot).toHaveLength(20)
+    // easy + 100 词：目标词 10 个，门槛 ceil(10 ÷ 0.35) = 29 个已学词，
+    // 池子按比例取 max(10, ceil(29 × 0.35)) = 11 个
+    expect(doc.vocabularySnapshot).toHaveLength(11)
     expect(doc.vocabularySnapshot.some((word) => word.startsWith('newword'))).toBe(false)
   })
 })
 
 describe('POST /api/readings/generate · 结构校验与修正轮', () => {
   it('模型自报词汇不足 → 422，不进入修正轮', async () => {
-    await seedWords(20)
+    await seedWords(29)
     chatJson.mockResolvedValue(reply({ error: 'INSUFFICIENT_VOCABULARY' }))
 
     const res = await generate(VALID_BODY)
@@ -247,7 +251,7 @@ describe('POST /api/readings/generate · 结构校验与修正轮', () => {
   })
 
   it('首轮不是合法 JSON → 修正一轮成功 → 201 且 repairRounds=1', async () => {
-    await seedWords(20)
+    await seedWords(29)
     chatJson
       .mockResolvedValueOnce({ content: '当然可以！这是文章：' })
       .mockResolvedValueOnce(reply(makePayload()))
@@ -262,7 +266,7 @@ describe('POST /api/readings/generate · 结构校验与修正轮', () => {
   })
 
   it('题目数量不符 → 修正一轮补齐 → 201', async () => {
-    await seedWords(20)
+    await seedWords(29)
     chatJson
       .mockResolvedValueOnce(reply(makePayload({ questionCount: 2 })))
       .mockResolvedValueOnce(reply(makePayload({ questionCount: 3 })))
@@ -275,7 +279,7 @@ describe('POST /api/readings/generate · 结构校验与修正轮', () => {
   })
 
   it('修正轮仍然不合法 → 502 AI_INVALID_RESPONSE，只调两次', async () => {
-    await seedWords(20)
+    await seedWords(29)
     chatJson
       .mockResolvedValueOnce(reply(makePayload({ questionCount: 2 })))
       .mockResolvedValueOnce(reply(makePayload({ questionCount: 2 })))
@@ -289,7 +293,7 @@ describe('POST /api/readings/generate · 结构校验与修正轮', () => {
   })
 
   it('两轮都不是合法 JSON → 502 AI_INVALID_RESPONSE', async () => {
-    await seedWords(20)
+    await seedWords(29)
     chatJson
       .mockResolvedValueOnce({ content: 'not json' })
       .mockResolvedValueOnce({ content: 'still not json' })
@@ -302,7 +306,7 @@ describe('POST /api/readings/generate · 结构校验与修正轮', () => {
   })
 
   it('模型带了 ```json 代码块标记也能解析', async () => {
-    await seedWords(20)
+    await seedWords(29)
     chatJson.mockResolvedValue({
       content: '```json\n' + JSON.stringify(makePayload()) + '\n```',
       usage: null,
@@ -317,7 +321,7 @@ describe('POST /api/readings/generate · 结构校验与修正轮', () => {
 
 describe('POST /api/readings/generate · 词汇校验', () => {
   it('正文出现表外词 → 修正一轮后合规 → 201 且 repairRounds=1', async () => {
-    await seedWords(20)
+    await seedWords(29)
     chatJson
       .mockResolvedValueOnce(reply(makePayload({ article: `${ARTICLE} Quizzical.` })))
       .mockResolvedValueOnce(reply(makePayload()))
@@ -332,7 +336,7 @@ describe('POST /api/readings/generate · 词汇校验', () => {
   })
 
   it('修正后仍含表外词 → 422 VOCABULARY_VALIDATION_FAILED，不留脏数据', async () => {
-    await seedWords(20)
+    await seedWords(29)
     const dirty = reply(makePayload({ article: `${ARTICLE} Quizzical.` }))
     chatJson.mockResolvedValue(dirty)
 
@@ -346,7 +350,7 @@ describe('POST /api/readings/generate · 词汇校验', () => {
   })
 
   it('违规词再多，错误信息也只列前 5 个', async () => {
-    await seedWords(20)
+    await seedWords(29)
     chatJson.mockResolvedValue(
       reply(
         makePayload({
@@ -363,7 +367,7 @@ describe('POST /api/readings/generate · 词汇校验', () => {
   })
 
   it('一个人名声明之外的大写词也按普通词校验', async () => {
-    await seedWords(20)
+    await seedWords(29)
     chatJson.mockResolvedValue(
       reply(makePayload({ article: `${ARTICLE} Lina.` })),
     )
@@ -378,7 +382,7 @@ describe('POST /api/readings/generate · 词汇校验', () => {
 
 describe('POST /api/readings/generate · 上游异常', () => {
   it('上游报错 → 502 AI_PROVIDER_ERROR，不透传原始报错', async () => {
-    await seedWords(20)
+    await seedWords(29)
     const { ApiError, ERROR_CODES } = await import('../shared/errors.js')
     chatJson.mockRejectedValue(
       new ApiError(502, ERROR_CODES.AI_PROVIDER_ERROR, 'AI 服务暂时不可用，请稍后重试。'),
@@ -394,8 +398,8 @@ describe('POST /api/readings/generate · 上游异常', () => {
   })
 })
 
-describe('POST /api/readings/generate · 词汇快照上限', () => {
-  it('用户词超过 800 时截断到 800，且全部并入提示词', async () => {
+describe('POST /api/readings/generate · 候选池截断', () => {
+  it('按难度比例选池，不再按 createdAt 截断', async () => {
     await seedWords(820)
     chatJson.mockResolvedValue(reply(makePayload()))
 
@@ -403,11 +407,16 @@ describe('POST /api/readings/generate · 词汇快照上限', () => {
 
     expect(res.status).toBe(201)
 
-    // 800 个用户词 + 600 个基础词 + 19 个日历词（may 与基础词表重复，去重后是 18 个）
+    // easy 取 35%：ceil(820 × 0.35) = 287 个候选词
+    // + 600 个基础词 + 19 个日历词（may 与基础词表重复，去重后是 18 个）
     const prompt = chatJson.mock.calls[0][0].messages[1].content
-    expect(prompt).toContain(`共 ${800 + 600 + 18} 个`)
+    expect(prompt).toContain(`共 ${287 + 600 + 18} 个`)
 
     const doc = await Reading.findById(res.body.id)
-    expect(doc.vocabularySnapshot).toHaveLength(800)
+    expect(doc.vocabularySnapshot).toHaveLength(287)
+    expect(doc.targetPlan.poolSize).toBe(287)
+    expect(doc.targetPlan.requiredWords).toBe(10)
+    expect(doc.targetPlan.focusWords).toHaveLength(4)
+    expect(doc.targetPlan.scope).toEqual(['all'])
   })
 })

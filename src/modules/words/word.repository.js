@@ -35,11 +35,16 @@ export const wordRepository = {
     return Word.countDocuments({ userId, status: { $in: ['learning', 'mastered'] } })
   },
 
-  findVocabulary(userId, limit) {
+  /**
+   * 选池用的候选词：只取 learning / mastered。
+   *
+   * 这里**不排序、不截断**。截断必须发生在「按复习优先级排完之后」
+   * （vocabulary-pool.js）；在数据库层按 createdAt 倒序截断，丢掉的恰好是
+   * 最早学的那批词，与「优先复习久未复习的词」完全相反。
+   */
+  findVocabulary(userId) {
     return Word.find({ userId, status: { $in: ['learning', 'mastered'] } })
-      .sort({ createdAt: -1 })
-      .limit(limit)
-      .select('word')
+      .select('word status cocaRank lastReviewedAt createdAt')
       .lean()
   },
 

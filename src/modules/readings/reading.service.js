@@ -1,7 +1,13 @@
 import mongoose from 'mongoose'
 
 import { config } from '../../config/index.js'
-import { ApiError, ERROR_CODES, conflict, readingNotFound } from '../../shared/errors.js'
+import {
+  ApiError,
+  ERROR_CODES,
+  conflict,
+  readingNotFound,
+  vocabularyTooSmall,
+} from '../../shared/errors.js'
 import { logger } from '../../shared/logger.js'
 import { parseOrThrow } from '../../shared/utils/validation.js'
 import { wordRepository } from '../words/word.repository.js'
@@ -17,13 +23,10 @@ import {
   generateReadingSchema,
   submitReadingSchema,
 } from './reading.schema.js'
+import { buildTargetPlan } from './target-plan.js'
 import { validateArticle } from './vocabulary.service.js'
+import { selectVocabularyPool } from './vocabulary-pool.js'
 
-/**
- * vocabularySnapshot 的上限（方案 §9.2：超过 800 按 createdAt 倒序截断）。
- * 取太小会让"词汇量越大越容易生成失败"——用户明明学过，却没进提示词。
- */
-const VOCABULARY_SNAPSHOT_LIMIT = 800
 const MAX_TOKENS_CAP = 2600
 /** article 实际词数允许偏离目标的范围，超出只记 warning 不判错 */
 const WORD_COUNT_TOLERANCE = { min: 0.7, max: 1.4 }
@@ -104,44 +107,90 @@ function inspectVocabulary(data, allowedWords) {
 /**
  * POST /api/readings/generate
  *
- * 流程：参数校验 → 词汇量检查 → 组装允许词汇 → 调模型
+ * 流程：参数校验 → 词汇量总闸 → 选池（scope + 优先级 + 难度比例）
+ *       → 定目标词计划 → 组装允许词汇 → 调模型
  *       → 结构校验 → 词汇校验 →（最多 1 轮修正，结构与词汇共用这一轮）
  *       → 落库 → 返回安全 DTO。
  *
- * 结构与词汇共用同一轮修正：上游调用总数硬上限是 2 次（MAX_REPAIR_ROUNDS=1），
- * 不设"再试一次就好"的循环，否则一次生成就能把预算烧光。
+ * 两道闸门顺序不能换：
+ *   1. 词数 < 20 → INSUFFICIENT_VOCABULARY（和以前一样，最前面拦）
+ *   2. 候选池装不下本次篇幅 → VOCABULARY_TOO_SMALL，**禁止生成**
+ * 第 2 道是按「本次参数」算的，所以缩短篇幅或降低难度就能过——提示语要把这个说出来。
  */
 export async function generateReading({ userId, body, signal }) {
   const params = parseOrThrow(generateReadingSchema, body)
 
   // 只有 learning / mastered 算可用词汇，new 不算
-  const available = await wordRepository.countVocabulary(userId)
-  if (available < config.vocabularyThreshold) {
+  const vocabularyCount = await wordRepository.countVocabulary(userId)
+  if (vocabularyCount < config.vocabularyThreshold) {
     throw new ApiError(
       422,
       ERROR_CODES.INSUFFICIENT_VOCABULARY,
-      `当前已有 ${available} 个单词，至少需要 ${config.vocabularyThreshold} 个才能生成`,
+      `当前已有 ${vocabularyCount} 个单词，至少需要 ${config.vocabularyThreshold} 个才能生成`,
     )
   }
 
-  const words = await wordRepository.findVocabulary(
-    userId,
-    VOCABULARY_SNAPSHOT_LIMIT,
-  )
-  const vocabularySnapshot = words.map((item) => item.word)
+  const words = await wordRepository.findVocabulary(userId)
+  const selection = selectVocabularyPool({
+    words,
+    level: params.level,
+    scope: params.vocabScope,
+    targetWords: params.targetWords,
+  })
 
-  // 超过上限必须留痕：用户会以为"我学过的词为什么没被用上"
-  if (available > VOCABULARY_SNAPSHOT_LIMIT) {
+  // 池子装不下就必须拦在这里：调一次模型要几秒和几千 token，
+  // 而按当前参数注定凑不出目标词数。
+  if (!selection.sufficient) {
     logger.warn(
-      `vocabulary snapshot truncated: ${available} > ${VOCABULARY_SNAPSHOT_LIMIT}`,
+      {
+        level: params.level,
+        targetWords: params.targetWords,
+        scope: selection.scope,
+        requiredWords: selection.requiredWords,
+        neededVocab: selection.neededVocab,
+        available: selection.available,
+      },
+      'reading generate rejected: VOCABULARY_TOO_SMALL',
     )
+    throw vocabularyTooSmall({
+      required: selection.neededVocab,
+      available: selection.available,
+      requiredWords: selection.requiredWords,
+      targetWords: params.targetWords,
+      scope: selection.scope,
+      level: params.level,
+    })
   }
+
+  const plan = buildTargetPlan({
+    pool: selection.pool,
+    level: params.level,
+    targetWords: params.targetWords,
+  })
+
+  // vocabularySnapshot 的语义变了：不再是「最新 800 个词」，而是「本次选出的候选池」。
+  // 老文章存的是前者，两者都只是快照，不影响回放。
+  const vocabularySnapshot = selection.pool
+
   // 日历词单独放行：COCA 源里没有它们，既进不了基础词表也搜不到（见 calendar-words.js）
   const allowedWords = new Set([
-    ...vocabularySnapshot,
+    ...selection.pool,
     ...basicWords,
     ...calendarWords,
   ])
+
+  logger.info(
+    {
+      level: params.level,
+      targetWords: params.targetWords,
+      scope: selection.scope,
+      available: selection.available,
+      poolSize: selection.poolSize,
+      requiredWords: plan.requiredWords,
+      focusCount: plan.focusWords.length,
+    },
+    'vocabulary pool selected',
+  )
 
   const messages = buildMessages({
     level: params.level,
@@ -268,6 +317,12 @@ export async function generateReading({ userId, body, signal }) {
     actualWords,
     questions: data.questions,
     vocabularySnapshot,
+    targetPlan: {
+      scope: selection.scope,
+      poolSize: selection.poolSize,
+      requiredWords: plan.requiredWords,
+      focusWords: plan.focusWords,
+    },
     names: data.names,
     status: 'generated',
     aiMeta: {
@@ -275,6 +330,8 @@ export async function generateReading({ userId, body, signal }) {
       promptTokens: usage?.prompt_tokens ?? null,
       completionTokens: usage?.completion_tokens ?? null,
       repairRounds,
+      candidatePoolSize: selection.poolSize,
+      requiredWords: plan.requiredWords,
     },
   })
 
