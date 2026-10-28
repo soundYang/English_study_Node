@@ -182,6 +182,7 @@ describe('生成前预检 GET /capacity', () => {
       available: 200,
       maxUnknownWords: 5,
       wordRange: { min: 200, target: 220, max: 230, label: '200–230 词' },
+      acceptedRange: { min: 170, target: 220, max: 230, label: '170–230 词' },
       levels: {
         easy: { required: 58, sufficient: true, shortage: 0 },
         medium: { required: 40, sufficient: true, shortage: 0 },

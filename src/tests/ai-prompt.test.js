@@ -73,6 +73,15 @@ describe('buildMessages · 三段式词表', () => {
     expect(system).not.toContain('5%')
     expect(prompt).toContain('300–345 词')
   })
+
+  it('首轮就给出句子预算（模型数不清词，但数得清句子）', () => {
+    const system = build()[0].content
+    const prompt = userMessage(build())
+
+    // 330 词 ÷ 每句 15 词 ≈ 22 句；每句词数由目标值反推，上下界相同时只写一个数
+    expect(system).toContain('共 21–23 个句子，每句 15 个英文单词')
+    expect(prompt).toContain('约 22 句，每句 15 词')
+  })
 })
 
 describe('buildRepairMessages', () => {
@@ -95,35 +104,42 @@ describe('buildRepairMessages', () => {
     expect(repaired.at(-1).role).toBe('user')
   })
 
-  it('word_count 反馈生成「只删不增」的压缩指令', () => {
+  it('word_count 反馈生成「按句子预算重写」的指令', () => {
     const repaired = buildRepairMessages(base, {
       type: 'word_count',
       reason: '正文有 429 个英文单词，超过上限 345',
-      actualWords: 429,
       range: { min: 300, max: 345, target: 330 },
     })
     const content = repaired.at(-1).content
 
-    expect(content).toContain('删减')
-    expect(content).toContain('不要新增')
-    expect(content).toContain('300–345')
-    // 只给区间时模型只删了 14 个词，所以必须给出可执行的删除量
-    expect(content).toContain('至少删掉 84 个英文单词')
-    expect(content).toContain('理想 323 词左右')
-    // 压缩轮不该再重复「表外词」那套话术
+    // 330 词 ÷ 每句 15 词 ≈ 22 句，±1
+    expect(content).toContain('共 21–23 个英文句子')
+    expect(content).toContain('每句 15 个英文单词')
+    expect(content).toContain('全文目标约 330 词，必须落在 300–345 词之间')
+    expect(content).toContain('重新写一篇文章')
+    // 重写会重编情节，必须当场重申用词边界（实测曾带出 14 个表外词）
+    expect(content).toContain('不要引入表外词')
+    // 篇幅修正不该再重复「表外词」那套话术
     expect(content).not.toContain('不在允许词表中')
   })
 
-  it('word_count 但没带 actualWords 时退化为只给区间', () => {
-    const repaired = buildRepairMessages(base, {
-      type: 'word_count',
-      reason: '正文超过上限',
-      range: { min: 300, max: 345, target: 330 },
-    })
+  it('word_count 不把上一篇正文放回上下文（锚定只会让模型挤牙膏）', () => {
+    const repaired = buildRepairMessages(
+      base,
+      { type: 'word_count', reason: '正文超过上限', range: { min: 300, max: 345, target: 330 } },
+      '上一轮那篇过长的正文',
+    )
+
+    expect(repaired.some((item) => item.role === 'assistant')).toBe(false)
+    expect(repaired.at(-1).role).toBe('user')
+  })
+
+  it('没有 range 时 word_count 仍能给出可执行的指令', () => {
+    const repaired = buildRepairMessages(base, { type: 'word_count', reason: '正文超过上限' })
     const content = repaired.at(-1).content
 
-    expect(content).toContain('删减后必须落在 300–345')
-    expect(content).not.toContain('至少删掉')
+    expect(content).toContain('重新写一篇文章')
+    expect(content).not.toContain('每句')
   })
 
   it('用词反馈会重申字数区间，防止越修越长', () => {
@@ -135,17 +151,54 @@ describe('buildRepairMessages', () => {
     expect(repaired.at(-1).content).toContain('300–345')
   })
 
-  it('违规词最多列 8 条，并附上原句片段', () => {
+  it('违规词全量列出，原句只给前 8 条', () => {
     const violations = Array.from({ length: 12 }, (_, index) => ({
       word: `bad${index}`,
       sentence: `This sentence contains bad${index} in it.`,
     }))
 
-    const repaired = buildRepairMessages(base, { reason: '出现表外词', violations })
+    const repaired = buildRepairMessages(base, { type: 'vocabulary', reason: '出现表外词', violations })
     const content = repaired.at(-1).content
 
-    expect(content).toContain('bad0')
-    expect(content).toContain('bad7')
-    expect(content).not.toContain('bad8')
+    // 词表全给：19 / 59 个违规时只列 8 个是收敛慢的主因
+    expect(content).toContain('共 12 个')
+    expect(content).toContain('bad11')
+    // 原句只给前 8 条，避免把修正轮的 token 预算吃掉
+    expect(content.match(/^- "bad\d+"/gm)).toHaveLength(8)
+  })
+
+  it('违规超过 8 个时改成全文重写，而不是逐句替换', () => {
+    const violations = Array.from({ length: 12 }, (_, index) => ({
+      word: `bad${index}`,
+      sentence: `Sentence ${index}.`,
+    }))
+
+    const content = buildRepairMessages(base, {
+      type: 'vocabulary',
+      reason: '出现表外词',
+      violations,
+      range: { min: 300, max: 345, target: 330 },
+    }).at(-1).content
+
+    expect(content).toContain('把全文重写一遍')
+    expect(content).toContain('不要引入任何表外词')
+    expect(content).toContain('300–345')
+    expect(content).not.toContain('只替换这几处表达')
+  })
+
+  it('违规不超过 8 个时仍走局部修正', () => {
+    const violations = Array.from({ length: 6 }, (_, index) => ({
+      word: `bad${index}`,
+      sentence: `Sentence ${index}.`,
+    }))
+
+    const content = buildRepairMessages(base, {
+      type: 'vocabulary',
+      reason: '出现表外词',
+      violations,
+    }).at(-1).content
+
+    expect(content).toContain('请只修正不合法的地方')
+    expect(content).not.toContain('把全文重写一遍')
   })
 })

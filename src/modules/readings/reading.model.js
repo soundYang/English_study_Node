@@ -50,6 +50,7 @@ const roundSchema = new Schema(
     finishReason: String, // stop / length
     maxTokens: Number, // 当次请求的上限，排查截断用
     durationMs: Number, // 单次调用耗时
+    actualWords: Number, // 这一轮正文实际词数，用于观察篇幅策略是否生效（结构不合法时为 null）
   },
   { _id: false },
 )

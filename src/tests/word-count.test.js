@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest'
 
-import { WORD_COUNT, countWords, planWordRange } from '../modules/readings/word-count.js'
+import {
+  WORD_COUNT,
+  countWords,
+  formatWordsPerSentence,
+  planAcceptedRange,
+  planSentenceBudget,
+  planWordRange,
+} from '../modules/readings/word-count.js'
 
 /**
  * 篇幅口径是全项目唯一来源：提示词、DTO、校验、日志都读这里。
@@ -25,6 +32,68 @@ describe('planWordRange', () => {
       expect(range.target).toBeLessThanOrEqual(range.max)
       expect(range.target).toBeGreaterThanOrEqual(range.min)
     }
+  })
+})
+
+describe('planSentenceBudget', () => {
+  it('200 词请求 → 约 15 句、每句 14–15 词（按目标值反推）', () => {
+    expect(planSentenceBudget(planWordRange(200))).toEqual({
+      sentences: 15,
+      minSentences: 14,
+      maxSentences: 16,
+      minWordsPerSentence: 14,
+      maxWordsPerSentence: 15,
+    })
+  })
+
+  it('上下界相同时只显示一个数字', () => {
+    expect(formatWordsPerSentence({ minWordsPerSentence: 15, maxWordsPerSentence: 15 })).toBe('15')
+    expect(formatWordsPerSentence({ minWordsPerSentence: 14, maxWordsPerSentence: 15 })).toBe(
+      '14–15',
+    )
+  })
+
+  it('每句词数由区间决定，不会随句子数飘走', () => {
+    for (const targetWords of [100, 200, 400, 800]) {
+      const range = planWordRange(targetWords)
+      const budget = planSentenceBudget(range)
+
+      expect(budget.minWordsPerSentence * budget.minSentences).toBeLessThanOrEqual(range.target)
+      expect(budget.maxWordsPerSentence * budget.maxSentences).toBeGreaterThanOrEqual(range.target)
+    }
+  })
+
+  it('句子预算与词数区间同量级：15 句 × 15 词 ≈ 目标', () => {
+    for (const targetWords of [100, 200, 400, 800]) {
+      const range = planWordRange(targetWords)
+      const budget = planSentenceBudget(range)
+
+      expect(budget.sentences * 15).toBeGreaterThanOrEqual(range.min)
+      expect(budget.sentences * 15).toBeLessThanOrEqual(range.max)
+    }
+  })
+
+  it('极短篇幅也至少给 3 句', () => {
+    expect(planSentenceBudget({ min: 20, target: 22, max: 23 }).minSentences).toBe(3)
+  })
+})
+
+describe('planAcceptedRange', () => {
+  it('200 词请求的验收区间是 ±15%：170–230', () => {
+    expect(planAcceptedRange(200)).toEqual({
+      min: 170,
+      target: 220,
+      max: 230,
+      label: '170–230 词',
+    })
+  })
+
+  it('提示词区间仍然是 200–230，验收更宽', () => {
+    const asked = planWordRange(200)
+    const accepted = planAcceptedRange(200)
+
+    expect(accepted.min).toBeLessThan(asked.min)
+    expect(accepted.max).toBe(asked.max)
   })
 })
 

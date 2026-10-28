@@ -471,7 +471,7 @@ describe('POST /api/readings/generate · 篇幅与 token', () => {
     expect(res.body.actualWords).toBe(40)
   })
 
-  it('超过上限时追加一轮压缩，指令要求只删不增', async () => {
+  it('超过上限时追加一轮重写，指令给句子预算且不带上一篇', async () => {
     await seedWords(29)
     chatJson
       .mockResolvedValueOnce(reply(makePayload({ article: LONG_ARTICLE })))
@@ -482,19 +482,38 @@ describe('POST /api/readings/generate · 篇幅与 token', () => {
     expect(res.status).toBe(201)
     expect(chatJson).toHaveBeenCalledTimes(2)
 
-    const instruction = chatJson.mock.calls[1][0].messages.at(-1).content
-    expect(instruction).toContain('删减')
-    expect(instruction).toContain('100–115')
-    // 160 词、上限 115 → 具体到「至少删掉 45 个」
-    expect(instruction).toContain('至少删掉 45 个英文单词')
+    const messages = chatJson.mock.calls[1][0].messages
+    const instruction = messages.at(-1).content
+    // 100 词请求 → 7 句左右，每句词数由目标值 110 反推
+    expect(instruction).toContain('共 6–8 个英文句子')
+    expect(instruction).toContain('每句 15–16 个英文单词')
+    expect(instruction).toContain('必须落在 100–115 词之间')
+    // 带锚定只会让模型做减法，所以重写轮不塞上一篇正文
+    expect(messages.some((message) => message.role === 'assistant')).toBe(false)
 
     const doc = await Reading.findById(res.body.id).lean()
     expect(doc.aiMeta.repairRounds).toBe(1)
-    // 压缩后的正文落库，不再是被截断的 160 词版本
+    // 重写后的正文落库，不再是被截断的 160 词版本
     expect(doc.actualWords).toBe(40)
+    expect(doc.aiMeta.rounds[0].actualWords).toBe(160)
   })
 
-  it('篇幅压缩有独立额度：修完词还能再压一次', async () => {
+  it('又超长又有生词时先重写篇幅，而不是先修用词', async () => {
+    await seedWords(29)
+    chatJson
+      .mockResolvedValueOnce(reply(makePayload({ article: `${LONG_ARTICLE} ${OVER_LIMIT_ARTICLE}` })))
+      .mockResolvedValueOnce(reply(makePayload()))
+
+    const res = await generate(VALID_BODY)
+
+    // 用词修正实测会把文章改得更长，所以篇幅优先
+    const instruction = chatJson.mock.calls[1][0].messages.at(-1).content
+    expect(instruction).toContain('重新写一篇文章')
+    expect(instruction).not.toContain('不在允许词表中')
+    expect(res.status).toBe(201)
+  })
+
+  it('篇幅重写有独立额度：修完词还能再重写一次', async () => {
     await seedWords(29)
     chatJson
       .mockResolvedValueOnce(reply(makePayload({ article: OVER_LIMIT_ARTICLE }))) // 1: 生词超额度
@@ -515,6 +534,25 @@ describe('POST /api/readings/generate · 篇幅与 token', () => {
       'repair',
     ])
     expect(doc.actualWords).toBe(40)
+  })
+
+  it('重写后仍超生词额度时，多给一轮用词修正', async () => {
+    await seedWords(29)
+    chatJson
+      .mockResolvedValueOnce(reply(makePayload({ article: OVER_LIMIT_ARTICLE }))) // 1: 生词超额度
+      .mockResolvedValueOnce(reply(makePayload({ article: LONG_ARTICLE }))) // 2: 太长 → 重写
+      .mockResolvedValueOnce(reply(makePayload({ article: OVER_LIMIT_ARTICLE }))) // 3: 重写带出 6 个生词
+      .mockResolvedValueOnce(reply(makePayload({ article: OVER_LIMIT_ARTICLE }))) // 4: 修词后仍超
+      .mockResolvedValueOnce(reply(makePayload())) // 5: 第三次用词修正救回来
+
+    const res = await generate(VALID_BODY)
+
+    // 没有这条规则时，第 4 次调用不存在，第 3 轮的 6 个生词会直接 422
+    expect(res.status).toBe(201)
+    expect(chatJson).toHaveBeenCalledTimes(5)
+
+    const doc = await Reading.findById(res.body.id).lean()
+    expect(doc.aiMeta.repairRounds).toBe(4)
   })
 
   it('多轮调用的 token 是累加，不是只留最后一轮', async () => {
@@ -538,7 +576,10 @@ describe('POST /api/readings/generate · 篇幅与 token', () => {
       promptTokens: 100,
       completionTokens: 200,
       maxTokens: 8192,
+      // 每轮记下真实词数：调篇幅策略时能看到每一轮是变长还是变短
+      actualWords: 46,
     })
+    expect(doc.aiMeta.rounds[1].actualWords).toBe(40)
   })
 
   it('上限固定 8192，不再按篇幅估算', async () => {

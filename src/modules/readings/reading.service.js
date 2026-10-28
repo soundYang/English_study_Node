@@ -18,7 +18,7 @@ import { buildMessages, buildRepairMessages } from './ai.prompt.js'
 import { parseAiContent, validateAiReading } from './ai.schema.js'
 import { basicWords } from './basic-words.js'
 import { calendarWords } from './calendar-words.js'
-import { countWords, planWordRange } from './word-count.js'
+import { countWords, planAcceptedRange, planWordRange } from './word-count.js'
 import { toHistoryItem, toResultDto, toSafeDto } from './reading.dto.js'
 import { readingRepository as repo } from './reading.repository.js'
 import {
@@ -118,9 +118,10 @@ function insufficientVocabularyError() {
 /**
  * 把一轮产出判成「还能更好」或「可以收工」。
  *
- * 优先级：结构 → 用词 → 篇幅。用词优先于篇幅：生词多说明方向错了，
- * 先换词再谈长短，压缩轮才有意义。
- * 篇幅走独立的 maxLengthRounds 额度，不会被前两种反馈吃光。
+ * 优先级：结构 → 篇幅 → 用词。
+ * 篇幅优先于用词：用词修正实测会把文章改长（231→234、277→279），
+ * 先修词会让本已超长的正文更难收拾；先压到目标篇幅，短文章带出的高级词也更少。
+ * 篇幅走独立的 maxLengthRounds 额度，不会被结构/用词吃光。
  *
  * @returns {{
  *   result: object,
@@ -138,6 +139,24 @@ function evaluate({ content, params, allowedWords, range }) {
     return { result, feedback: { type: 'structure', reason: result.reason, range } }
   }
 
+  // 每轮都数一次：写进 rounds[]，调篇幅策略时能看出「首轮 290 → 重写 228」
+  const actualWords = countWords(result.data.article)
+
+  // 篇幅优先于用词：实测用词修正会稳定把文章改长（231→234、277→279），
+  // 先修词等于把超长的问题放大。先重写成目标篇幅，篇幅短了带出的高级词也少。
+  if (actualWords > range.max) {
+    return {
+      result,
+      actualWords,
+      feedback: {
+        type: 'word_count',
+        actualWords,
+        range,
+        reason: `正文有 ${actualWords} 个英文单词，超过上限 ${range.max}`,
+      },
+    }
+  }
+
   const vocabulary = validateArticle({
     article: result.data.article,
     allowedWords,
@@ -149,26 +168,12 @@ function evaluate({ content, params, allowedWords, range }) {
     return {
       result,
       vocabulary,
+      actualWords,
       feedback: {
         type: 'vocabulary',
         reason: `使用了 ${vocabulary.unknownWords.length} 个不在词汇表内的单词`,
         violations: vocabulary.violations,
         range,
-      },
-    }
-  }
-
-  const actualWords = countWords(result.data.article)
-  if (actualWords > range.max) {
-    return {
-      result,
-      vocabulary,
-      actualWords,
-      feedback: {
-        type: 'word_count',
-        actualWords,
-        range,
-        reason: `正文有 ${actualWords} 个英文单词，超过上限 ${range.max}`,
       },
     }
   }
@@ -331,21 +336,26 @@ export async function generateReading({ userId, body, signal }) {
   let content = first.content
   let finishReason = first.finishReason
   let state = evaluate({ content, params, allowedWords, range })
+  rounds.at(-1).actualWords = state.actualWords ?? null
 
   // 修正轮分两种额度：
-  //   content —— 结构 / 用词，默认 2 轮
-  //   length  —— 篇幅压缩，默认 1 轮
+  //   content —— 结构 / 用词，默认 2 轮（发生过重写时 +1）
+  //   length  —— 篇幅重写，默认 1 轮
   // 原来两者共用 maxRepairRounds，实测「先用词后压缩」时压缩只剩一次机会，
-  // 253 词只删到 239。分开计数后篇幅总有独立的一次机会，最坏 1+2+1=4 次调用。
+  // 253 词只删到 239。分开计数后篇幅总有独立的一次机会。
+  // 最坏 1 生成 + 2 用词 + 1 重写 + 1 用词 = 5 次调用（只有重写带出大量生词时才会走到）。
   // 每一轮都重新完整判断一次，避免旧实现里「上一轮的 feedback 没被更新」。
   let contentRounds = 0
   let lengthRounds = 0
 
   while (state.feedback) {
     const isLength = state.feedback.type === 'word_count'
+    // 重写是「重新编故事」，实测会带出十几个表外词。发生过重写时多给一轮
+    // 用词修正，避免「压短了但满篇生词 → 422」这种比超长更糟的结果。
+    const contentBudget = config.maxRepairRounds + (lengthRounds > 0 ? 1 : 0)
     const budgetLeft = isLength
       ? lengthRounds < config.maxLengthRounds
-      : contentRounds < config.maxRepairRounds
+      : contentRounds < contentBudget
     if (!budgetLeft) break
 
     if (isLength) lengthRounds += 1
@@ -378,6 +388,7 @@ export async function generateReading({ userId, body, signal }) {
     content = repaired.content
     finishReason = repaired.finishReason ?? finishReason
     state = evaluate({ content, params, allowedWords, range })
+    rounds.at(-1).actualWords = state.actualWords ?? null
 
     // 模型主动认输时再修也没用，跳出去交给下面的统一处理
     if (state.result.insufficient) break
@@ -433,11 +444,14 @@ export async function generateReading({ userId, body, signal }) {
   const newWords = unknownWords.map(describeNewWord)
   const deviation = Number((actualWords / params.targetWords).toFixed(3))
 
-  // 压不下来不判失败：界面展示的是区间，用户能看到真实词数
-  if (actualWords > range.max) {
+  // 超出 ±15% 不判失败：界面展示真实词数，用户自己能判断。
+  // 验收下界比提示词下界低（200 词请求允许 170），因为重写天然偏短，
+  // 再花一轮扩写更容易失控。这里只记日志，供后续调参。
+  const accepted = planAcceptedRange(params.targetWords)
+  if (actualWords < accepted.min || actualWords > accepted.max) {
     logger.warn(
-      { actualWords, max: range.max, repairRounds },
-      'article still exceeds word range after repair',
+      { actualWords, acceptedRange: accepted.label, repairRounds },
+      'article outside accepted word range',
     )
   }
 
@@ -522,7 +536,9 @@ export async function getCapacity({ userId, query }) {
 
   return {
     targetWords,
+    // wordRange = 生成时提示词要求的区间；acceptedRange = 验收口径（±15%）
     wordRange: range,
+    acceptedRange: planAcceptedRange(targetWords),
     available,
     maxUnknownWords: config.maxUnknownWords,
     levels,
