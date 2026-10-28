@@ -365,7 +365,7 @@ async function generateReadingInner({ userId, body, signal, diag }) {
 
   // 篇幅上限跟难度走（md/20 §2.2）。放在读库之前——这是纯参数判定，
   // 和「词汇量为 0 也先报参数错」是同一个约定。
-  const limit = limitOf(params.level)
+  const limit = limitOf(params.level, config.maxTargetWordsOverride)
   if (params.targetWords > limit.maxTargetWords) {
     throw targetWordsTooLong({
       level: params.level,
@@ -415,7 +415,9 @@ async function generateReadingInner({ userId, body, signal, diag }) {
     level: params.level,
     size: personalBasicWords.length,
     removed: removedBasicWords.length - ignoredRemovals.length,
-    version: basicWordsVersions[params.level],
+    // 全档统一 easy 600 之后，版本号也统一取 easy——记 requested level 的 hash
+    // 会让人误以为 medium/hard 用的是各自那份表
+    version: basicWordsVersions.easy,
   }
   diag.known = {
     knownWords: known.knownWords,
@@ -935,7 +937,7 @@ async function generateReadingInner({ userId, body, signal, diag }) {
       segments: segmentStats ?? [],
       // 词表与代码的版本号：跨版本采样不能放在一起比。
       // 基础词表按档记——只记一个 hash 会掩盖「easy 没变、medium 变了」
-      basicWordsVersion: basicWordsVersions[params.level],
+      basicWordsVersion: basicWordsVersions.easy,
       basicWordsLevel: params.level,
       // W8：门禁数字随文章留下，报告里才能回答「这篇为什么能过」
       knownWords: known.knownWords,
@@ -1009,7 +1011,7 @@ export async function getCapacity({ userId, query }) {
     const selection = selectVocabularyPool({ words, level, scope: vocabScope, targetWords })
     // 与 generateReadingInner 调的是同一个函数，预检数字和真实闸门不会分叉
     const known = measureKnownVocabulary({ level, learnedWords, removedBasicWords })
-    const limit = limitOf(level)
+    const limit = limitOf(level, config.maxTargetWordsOverride)
 
     available = selection.available
     levels[level] = {

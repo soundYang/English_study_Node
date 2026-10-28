@@ -21,6 +21,7 @@ import mongoose from 'mongoose'
 
 import { config } from '../src/config/index.js'
 import { basicWords } from '../src/modules/readings/basic-words.js'
+import { calendarWords } from '../src/modules/readings/calendar-words.js'
 import { GenerationFailure } from '../src/modules/readings/generation-failure.model.js'
 import { Reading } from '../src/modules/readings/reading.model.js'
 import { neededVocabulary, requiredTargetWords } from '../src/modules/readings/vocabulary-pool.js'
@@ -46,6 +47,38 @@ const FIXTURES = {
   // 日历 19 + 至少 1181 个个人词。rich 只有 720 个可用词，永远过不了门，
   // 用它测 hard 等于在测闸门。1800 个全部算已学，留出余量
   full: { userId: 'fixture-full', count: 1800, mixedStatus: false },
+
+  // ——— md/26 门槛采样：验证《设计方案》§3 的「可用词汇总量 → 篇幅上限」 ———
+  //
+  // 三份基础词表一个字都不改，只调个人词库规模。
+  // gate-* 的计数 = requiredKnown − 该档基础表 − 日历词 + 1，
+  // 那个 +1 是给 knownWords 去重留的余量（个人词若与日历词撞上一个，少算 1 个就会差 1 卡在门外）。
+  //
+  // 基础词汇统一为 easy 600 之后（三档取同一份表），门槛变成：
+  //   easy   1000 − 600 − 19 = 381 → 382
+  //   medium 1900 − 600 − 19 = 1281 → 1282
+  //   hard   3778 − 600 − 19 = 3159 → 3160
+  //
+  // hard 组两个 fixture 都超过 COCA 6000 名内可用的词数（扣掉基础表后不够），
+  // 所以把取词区间放宽到 9000，保证等距抽样仍然可复现。
+  'gate-easy': { userId: 'fixture-gate-easy', count: 382, mixedStatus: false },
+  'gate-medium': { userId: 'fixture-gate-medium', count: 1282, mixedStatus: false, rankMax: 8000 },
+  'gate-hard': { userId: 'fixture-gate-hard', count: 3160, mixedStatus: false, rankMax: 9000 },
+  // 对照组：B 门之上还有余量，用来区分「刚好过门写不出」和「本来就写不出」
+  'rich-easy': { userId: 'fixture-rich-easy', count: 800, mixedStatus: false },
+  'rich-hard': { userId: 'fixture-rich-hard', count: 3800, mixedStatus: false, rankMax: 9000 },
+  //
+  // form-* 是「按《设计方案》§3 的门槛造出来的规模」，每个都取该行区间的**上界**
+  // （对用户最宽松的那一端），用来证明「表单给得再多也过不了 B 门」。
+  // 基础词统一 600 之后，总量 = 个人词 + 600 + 19：
+  //   300 词行 600–899   → 899 − 619  = 280
+  //   500 词行 1200–1599 → 1599 − 619 = 980
+  //   800 词行 3000+     → 3000 − 619 = 2381
+  // 预期全部 422 `VOCABULARY_TOO_SMALL`（899 < 1000、1599 < 1900、3000 < 3778），
+  // 拦在调模型之前，零成本。
+  'form-easy': { userId: 'fixture-form-easy', count: 280, mixedStatus: false },
+  'form-medium': { userId: 'fixture-form-medium', count: 980, mixedStatus: false, rankMax: 8000 },
+  'form-hard': { userId: 'fixture-form-hard', count: 2381, mixedStatus: false, rankMax: 9000 },
 }
 
 const DAY_MS = 86_400_000
@@ -79,12 +112,14 @@ function resolveAnchor() {
  * 等距而不是随机：随机抽样每次结果不同，回归对比就失去意义；
  * 索引固定，同一个 --fixture 每次拿到的词表逐字相同。
  */
-function pickWords(count) {
-  const reserved = new Set(basicWords)
+function pickWords(count, rankMax = RANK_MAX) {
+  // 日历词也要排除：它们会同时出现在 knownWords 的并集里，个人词撞上一个，
+  // B 门就会少算 1 个——gate-* 是卡着门槛造的，差 1 个就进不去
+  const reserved = new Set([...basicWords, ...calendarWords])
   const pool = [...wordRanks.entries()]
     .filter(
       ([word, rank]) =>
-        /^[a-z]{3,}$/.test(word) && rank >= RANK_MIN && rank <= RANK_MAX && !reserved.has(word),
+        /^[a-z]{3,}$/.test(word) && rank >= RANK_MIN && rank <= rankMax && !reserved.has(word),
     )
     .sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0]))
 
@@ -97,8 +132,8 @@ function pickWords(count) {
   return Array.from({ length: count }, (_, index) => pool[Math.floor(index * step)])
 }
 
-function buildDocs({ userId, count, anchor, mixedStatus }) {
-  const words = pickWords(count)
+function buildDocs({ userId, count, anchor, mixedStatus, rankMax = RANK_MAX }) {
+  const words = pickWords(count, rankMax)
 
   return words.map(([word, cocaRank], index) => {
     // 状态：10% 已掌握 / 20% 新词 / 70% 学习中（方案写的是 reviewing，Word 里没有这个枚举）
@@ -210,6 +245,10 @@ async function main() {
   console.log('  DEFAULT_USER_ID=fixture-rich PORT=3100 node src/server.js')
   console.log('  DEFAULT_USER_ID=fixture-thin PORT=3101 node src/server.js')
   console.log('  DEFAULT_USER_ID=fixture-full PORT=3102 node src/server.js')
+  console.log('\nmd/26 门槛采样要额外带上篇幅覆盖（默认上限仍是 easy 300 / medium 450 / hard 600）：')
+  console.log('  DEFAULT_USER_ID=fixture-gate-easy PORT=3100 RATE_LIMIT_ENABLED=false MAX_TARGET_WORDS=800 node src/server.js')
+  console.log('  DEFAULT_USER_ID=fixture-gate-medium PORT=3101 RATE_LIMIT_ENABLED=false MAX_TARGET_WORDS=800 node src/server.js')
+  console.log('  DEFAULT_USER_ID=fixture-gate-hard PORT=3102 RATE_LIMIT_ENABLED=false MAX_TARGET_WORDS=800 node src/server.js')
   console.log('\n注意：today_new / today_reviewed 依赖锚点日期，seed 与 batch 最好同一天跑。')
 }
 

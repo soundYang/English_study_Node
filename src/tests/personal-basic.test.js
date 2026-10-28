@@ -123,16 +123,17 @@ describe('个人基础词 · 生成链路', () => {
     expect(section).toMatch(/\bthe\b/)
   })
 
-  it('难度决定基础词表：hard 请求拿到 2578 词的完整表', async () => {
-    // hard 的已知词门 3778 = 2578 基础词 + 1200 个人词
-    await seedWords(1200)
+  it('基础词表不再随难度变化：hard 请求拿到的仍是 easy 那 600 个', async () => {
+    // 2026-10-28 产品决定：基础词汇只有 600 多个，三档共用同一份。
+    // hard 的已知词门 3778 依旧不变，所以个人词库得自己补到 3159 个左右。
+    await seedWords(3200)
     chatJson.mockResolvedValue(reply(makePayload(ARTICLE, 'hard')))
 
     const res = await generate({ level: 'hard', targetWords: 100, questionCount: 3 })
 
     expect(res.status).toBe(201)
     expect(basicSectionOf(chatJson.mock.calls[0])).toContain(
-      `【基础词】共 ${basicWordsByLevel.hard.length} 个`,
+      `【基础词】共 ${basicWordsByLevel.easy.length} 个`,
     )
   })
 

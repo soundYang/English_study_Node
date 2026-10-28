@@ -20,8 +20,13 @@ import {
 const fakeWords = (count, prefix = 'known') =>
   Array.from({ length: count }, (_, index) => `${prefix}${index}`)
 
-/** 基础词 + 日历词去重后的并集大小（may 同时出现在两份清单里） */
-const baseUnion = (level) => new Set([...basicWordsByLevel[level], ...calendarWords]).size
+/**
+ * 基础词 + 日历词去重后的并集大小（may 同时出现在两份清单里）。
+ *
+ * 2026-10-28 起基础词汇全档只有 easy 600 这一份（`getBasicWords()` 不再按档取表），
+ * 所以这里三档算出来是同一个数。保留 `level` 参数是为了让断言读起来仍能指到档位。
+ */
+const baseUnion = () => new Set([...basicWordsByLevel.easy, ...calendarWords]).size
 
 describe('LEVEL_LIMITS', () => {
   it('三档数字与 md/20 §2.2 一致', () => {
@@ -112,8 +117,8 @@ describe('measureKnownVocabulary', () => {
     expect(after.knownWords).toBe(before.knownWords)
   })
 
-  it('hard 的个人词下限 = 3778 −（2578 基础 ∪ 日历）', () => {
-    const needed = 3778 - baseUnion('hard')
+  it('hard 的个人词下限 = 3778 −（600 基础 ∪ 日历）= 3159', () => {
+    const needed = 3778 - baseUnion()
     const almost = measureKnownVocabulary({
       level: 'hard',
       learnedWords: fakeWords(needed - 1),

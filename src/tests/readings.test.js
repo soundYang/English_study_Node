@@ -81,7 +81,8 @@ const VALID_BODY = { level: 'easy', targetWords: 100, questionCount: 3 }
  * easy 的生词预算是 0（md/20 §3）：一个生词就会触发修正轮。
  * 「预算内放行」这条规则只有 medium(3) / hard(5) 才观察得到，
  * 所以放行类用例走 medium；easy + 1 个生词单独有一条用例守着。
- * medium 的已知词门是 1900 = 1340 基础词 + 560 个人词，600 个填充词留余量。
+ * medium 的已知词门是 1900；基础词三档统一 600 之后，个人词库至少要 1282 个，
+ * 这些用例统一填 1300 个留一点余量。
  */
 const MEDIUM_BODY = { level: 'medium', targetWords: 100, questionCount: 3 }
 
@@ -410,7 +411,7 @@ describe('POST /api/readings/generate · 结构校验与修正轮', () => {
 
 describe('POST /api/readings/generate · 词汇校验', () => {
   it('表外词不超过预算时直接放行，不进入修正轮（medium 预算 3）', async () => {
-    await seedWords(600)
+    await seedWords(1300)
     chatJson.mockResolvedValue(reply(makePayload({ article: `${ARTICLE} Quizzical.` })))
 
     const res = await generate(MEDIUM_BODY)
@@ -444,7 +445,7 @@ describe('POST /api/readings/generate · 词汇校验', () => {
   })
 
   it('放行的生词带词典音标与释义', async () => {
-    await seedWords(600)
+    await seedWords(1300)
     // loud 的 rank 是 3120，在 §4.2 扩表后的放行范围之外，才测得到「生词」分支
     chatJson.mockResolvedValue(reply(makePayload({ article: `${ARTICLE} Loud.` })))
 
@@ -532,7 +533,7 @@ describe('POST /api/readings/generate · 词汇校验', () => {
   })
 
   it('大写词不在 names 里时，仍按普通词处理并标注为未学', async () => {
-    await seedWords(600)
+    await seedWords(1300)
     chatJson.mockResolvedValue(reply(makePayload({ article: `${ARTICLE} Lina.` })))
 
     const res = await generate(MEDIUM_BODY)

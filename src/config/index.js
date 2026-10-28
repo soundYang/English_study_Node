@@ -121,6 +121,14 @@ export const config = Object.freeze({
   // 兼容字段：文档与旧脚本还引用它，新代码不再读。
   maxUnknownWords: toNumber('MAX_UNKNOWN_WORDS', 5),
 
+  // 篇幅上限的**全局覆盖**，只给采样实例用（md/26）。
+  // 没设置时是 null，表示按难度取 `LEVEL_LIMITS[level].maxTargetWords`；
+  // 显式设置时三档压成同一个数，用于验证「700/800 词到底写不写得出」。
+  // 与 MAX_UNKNOWN_WORDS 是同一套覆盖模式：调试旋钮，不是产品参数。
+  maxTargetWordsOverride: process.env.MAX_TARGET_WORDS?.trim()
+    ? toNumber('MAX_TARGET_WORDS', 600)
+    : null,
+
   // 限流（次 / 分钟）
   // 总开关：测试环境默认关闭。开着的话一个 50 次预检的验收用例会把后面的用例
   // 一起打成 429，且失败位置看起来跟限流毫无关系。要验证限流本身的用例

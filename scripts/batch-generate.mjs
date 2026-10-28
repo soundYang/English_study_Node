@@ -40,6 +40,15 @@ const FIXTURE_USER = {
   rich: 'fixture-rich',
   thin: 'fixture-thin',
   full: 'fixture-full',
+  // md/26 门槛采样
+  'gate-easy': 'fixture-gate-easy',
+  'gate-medium': 'fixture-gate-medium',
+  'gate-hard': 'fixture-gate-hard',
+  'rich-easy': 'fixture-rich-easy',
+  'rich-hard': 'fixture-rich-hard',
+  'form-easy': 'fixture-form-easy',
+  'form-medium': 'fixture-form-medium',
+  'form-hard': 'fixture-form-hard',
 }
 
 /**
@@ -117,6 +126,31 @@ const CASES = [
     vocabScope: ['all'],
     expect: 'VOCABULARY_TOO_SMALL',
   },
+
+  // ——— md/26：基础词量门槛采样（《设计方案》§3 的可达性验证） ———
+  //
+  // 三份基础词表不动，只调个人词库。level 按篇幅绑定。
+  // gate-* = B 门刚好过 1 个词；form-* = 按《设计方案》§3 的门槛造的总量。
+  //
+  // 启动实例时必须带 `MAX_TARGET_WORDS=800`，否则 700/800 会被档位上限
+  // 拦成 400，测到的是闸门而不是能力。
+  { id: 16, group: 'gate', fixture: 'gate-easy', level: 'easy', targetWords: 100, vocabScope: ['all'], expect: 'ok' },
+  { id: 17, group: 'gate', fixture: 'gate-easy', level: 'easy', targetWords: 200, vocabScope: ['all'], expect: 'ok' },
+  { id: 18, group: 'gate', fixture: 'gate-easy', level: 'easy', targetWords: 300, vocabScope: ['all'], expect: 'ok' },
+  { id: 19, group: 'gate', fixture: 'gate-medium', level: 'medium', targetWords: 400, vocabScope: ['all'], expect: 'ok' },
+  { id: 20, group: 'gate', fixture: 'gate-medium', level: 'medium', targetWords: 450, vocabScope: ['all'], expect: 'ok' },
+  { id: 21, group: 'gate', fixture: 'gate-medium', level: 'medium', targetWords: 500, vocabScope: ['all'], expect: 'ok' },
+  { id: 22, group: 'gate', fixture: 'gate-hard', level: 'hard', targetWords: 600, vocabScope: ['all'], expect: 'ok' },
+  { id: 23, group: 'gate', fixture: 'gate-hard', level: 'hard', targetWords: 700, vocabScope: ['all'], expect: 'ok' },
+  { id: 24, group: 'gate', fixture: 'gate-hard', level: 'hard', targetWords: 800, vocabScope: ['all'], expect: 'ok' },
+  // 对照：B 门之上有余量
+  { id: 25, group: 'gate', fixture: 'rich-easy', level: 'easy', targetWords: 300, vocabScope: ['all'], expect: 'ok' },
+  { id: 26, group: 'gate', fixture: 'rich-hard', level: 'hard', targetWords: 600, vocabScope: ['all'], expect: 'ok' },
+  { id: 27, group: 'gate', fixture: 'rich-hard', level: 'hard', targetWords: 800, vocabScope: ['all'], expect: 'ok' },
+  // 表单原值：总量按 §3 门槛造，预期全部被 B 门拦下（不调模型，不产生费用）
+  { id: 28, group: 'gate', fixture: 'form-easy', level: 'easy', targetWords: 300, vocabScope: ['all'], expect: 'VOCABULARY_TOO_SMALL' },
+  { id: 29, group: 'gate', fixture: 'form-medium', level: 'medium', targetWords: 500, vocabScope: ['all'], expect: 'VOCABULARY_TOO_SMALL' },
+  { id: 30, group: 'gate', fixture: 'form-hard', level: 'hard', targetWords: 800, vocabScope: ['all'], expect: 'VOCABULARY_TOO_SMALL' },
 ]
 
 const QUESTION_COUNT = 3
@@ -379,7 +413,8 @@ function summarize(allCases, times) {
  */
 function gateOf({ words, learnedWords, removedBasicWords, testCase }) {
   const { level, targetWords, vocabScope } = testCase
-  const limit = limitOf(level)
+  // 与服务器同源：实例带 MAX_TARGET_WORDS 时，dry-run 也必须按同一个上限判
+  const limit = limitOf(level, config.maxTargetWordsOverride)
 
   if (targetWords > limit.maxTargetWords) {
     return { code: 'INVALID_REQUEST', note: `档位上限 ${limit.maxTargetWords} 词` }
@@ -445,6 +480,7 @@ async function main() {
   const base = argValue('base', 'http://127.0.0.1:3100')
   const times = Number(argValue('times', '3'))
   const fixtureArg = argValue('fixture')
+  const groupArg = argValue('group')
   const caseArg = argValue('case')
   const withArticle = hasFlag('with-article')
   // 默认落在 samples/ 而不是 md/：这是跑出来的数据不是文档，md/ 下的文件按 NN_ 编号
@@ -458,6 +494,11 @@ async function main() {
   if (caseArg) {
     cases = cases.filter((item) => item.id === Number(caseArg))
     if (cases.length === 0) throw new Error(`没有编号为 ${caseArg} 的用例`)
+  } else if (groupArg) {
+    // md/26 的 gate 组：A/B/C 三组用例共用，按 fixture 分属不同实例
+    cases = cases.filter((item) => item.group === groupArg)
+    if (cases.length === 0) throw new Error(`没有 group 为 ${groupArg} 的用例`)
+    if (fixtureArg) cases = cases.filter((item) => item.fixture === fixtureArg)
   } else if (fixtureArg) {
     cases = cases.filter((item) => item.fixture === fixtureArg)
     if (cases.length === 0) throw new Error(`fixture ${fixtureArg} 没有用例（可选 rich / thin）`)

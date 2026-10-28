@@ -22,9 +22,18 @@ export const LEVEL_LIMITS = Object.freeze({
   hard: Object.freeze({ maxTargetWords: 600, requiredKnown: 3778, unknownBudget: 5 }),
 })
 
-/** 未知难度按 easy 处理：宁可少放行，也不要因为一个拼写错误给出更宽松的标准 */
-export function limitOf(level) {
-  return LEVEL_LIMITS[level] ?? LEVEL_LIMITS.easy
+/**
+ * 未知难度按 easy 处理：宁可少放行，也不要因为一个拼写错误给出更宽松的标准。
+ *
+ * `override` 只来自显式设置的环境变量（MAX_TARGET_WORDS），用于采样时验证
+ * 「超过本档默认上限的篇幅到底写不写得出」。没设置时原样返回冻结对象，
+ * 调用方拿到的仍是同一份常量，默认行为零变化。
+ */
+export function limitOf(level, override = null) {
+  const limit = LEVEL_LIMITS[level] ?? LEVEL_LIMITS.easy
+  if (!Number.isInteger(override)) return limit
+
+  return Object.freeze({ ...limit, maxTargetWords: override })
 }
 
 /**

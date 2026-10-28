@@ -275,7 +275,8 @@ describe('分段路径 · 题目修正（W11 缺口 1）', () => {
 
 describe('分段路径 · 降级链', () => {
   it('某段永不通过 → 丢弃该段，整条链路仍 201，总长落在验收区间', async () => {
-    await seedWords(1200)
+    // 基础词三档统一 600 之后，hard 的已知词门 3778 要靠个人词库补到 3160 个
+    await seedWords(3200)
     // hard/600 → 10 段；丢 1 段后 9 段仍 ≥ 510 词
     chatJson.mockImplementation(async ({ messages }) => {
       const step = classify(messages)

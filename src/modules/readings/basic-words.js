@@ -5,15 +5,14 @@ import { fileURLToPath } from 'node:url'
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
 
 /**
- * 分档基础词白名单（md/21 W2）。
+ * 基础词白名单。
  *
- * 三档各自回答一个不同的问题，以前混在一个文件里，改一边必然坏另一边：
- *   easy   600  —— 人工筛选（功能词 179 + 高频实词 421），产品承诺「认识这些就能读」
- *   medium 1340 —— 以 easy 为基数补到 rank ≤ 1500
- *   hard   2578 —— 再补到 rank ≤ 3000，与 `missing_common` 判定线对齐
+ * 历史（md/21 W2）：曾经按难度分三档，medium/hard 用 COCA 排名自动扩容
+ * （medium 补到 rank ≤ 1500、hard 补到 rank ≤ 3000）。
  *
- * 难度越高，允许出现的基础词越多——这是「难度」唯一的客观含义：
- * 不是句子更长，而是它要求你认识的词更多。
+ * 现状（2026-10-28 产品决定）：**基础词汇只有 easy 这 600 多个**
+ * （功能词 179 + 人工筛选的高频实词 421，排除了公司/政务/死亡等成人话题词）。
+ * 三份文件仍会加载，但生成链路统一走 `getBasicWords()`，三档取到的都是同一份。
  *
  * 文件缺失时逐级降档而不是抛错：少了词表只影响生成质量，
  * 不应该让服务起不来（沿用原来的容错原则）。
@@ -54,9 +53,25 @@ export const basicWordsByLevel = Object.freeze(
   Object.fromEntries(LEVELS.map((level) => [level, loadFrom(level)])),
 )
 
-/** 未知难度按 easy 处理：宁可少放行，也不要悄悄用到 hard 的全量表 */
-export function getBasicWords(level) {
-  return basicWordsByLevel[level] ?? basicWordsByLevel.easy
+/**
+ * 全档统一用 easy 那一份（2026-10-28 产品决定：基础词汇就是这 600 多个）。
+ *
+ * medium / hard 两份文件仍然保留并继续加载（`basicWordsByLevel` 的出口不变），
+ * 但**生成链路不再按难度取表**——三档共用同一份白名单。
+ *
+ * 这样做把「难度」的承载物收敛到三处：
+ *   · `LEVEL_LIMITS.requiredKnown` —— 要求你认识多少词（个人词库为主）
+ *   · `LEVEL_LIMITS.maxTargetWords` —— 写多长
+ *   · `LEVEL_LIMITS.unknownBudget`  —— 允许带几个生词
+ * 不再有「基础表变大 ⇒ 难度变大」这个隐含杠杆。
+ *
+ * 代价（md/26 记录）：基础表从 2578 降到 600 后，hard 的 B 门要 3778 个已知词，
+ * 意味着个人词库必须攒到 3159 个；medium 要 1281 个。
+ *
+ * 参数保留只是为了让旧的调用点与测试不必同步改签名。
+ */
+export function getBasicWords() {
+  return basicWordsByLevel.easy
 }
 
 /**
@@ -78,19 +93,21 @@ export const functionWords = Object.freeze(loadList(join(ROOT, 'data/function-wo
 const FUNCTION_WORD_SET = new Set(functionWords)
 
 /**
- * 个人基础词 = 该档基础词 − 用户标记为 `new` 的词。
+ * 个人基础词 = 基础词（全档同一份 600）− 用户标记为 `new` 的词。
+ *
+ * `level` 参数保留但不再影响取哪份词表，见 `getBasicWords` 的说明。
  *
  * 功能词不参与减法。用户把 `the` 标成 new 只会在日志里留一条警告，
  * 不会真的让全站文章写不出来。
  *
- * @param {'easy'|'medium'|'hard'} level
+ * @param {'easy'|'medium'|'hard'} level 仅用于保持调用签名，当前不影响结果
  * @param {Iterable<string>} removedWords 用户 status = new 的词
  */
 export function getPersonalBasicWords(level, removedWords) {
   const removed = new Set(removedWords)
-  if (removed.size === 0) return getBasicWords(level)
+  if (removed.size === 0) return getBasicWords()
 
-  return getBasicWords(level).filter((word) => FUNCTION_WORD_SET.has(word) || !removed.has(word))
+  return getBasicWords().filter((word) => FUNCTION_WORD_SET.has(word) || !removed.has(word))
 }
 
 /** 用户想移除、但因为是功能词而被忽略的词，供调用方记日志 */

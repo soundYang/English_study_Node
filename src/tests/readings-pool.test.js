@@ -13,10 +13,19 @@ vi.mock('../modules/readings/ai.client.js', () => ({ chatJson }))
 const { createApp } = await import('../app.js')
 const { config } = await import('../config/index.js')
 const { basicWordsByLevel } = await import('../modules/readings/basic-words.js')
+const { calendarWords } = await import('../modules/readings/calendar-words.js')
 const { Reading } = await import('../modules/readings/reading.model.js')
 const { Word } = await import('../modules/words/word.model.js')
 
 const app = createApp()
+
+/**
+ * 基础词（三档统一 easy 600）∪ 日历词的并集大小 = 618（may 等 1 个词两边都有）。
+ *
+ * 2026-10-28 起基础词表不再按难度变化，所以 knownWords 只有这一个地板。
+ * 原来每个档位各写一个数字（1018 / 1758 / 2996），现在三档同为 personal + 618。
+ */
+const BASE_UNION = new Set([...basicWordsByLevel.easy, ...calendarWords]).size
 
 /** 只用基础 600 词 + 声明的人名，保证过得了词汇校验 */
 const ARTICLE =
@@ -84,8 +93,9 @@ describe('词量不足以支撑篇幅', () => {
   })
 
   it('A 门只看本次 scope：缩短篇幅（或缩小词源）就能过', async () => {
-    // 已知词门看全库，与 scope 无关：1200 + hard 2578 + 日历 > 3778，两道请求都能过 B 门
-    await seedWords(1200, 'old')
+    // 已知词门看全库，与 scope 无关。基础词统一 600 后 hard 要 3778，
+    // 个人词库得攒到 3160 个才跨得过去
+    await seedWords(3200, 'old')
     await Word.collection.updateMany(
       { userId: config.defaultUserId },
       { $set: { createdAt: new Date('2020-01-01T00:00:00Z') } },
@@ -128,8 +138,8 @@ describe('词量不足以支撑篇幅', () => {
       kind: 'known_words',
       level: 'hard',
       required: 3778,
-      // 45 个个人词 ∪ hard 2578 ∪ 日历 18（may 已在 hard 表里）——并集去重后的真实数字
-      available: 45 + 2578 + 18,
+      // 45 个个人词 ∪ 基础 600 ∪ 日历（去重后）——并集去重后的真实数字
+      available: 45 + BASE_UNION,
     })
     expect(res.body.error.message).toContain('还差')
     expect(chatJson).not.toHaveBeenCalled()
@@ -137,8 +147,9 @@ describe('词量不足以支撑篇幅', () => {
 })
 
 describe('候选池与目标词计划', () => {
-  it('600 个词 + medium + 300 → 池子取 50% 得 300 个', async () => {
-    await seedWords(600)
+  it('1282 个词 + medium + 300 → 池子取 50% 得 641 个', async () => {
+    // 基础词统一 600 后 medium 的 B 门要 1900，个人词库至少 1282 个
+    await seedWords(1282)
     chatJson.mockResolvedValue(reply)
 
     const res = await generate({ level: 'medium', targetWords: 300, questionCount: 3 })
@@ -146,19 +157,20 @@ describe('候选池与目标词计划', () => {
     expect(res.status).toBe(201)
 
     const doc = await Reading.findById(res.body.id).lean()
-    expect(doc.vocabularySnapshot).toHaveLength(300)
-    expect(doc.targetPlan.poolSize).toBe(300)
+    // ceil(1282 × 0.5) = 641，没到 POOL_LIMIT 800
+    expect(doc.vocabularySnapshot).toHaveLength(641)
+    expect(doc.targetPlan.poolSize).toBe(641)
     expect(doc.targetPlan.requiredWords).toBe(30)
     expect(doc.targetPlan.focusWords).toHaveLength(11)
     expect(doc.targetPlan.scope).toEqual(['all'])
-    expect(doc.aiMeta.candidatePoolSize).toBe(300)
+    expect(doc.aiMeta.candidatePoolSize).toBe(641)
     expect(doc.aiMeta.requiredWords).toBe(30)
   })
 
   it('候选池只会更小，不会因为词库大就按 createdAt 截断', async () => {
-    // hard 的已知词门是 3778，1200 个人词刚好跨过去；70% = 840 → 封顶 800
+    // hard 的已知词门是 3778，3160 个人词才跨得过去；70% = 2212 → 封顶 800
     // （POOL_LIMIT，与 targetWords 上限无关）。这也意味着 hard 场景下 800 总是生效。
-    await seedWords(1200)
+    await seedWords(3200)
     chatJson.mockResolvedValue(reply)
 
     const res = await generate({ level: 'hard', targetWords: 600, questionCount: 3 })
@@ -236,8 +248,8 @@ describe('生成前预检 GET /capacity', () => {
           required: 58,
           sufficient: true,
           shortage: 0,
-          // 400 个人词 ∪ 600 基础词 ∪ 日历 18 = 1018 ≥ 1000
-          knownWords: 1018,
+          // 400 个人词 ∪ 基础 600 ∪ 日历（去重后）= 1018 ≥ 1000
+          knownWords: 400 + BASE_UNION,
           requiredKnown: 1000,
           knownSufficient: true,
           knownShortage: 0,
@@ -248,21 +260,21 @@ describe('生成前预检 GET /capacity', () => {
         medium: {
           required: 40,
           sufficient: true,
-          // 400 + 1340 + 18 = 1758 < 1900：词量够写，但这个难度还没解锁
-          knownWords: 1758,
+          // 基础词统一 600 后 medium 也只剩 1018 < 1900：词量够写，但这个难度还没解锁
+          knownWords: 400 + BASE_UNION,
           requiredKnown: 1900,
           knownSufficient: false,
-          knownShortage: 142,
+          knownShortage: 1900 - (400 + BASE_UNION),
           unknownBudget: 3,
           maxTargetWords: 450,
         },
         hard: {
           required: 29,
           sufficient: true,
-          knownWords: 2996,
+          knownWords: 400 + BASE_UNION,
           requiredKnown: 3778,
           knownSufficient: false,
-          knownShortage: 782,
+          knownShortage: 3778 - (400 + BASE_UNION),
           unknownBudget: 5,
           maxTargetWords: 600,
         },
@@ -279,7 +291,7 @@ describe('生成前预检 GET /capacity', () => {
       required: 86,
       sufficient: false,
       shortage: 41,
-      knownWords: 2641,
+      knownWords: 45 + BASE_UNION,
       knownSufficient: false,
     })
 
@@ -370,12 +382,12 @@ describe('生成前预检 GET /capacity', () => {
 
 describe('700 词库的产品含义（md/20 §2.3）', () => {
   /**
-   * 700 个词，其中 300 个本来就在 medium 基础词里。
+   * 700 个词，其中 300 个本来就在基础词表里（现在三档共用 easy 600）。
    * 真实用户的词库不可能与基础表不相交——把 700 个填充词当成「互不相交」，
-   * 会算出 700 + 1340 > 1900 的假通过，验收标准就测不到。
+   * 会算出 700 + 600 > 1900 的假通过，验收标准就测不到。
    */
   async function seed700() {
-    const docs = basicWordsByLevel.medium.slice(0, 300).map((word, index) => ({
+    const docs = basicWordsByLevel.easy.slice(0, 300).map((word, index) => ({
       userId: config.defaultUserId,
       word,
       status: 'learning',
@@ -403,17 +415,17 @@ describe('700 词库的产品含义（md/20 §2.3）', () => {
     const easy = await generate({ level: 'easy', targetWords: 300, questionCount: 3 })
     expect(easy.status).toBe(201)
 
-    // medium：1340 + 400 + 18 = 1758 < 1900，短线 142
+    // medium：基础词同样是 600，于是也只剩 1018 < 1900，短线 882
     const medium = await generate({ level: 'medium', targetWords: 300, questionCount: 3 })
     expect(medium.status).toBe(422)
     expect(medium.body.error.details).toMatchObject({
       kind: 'known_words',
       level: 'medium',
       required: 1900,
-      available: 1758,
-      shortage: 142,
+      available: 400 + BASE_UNION,
+      shortage: 1900 - (400 + BASE_UNION),
     })
-    expect(medium.body.error.message).toContain('还差 142 个')
+    expect(medium.body.error.message).toContain('还差 882 个')
   })
 })
 
