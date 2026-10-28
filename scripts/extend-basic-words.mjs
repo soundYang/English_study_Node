@@ -16,6 +16,12 @@
  *   node scripts/extend-basic-words.mjs --max-rank 2500      # 覆盖到更低的词频
  *   node scripts/extend-basic-words.mjs --target 2000        # 硬性限制词数
  *   node scripts/extend-basic-words.mjs --out /tmp/next.json # 先落临时文件做 diff
+ *   node scripts/extend-basic-words.mjs --base data/basic-words.easy.json --max-rank 1500
+ *                                                            # 以 easy 为基数生成 medium
+ *
+ * `--base` 是分档词表的前提：不指定时以 data/basic-words.hard.json 为基数，
+ * 拿 2578 当基数去补 1500 一个词也加不进来（§W2）。
+ * 不指定 `--out` 时写回 base 本身，也就是「在原表基础上扩容」。
  *
  * 产物是**完整词表**（600 + 新增），按字母序输出——和原文件同格式，diff 稳定。
  * 写回后 `basicWordsVersion` 必然变化，跨版本的采样不能放在一起比（§3.3）。
@@ -32,7 +38,8 @@ import {
 } from './lib/basic-word-rules.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const BASIC_FILE = join(ROOT, 'data/basic-words.json')
+/** 默认基数 = hard 档；其它档用 --base 指定（easy / medium） */
+const BASIC_FILE = join(ROOT, 'data/basic-words.hard.json')
 const RANKS_FILE = join(ROOT, 'data/word-ranks.json')
 
 /**
@@ -41,7 +48,7 @@ const RANKS_FILE = join(ROOT, 'data/word-ranks.json')
  * 补到 2000 个词只走到 rank 2302，中间那段 breakfast(2402)/rapidly(2550) 还会误判。
  * `--target` 只是安全阀，防止哪天源数据变了把词表撑爆。
  */
-const DEFAULTS = { target: null, maxRank: 3000, preview: 30, out: BASIC_FILE }
+const DEFAULTS = { target: null, maxRank: 3000, preview: 30, base: BASIC_FILE, out: null }
 
 function parseArgs(argv) {
   const args = { ...DEFAULTS, dryRun: false }
@@ -51,6 +58,7 @@ function parseArgs(argv) {
     else if (argv[i] === '--target' && argv[i + 1]) args.target = Number(argv[++i])
     else if (argv[i] === '--max-rank' && argv[i + 1]) args.maxRank = Number(argv[++i])
     else if (argv[i] === '--preview' && argv[i + 1]) args.preview = Number(argv[++i])
+    else if (argv[i] === '--base' && argv[i + 1]) args.base = resolve(argv[++i])
     else if (argv[i] === '--out' && argv[i + 1]) args.out = resolve(argv[++i])
   }
 
@@ -58,6 +66,9 @@ function parseArgs(argv) {
     throw new Error('--target 必须是正整数')
   }
   if (!Number.isInteger(args.maxRank) || args.maxRank <= 0) throw new Error('--max-rank 必须是正整数')
+
+  // 不指定输出时写回基数本身：扩容语义，而不是总写一个固定文件
+  args.out ??= args.base
 
   return args
 }
@@ -85,7 +96,7 @@ function rejectReason(word, entry) {
 async function main() {
   const args = parseArgs(process.argv.slice(2))
 
-  const current = JSON.parse(readFileSync(BASIC_FILE, 'utf8'))
+  const current = JSON.parse(readFileSync(args.base, 'utf8'))
   const ranks = JSON.parse(readFileSync(RANKS_FILE, 'utf8'))
 
   // 词库加载会做一次和线上一致的 isSavable 过滤，拿到的 entry 才带原始大小写与释义
@@ -122,6 +133,7 @@ async function main() {
 
   const result = [...keep].sort()
 
+  console.log(`基数文件      ${args.base}`)
   console.log(`当前词表      ${before}`)
   console.log(
     `补词范围      rank ≤ ${args.maxRank}` +

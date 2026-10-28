@@ -16,7 +16,7 @@ import { ABBREVIATIONS, ABBREVIATION_WORDS } from './abbreviations.js'
 import { chatJson } from './ai.client.js'
 import { buildMessages, buildRepairMessages } from './ai.prompt.js'
 import { parseAiContent, validateAiReading } from './ai.schema.js'
-import { basicWords } from './basic-words.js'
+import { getPersonalBasicWords, ignoredFunctionWordRemovals } from './basic-words.js'
 import { calendarWords } from './calendar-words.js'
 import { countWords, planAcceptedRange, planWordRange } from './word-count.js'
 import { generationFailureRepository as failureRepo } from './generation-failure.repository.js'
@@ -32,7 +32,11 @@ import {
 import { buildTargetPlan } from './target-plan.js'
 import { collectWordForms, validateArticle } from './vocabulary.service.js'
 import { selectVocabularyPool } from './vocabulary-pool.js'
-import { basicWordsVersion, codeVersion, irregularFormsVersion } from './versions.js'
+import {
+  basicWordsVersions,
+  codeVersion,
+  irregularFormsVersion,
+} from './versions.js'
 
 /**
  * 调一次模型，并把这一轮的用量记进 rounds。
@@ -292,7 +296,8 @@ async function recordFailure(diag, error) {
 
     // 快照要和成功样本记同一套，否则两类数据没法同框对比
     model: config.deepseekModel,
-    basicWordsVersion,
+    basicWordsVersion: diag.basicWords?.version ?? basicWordsVersions.hard,
+    basicWordsLevel: diag.basicWords?.level ?? null,
     codeVersion,
   }
 
@@ -370,6 +375,27 @@ async function generateReadingInner({ userId, body, signal, diag }) {
   }
 
   const words = await wordRepository.findVocabulary(userId)
+
+  // 个人基础词：该难度的基础表 − 用户标记为 new 的词（功能词不可移除）
+  const removedBasicWords = (await wordRepository.findNewWords(userId)).map((item) => item.word)
+  const ignoredRemovals = ignoredFunctionWordRemovals(removedBasicWords)
+  if (ignoredRemovals.length > 0) {
+    logger.warn(
+      { words: ignoredRemovals },
+      'basic words: function words cannot be removed, ignored',
+    )
+  }
+  const personalBasicWords = getPersonalBasicWords(params.level, removedBasicWords)
+
+  // 版本信息在选池之前就记下：VOCABULARY_TOO_SMALL 的失败样本也要知道
+  // 当时用的是哪一档词表，否则这批数据事后无法归因
+  diag.basicWords = {
+    level: params.level,
+    size: personalBasicWords.length,
+    removed: removedBasicWords.length - ignoredRemovals.length,
+    version: basicWordsVersions[params.level],
+  }
+
   const selection = selectVocabularyPool({
     words,
     level: params.level,
@@ -436,14 +462,14 @@ async function generateReadingInner({ userId, body, signal, diag }) {
   const learnedWords = words.map((item) => item.word)
   const allowedWords = new Set([
     ...learnedWords,
-    ...basicWords,
+    ...personalBasicWords,
     ...calendarWords,
     ...ABBREVIATION_WORDS,
   ])
 
   // 提示词里的词数（池）与校验放行的词数（全部已学词）不是一回事，都记下来；
   // 失败样本里缺了这两个数，就没法判断是「没给模型这个词」还是「给了没用」
-  const promptWordCount = selection.poolSize + basicWords.length + calendarWords.length
+  const promptWordCount = selection.poolSize + personalBasicWords.length + calendarWords.length
   diag.allowedWordCount = allowedWords.size
   diag.promptWordCount = promptWordCount
 
@@ -470,7 +496,7 @@ async function generateReadingInner({ userId, body, signal, diag }) {
     focusWords: plan.focusWords,
     targetWordList: plan.targetWords,
     supportWords: plan.supportWords,
-    basicWords,
+    basicWords: personalBasicWords,
   })
 
   const first = await callModel({ kind: 'generate', messages, signal, rounds })
@@ -677,8 +703,10 @@ async function generateReadingInner({ userId, body, signal, diag }) {
     status: 'generated',
     aiMeta: {
       model: config.deepseekModel,
-      // 词表与代码的版本号：跨版本采样不能放在一起比
-      basicWordsVersion,
+      // 词表与代码的版本号：跨版本采样不能放在一起比。
+      // 基础词表按档记——只记一个 hash 会掩盖「easy 没变、medium 变了」
+      basicWordsVersion: basicWordsVersions[params.level],
+      basicWordsLevel: params.level,
       irregularFormsVersion,
       codeVersion,
       // 累计值，含所有修正轮——用户看到的「本次消耗 N tokens」就是它

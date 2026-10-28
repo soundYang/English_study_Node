@@ -61,6 +61,8 @@ const generationFailureSchema = new Schema(
 
     // ——— 生成快照（§3.3）：失败样本和成功样本必须记同一套版本，否则没法同框对比 ———
     basicWordsVersion: String,
+    // 分档之后必须记用的是哪一档：同一个 hash 只有配合档位才有意义
+    basicWordsLevel: String,
     codeVersion: String,
   },
   { timestamps: true },

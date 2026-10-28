@@ -48,6 +48,16 @@ export const wordRepository = {
       .lean()
   },
 
+  /**
+   * 用户标记为 `new` 的词：个人基础词的减法项（md/06 §5.2）。
+   *
+   * 这些词既不在候选池里，也要从基础词白名单里扣掉——
+   * 否则用户明明标了「不认识」，文章还是照用。
+   */
+  findNewWords(userId) {
+    return Word.find({ userId, status: 'new' }).select('word').lean()
+  },
+
   existsByWord(userId, word, excludeId) {
     const filter = { userId, word }
     if (excludeId) filter._id = { $ne: excludeId }

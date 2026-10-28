@@ -132,13 +132,27 @@ export function replayCase(testCase, userRecord, basicList, budget) {
   }
 }
 
+/**
+ * 按难度取词表。
+ *
+ * 分档之后「允许词表」随难度变化，回放必须跟着变——否则 easy 样本
+ * 会拿 hard 的 2578 词回放，算出来的通过率比线上高，回归就失去意义。
+ * 仍然接受扁平数组：`--basic <file>` 覆盖全部难度时用它。
+ */
+function basicListFor(basicList, level) {
+  if (Array.isArray(basicList)) return basicList
+
+  return basicList?.[level] ?? basicList?.hard ?? []
+}
+
 /** 批量回放；跳过没有正文的样本，但要在结果里留下 skipped 计数 */
 export function replayAll(fixtures, basicList, budget) {
   const results = []
   const skipped = []
 
   for (const testCase of fixtures.cases) {
-    const result = replayCase(testCase, fixtures.users[testCase.userId], basicList, budget)
+    const list = basicListFor(basicList, testCase.level)
+    const result = replayCase(testCase, fixtures.users[testCase.userId], list, budget)
     if (result.kind === 'empty') skipped.push(result.id)
     else results.push(result)
   }

@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest'
 
 import { replayAll } from '../../scripts/lib/replay-core.mjs'
 import { config } from '../config/index.js'
-import { basicWords } from '../modules/readings/basic-words.js'
+import { basicWordsByLevel } from '../modules/readings/basic-words.js'
 
 /**
  * 离线回放：拿库里已经生成过的正文，跑当前校验链路。
@@ -26,7 +26,7 @@ describe.skipIf(!ready)('离线回放夹具', () => {
   const fixtures = ready ? JSON.parse(readFileSync(FIXTURES, 'utf8')) : null
   const expected = ready ? JSON.parse(readFileSync(EXPECTED, 'utf8')) : null
   const { results, skipped } = ready
-    ? replayAll(fixtures, basicWords, config.maxUnknownWords)
+    ? replayAll(fixtures, basicWordsByLevel, config.maxUnknownWords)
     : { results: [], skipped: [] }
 
   it('夹具不是空的（导出脚本真的跑过）', () => {

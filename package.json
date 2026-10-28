@@ -19,7 +19,8 @@
     "fixtures:export": "node scripts/export-replay-fixtures.mjs",
     "replay": "node scripts/replay-suite.mjs",
     "replay:report": "node scripts/replay-suite.mjs --report",
-    "replay:update": "node scripts/replay-suite.mjs --update"
+    "replay:update": "node scripts/replay-suite.mjs --update",
+    "calibrate": "node scripts/calibrate-standards.mjs"
   },
   "dependencies": {
     "cors": "2.8.6",

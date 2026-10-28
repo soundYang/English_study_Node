@@ -9,7 +9,7 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
 /**
  * 生成快照：词表版本 + 代码版本 + 模型名。
  *
- * 为什么一定要记：不记版本号，前后两次采样之间 `data/basic-words.json` 可能已经
+ * 为什么一定要记：不记版本号，前后两次采样之间三档 `data/basic-words.*.json` 可能已经
  * 被换掉、`irregular-forms.json` 可能已经补过条目，两组数字放在一起对比就是错的，
  * 而且从数据本身看不出来——这正是"改了词表所以成功率变好了"这类结论最容易出错的地方。
  *
@@ -51,7 +51,20 @@ function readCodeVersion() {
   }
 }
 
-export const basicWordsVersion = hashFile(join(ROOT, 'data/basic-words.json'))
+/**
+ * 三档基础词表各自的版本号。
+ *
+ * 分档之后只记一个 hash 会掩盖「easy 没变、medium 变了」这种差异，
+ * 采样对比时必须精确到本次请求实际用到的那一档。
+ */
+export const basicWordsVersions = Object.freeze({
+  easy: hashFile(join(ROOT, 'data/basic-words.easy.json')),
+  medium: hashFile(join(ROOT, 'data/basic-words.medium.json')),
+  hard: hashFile(join(ROOT, 'data/basic-words.hard.json')),
+})
+
+/** 兼容出口：脚本里「拿一份词表版本」的旧调用默认指 hard */
+export const basicWordsVersion = basicWordsVersions.hard
 /**
  * 不规则变形表的版本号。
  *

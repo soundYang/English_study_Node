@@ -1,13 +1,15 @@
 /**
  * 基础词表构建脚本（S7）
  *
- * ⚠️ 当前 data/basic-words.json 已换成人工筛选的 600 词
- *    （功能词 174 + 高频实词 426，见 md/04_基础词库_600词候选清单.md），
- *    不再是本脚本 --rank 的直接产物。P2 改造用户化基础词库之前
- *    **不要直接重跑本脚本**，否则 600 词会被覆盖回 ~2578 词。
+ * ⚠️ 三档基础词表（md/21 W2）中：
+ *    easy  = 人工筛选的 600 词（功能词 179 + 高频实词 421，见 md/04），
+ *            **不是**本脚本的产物；
+ *    medium / hard = 由 extend-basic-words.mjs 在 easy 基础上按排名补足。
+ *    所以本脚本现在只用于生成**候选初稿**，默认写到
+ *    data/basic-words.easy.candidate.json，不会覆盖线上任何一档。
  *
  * 用途：从 COCA 源数据取词频前 N（默认 3000）且有释义的词条，
- *      过滤掉专有名词、复合词、缩写、释义敏感的词，输出 data/basic-words.json。
+ *      过滤掉专有名词、复合词、缩写、释义敏感的词。
  *
  * 产出是**初稿**：脚本做完机械过滤，剩下"看着像普通词但其实不适合当基础词"
  * 的条目由 MANUAL_EXCLUDE 人工维护，保证重建结果可复现（改脚本比手改 json 可靠）。
@@ -33,7 +35,8 @@ const SRC_CANDIDATES = [
   join(ROOT, 'scripts/vendor/coca-vocabulary'),
 ]
 const DEFAULT_SRC = SRC_CANDIDATES.find((dir) => existsSync(dir)) ?? SRC_CANDIDATES[0]
-const DEFAULT_OUT = join(ROOT, 'data/basic-words.json')
+/** 默认只写候选文件：覆盖任何一档都必须显式 --out */
+const DEFAULT_OUT = join(ROOT, 'data/basic-words.easy.candidate.json')
 
 const POS_RE = /([a-zA-Z][a-zA-Z.&/\s-]{0,14}?)\["(.*?)"\]/g
 const BARE_RE = /\["(.*?)"\]/

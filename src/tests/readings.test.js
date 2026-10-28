@@ -12,7 +12,7 @@ vi.mock('../modules/readings/ai.client.js', () => ({ chatJson }))
 
 const { createApp } = await import('../app.js')
 const { config } = await import('../config/index.js')
-const { basicWords } = await import('../modules/readings/basic-words.js')
+const { basicWordsByLevel } = await import('../modules/readings/basic-words.js')
 const { Reading } = await import('../modules/readings/reading.model.js')
 const { Word } = await import('../modules/words/word.model.js')
 
@@ -622,11 +622,11 @@ describe('POST /api/readings/generate · 候选池截断', () => {
     expect(res.status).toBe(201)
 
     // easy 取 35%：ceil(820 × 0.35) = 287 个候选词。
-    // 词表分三段渲染：目标词 10（其中重点词 4）+ 补充可用词 277 + 基础词（§4.2 后 ~2578）
+    // 词表分三段渲染：目标词 10（其中重点词 4）+ 补充可用词 277 + easy 档基础词 600
     const prompt = chatJson.mock.calls[0][0].messages[1].content
     expect(prompt).toContain('【目标词】共 10 个')
     expect(prompt).toContain('【补充可用词】共 277 个')
-    expect(prompt).toContain(`【基础词】共 ${basicWords.length} 个`)
+    expect(prompt).toContain(`【基础词】共 ${basicWordsByLevel.easy.length} 个`)
     expect(prompt).toContain('★ ')
 
     const doc = await Reading.findById(res.body.id)

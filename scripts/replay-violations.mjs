@@ -25,6 +25,7 @@ import mongoose from 'mongoose'
 import { config } from '../src/config/index.js'
 import { ABBREVIATION_WORDS } from '../src/modules/readings/abbreviations.js'
 import { calendarWords } from '../src/modules/readings/calendar-words.js'
+import { basicWordsByLevel } from '../src/modules/readings/basic-words.js'
 import { GenerationFailure } from '../src/modules/readings/generation-failure.model.js'
 import { Reading } from '../src/modules/readings/reading.model.js'
 import { validateArticle } from '../src/modules/readings/vocabulary.service.js'
@@ -35,7 +36,7 @@ function argValue(name, fallback = null) {
   return index === -1 ? fallback : process.argv[index + 1]
 }
 
-const BASIC_FILE = resolve(argValue('basic', 'data/basic-words.json'))
+const BASIC_FILE = resolve(argValue('basic', 'data/basic-words.hard.json'))
 const since = argValue('since') ? new Date(`${argValue('since')}T00:00:00`) : null
 const userArg = argValue('user')
 
@@ -77,13 +78,14 @@ const countOf = (result) => result.unknownWords.length
 const missingCommon = (result) => result.counts.missing_common ?? 0
 
 async function main() {
-  const currentBasics = loadBasic(resolve('data/basic-words.json'))
+  // 分档之后「当前词表」随样本难度变化：easy 样本按 easy 档复算，
+  // 拿 hard 的 2578 词当基线会让所有样本都显得没问题
+  const currentBasicsFor = (level) => basicWordsByLevel[level] ?? basicWordsByLevel.hard
   const candidateBasics = loadBasic(BASIC_FILE)
-  const added = candidateBasics.filter((word) => !currentBasics.includes(word))
 
   console.log(
-    `\n当前基础词 ${currentBasics.length}｜候选 ${candidateBasics.length}` +
-      `（新增 ${added.length}）｜maxUnknownWords=${config.maxUnknownWords}\n`,
+    `\n当前基础词 easy/medium/hard = ${Object.values(basicWordsByLevel).map((list) => list.length).join('/')}`
+      + `｜候选 ${candidateBasics.length}｜maxUnknownWords=${config.maxUnknownWords}\n`,
   )
 
   await mongoose.connect(config.mongodbUri)
@@ -104,12 +106,15 @@ async function main() {
     const rows = []
 
     for (const doc of failures) {
+      const currentBasics = currentBasicsFor(doc.level)
       const [currentAllowed, candidateAllowed] = await Promise.all([
-        allowedCache.get(`cur:${doc.userId}`) ?? allowedWordsFor(doc.userId, currentBasics),
-        allowedCache.get(`new:${doc.userId}`) ?? allowedWordsFor(doc.userId, candidateBasics),
+        allowedCache.get(`cur:${doc.userId}:${doc.level}`)
+          ?? allowedWordsFor(doc.userId, currentBasics),
+        allowedCache.get(`new:${doc.userId}:${doc.level}`)
+          ?? allowedWordsFor(doc.userId, candidateBasics),
       ])
-      allowedCache.set(`cur:${doc.userId}`, currentAllowed)
-      allowedCache.set(`new:${doc.userId}`, candidateAllowed)
+      allowedCache.set(`cur:${doc.userId}:${doc.level}`, currentAllowed)
+      allowedCache.set(`new:${doc.userId}:${doc.level}`, candidateAllowed)
 
       const names = guessNames(doc.finalArticle)
       const replayCurrent = validateArticle({
@@ -172,13 +177,13 @@ async function main() {
     let increased = 0
     for (const doc of readings) {
       const allowedCurrent =
-        allowedCache.get(`cur:${doc.userId}`) ??
-        (await allowedWordsFor(doc.userId, currentBasics))
+        allowedCache.get(`cur:${doc.userId}:${doc.level}`)
+        ?? (await allowedWordsFor(doc.userId, currentBasicsFor(doc.level)))
       const allowedCandidate =
-        allowedCache.get(`new:${doc.userId}`) ??
-        (await allowedWordsFor(doc.userId, candidateBasics))
-      allowedCache.set(`cur:${doc.userId}`, allowedCurrent)
-      allowedCache.set(`new:${doc.userId}`, allowedCandidate)
+        allowedCache.get(`new:${doc.userId}:${doc.level}`)
+        ?? (await allowedWordsFor(doc.userId, candidateBasics))
+      allowedCache.set(`cur:${doc.userId}:${doc.level}`, allowedCurrent)
+      allowedCache.set(`new:${doc.userId}:${doc.level}`, allowedCandidate)
 
       const names = guessNames(doc.article)
       const current = validateArticle({

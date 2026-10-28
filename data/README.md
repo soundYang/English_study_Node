@@ -3,7 +3,7 @@
 本目录的 `dictionary/a.json` … `dictionary/z.json` 是前端离线词库，由 `scripts/build-dictionary.mjs`
 从 COCA 词频表生成。页面运行时不访问任何外部接口，全部数据随前端打包。
 
-同目录另有三个生成物，本文件第 5 节单独说明：`basic-words.json`、`word-ranks.json`、`irregular-forms.json`。
+同目录另有几个生成物，本文件第 5 节单独说明：三档 `basic-words.*.json`、`function-words.json`、`word-ranks.json`、`irregular-forms.json`。
 
 ## 1. 数据来源
 
@@ -88,11 +88,15 @@ node scripts/build-dictionary.mjs
 | 文件                    | 用途                                                       | 生成方式                                  |
 | ----------------------- | ---------------------------------------------------------- | ----------------------------------------- |
 | `dictionary/*.json`     | 查词与加词的离线词库，17,419 条可检索                      | `scripts/build-dictionary.mjs`            |
-| `basic-words.json`      | 生成文章时的基础词白名单（2578 个 = 人工筛选 600 + 按 COCA 排名补到 rank ≤ 3000） | 600 词见 `md/04_基础词库_600词候选清单.md`；其余由 `scripts/extend-basic-words.mjs` 追加（§4.2）；**不是** `build-basic-words.mjs` 的直接产物 |
+| `basic-words.easy.json` | easy 难度放行的基础词（600 = 功能词 179 + 高频实词 421） | 人工筛选，见 `md/04_基础词库_600词候选清单.md`；**不是** `build-basic-words.mjs` 的直接产物 |
+| `basic-words.medium.json` | medium 难度放行（1340 = easy + 按排名补到 rank ≤ 1500） | `extend-basic-words.mjs --base data/basic-words.easy.json --max-rank 1500` |
+| `basic-words.hard.json` | hard 难度放行（2578 = medium + 补到 rank ≤ 3000） | `extend-basic-words.mjs --base data/basic-words.medium.json --max-rank 3000` |
+| `function-words.json`   | 179 个功能词，个人基础词里的不可移除项（md/04 §二） | 从 `md/04` 提取，手工维护 |
 | `word-ranks.json`       | COCA 词频排名（17,629 条），写入 `Word.cocaRank`、选池时按难度排序 | `scripts/build-word-ranks.mjs`，源数据同 `dictionary` |
 | `irregular-forms.json`  | 词形还原用的不规则变化表（约 238 条），词汇校验依赖它      | 手工维护                                  |
 
-四者不会自动同步：词库扩容后，`basic-words.json` 与 `word-ranks.json` 都要单独重跑。
+这些文件不会自动同步：词库扩容后，三档 `basic-words.*.json` 与 `word-ranks.json` 都要单独重跑。
+三档必须保持包含关系（easy ⊂ medium ⊂ hard），`npm test` 里有断言守着。
 `word-ranks.json` 必须从 `coca-vocabulary` 源数据生成——`dictionary/*.json` 在按首字母
 切分时已经丢失了跨字母的绝对排名，反推出来的难度分级会完全失真。
 星期与月份名不在 COCA 源里，校验时由 `src/modules/readings/calendar-words.js` 单独放行。

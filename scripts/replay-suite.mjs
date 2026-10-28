@@ -21,8 +21,12 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { config } from '../src/config/index.js'
-import { basicWords } from '../src/modules/readings/basic-words.js'
-import { basicWordsVersion, codeVersion } from '../src/modules/readings/versions.js'
+import { basicWordsByLevel } from '../src/modules/readings/basic-words.js'
+import {
+  basicWordsVersion,
+  basicWordsVersions,
+  codeVersion,
+} from '../src/modules/readings/versions.js'
 import { replayAll, summarize } from './lib/replay-core.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -43,7 +47,8 @@ function parseArgs(argv) {
 }
 
 function loadBasicList(file) {
-  if (!file) return [...basicWords]
+  // 不给 --basic 时按难度分档；给了就统一覆盖（用于验证「换表影响哪些样本」）
+  if (!file) return basicWordsByLevel
 
   const list = JSON.parse(readFileSync(file, 'utf8'))
   if (!Array.isArray(list)) throw new Error(`${file} 不是字符串数组`)
@@ -112,7 +117,11 @@ function main() {
 
   const fixtures = JSON.parse(readFileSync(args.fixtures, 'utf8'))
   const basicList = loadBasicList(args.basic)
-  const basicLabel = args.basic ? args.basic.split(/[\\/]/).pop() : 'data/basic-words.json'
+  const basicLabel = args.basic
+    ? args.basic.split(/[\\/]/).pop()
+    : Object.entries(basicWordsByLevel)
+        .map(([level, list]) => `${level}=${list.length}`)
+        .join(' / ')
   const budget = config.maxUnknownWords
 
   const { results, skipped } = replayAll(fixtures, basicList, budget)
@@ -152,6 +161,7 @@ function main() {
         {
           updatedAt: new Date().toISOString(),
           basicWordsVersion,
+          basicWordsVersions,
           codeVersion,
           budget,
           results: comparable,

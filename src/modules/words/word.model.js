@@ -36,7 +36,9 @@ const wordSchema = new Schema(
     },
     source: {
       type: String,
-      enum: ['dictionary', 'manual'], // dictionary=命中词库并落快照；manual=手填
+      // basic-removed = 用户从基础词表里移除的词（md/06 §5.2）。
+      // 它是一条 status=new 的占位记录：退出基础词白名单，也进不了候选池。
+      enum: ['dictionary', 'manual', 'basic-removed'],
       required: true,
     },
     dictionaryId: { type: String, default: null }, // 词条溯源 ID，形如 dict_abandon；手填为 null

@@ -135,7 +135,8 @@ const readingSchema = new Schema(
       finishReason: String, // stop / length，用于判断是否被截断
 
       // ——— 生成快照（§3.3）：没有版本号，跨版本的两组采样不可比 ———
-      basicWordsVersion: String, // data/basic-words.json 内容的短 hash
+      basicWordsVersion: String, // 本次使用那一档 data/basic-words.*.json 的短 hash
+      basicWordsLevel: String, // easy / medium / hard；配 hash 才有意义
       codeVersion: String, // git 提交号，读不到时为 'unknown'
     },
   },

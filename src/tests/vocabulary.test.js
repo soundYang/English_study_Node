@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
-import { basicWords } from '../modules/readings/basic-words.js'
+import {
+  basicWordsByLevel,
+  functionWords,
+  getBasicWords,
+  getPersonalBasicWords,
+  ignoredFunctionWordRemovals,
+} from '../modules/readings/basic-words.js'
 import { calendarWords } from '../modules/readings/calendar-words.js'
 import { validateArticle } from '../modules/readings/vocabulary.service.js'
 
@@ -268,42 +274,93 @@ describe('validateArticle · 违规词分类', () => {
   })
 })
 
-describe('基础词表', () => {
-  it('产出 2578 个词（600 人工 + 按排名补到 rank ≤ 3000），全部是小写纯字母或撇号词', () => {
-    // 数字是 §4.2 扩表后的确定值：改词表就该改这一行，正好当「被误覆盖」的哨兵
-    expect(basicWords).toHaveLength(2578)
-    expect(basicWords.every((word) => /^[a-z]+(?:'[a-z]+)?$/.test(word))).toBe(true)
-    expect(new Set(basicWords).size).toBe(basicWords.length)
+describe('基础词表 · 分三档（W2）', () => {
+  it('三档词数：easy 600 / medium 1340 / hard 2578', () => {
+    // 数字是确定值：改词表就该改这一行，正好当「被误覆盖」的哨兵
+    expect(basicWordsByLevel.easy).toHaveLength(600)
+    expect(basicWordsByLevel.medium).toHaveLength(1340)
+    expect(basicWordsByLevel.hard).toHaveLength(2578)
   })
 
-  it('补齐 COCA 词元表漏掉的虚词（an 漏了会让每篇含 an 的文章失败）', () => {
-    // 物主代词 mine / yours / hers / ours / theirs 是功能词，必须常驻
-    for (const word of ['an', 'onto', 'mine', 'yours', 'hers', 'ours', 'theirs', 'whom', 'shall']) {
-      expect(basicWords.includes(word)).toBe(true)
+  it('三档都是小写纯字母或撇号词，档内无重复', () => {
+    for (const list of Object.values(basicWordsByLevel)) {
+      expect(list.every((word) => /^[a-z]+(?:'[a-z]+)?$/.test(word))).toBe(true)
+      expect(new Set(list).size).toBe(list.length)
     }
+  })
 
-    // 只用基础词 + an：apple / orange 不在 600 词里，会把用例引偏
-    const article = 'Tom has an old book. An hour is a long time.'
+  it('逐档包含：easy ⊂ medium ⊂ hard', () => {
+    const medium = new Set(basicWordsByLevel.medium)
+    const hard = new Set(basicWordsByLevel.hard)
 
-    expect(validateArticle({ article, allowedWords: new Set(basicWords), names: ['Tom'] }).valid).toBe(
-      true,
-    )
+    expect(basicWordsByLevel.easy.every((word) => medium.has(word))).toBe(true)
+    expect(basicWordsByLevel.medium.every((word) => hard.has(word))).toBe(true)
+  })
+
+  it('179 个功能词三档全在——缺一个就写不出完整句子', () => {
+    expect(functionWords).toHaveLength(179)
+
+    for (const list of Object.values(basicWordsByLevel)) {
+      const set = new Set(list)
+      expect(functionWords.filter((word) => !set.has(word))).toEqual([])
+    }
+  })
+
+  it('easy 不含新闻/机构/成人话题词（md/04 §5.1）', () => {
+    const excluded = [
+      'company', 'government', 'business', 'political', 'president', 'war',
+      'policy', 'market', 'death', 'kill', 'economic', 'drug', 'police',
+      'military', 'federal', 'court',
+    ]
+
+    expect(excluded.filter((word) => basicWordsByLevel.easy.includes(word))).toEqual([])
   })
 
   it('不含专有名词、缩写与表头残留', () => {
     for (const word of ['mr', 'tv', 'american', 'congress', 'true', "n't"]) {
       // true 是普通词，必须保留；其余都不该出现
-      expect(basicWords.includes(word)).toBe(word === 'true')
+      expect(basicWordsByLevel.hard.includes(word)).toBe(word === 'true')
     }
   })
 
-  it('一段只用基础词写的文章能通过校验', () => {
+  it('一段只用基础词写的文章能用 easy 档通过校验', () => {
     const article =
       'Tom is a good boy. His book is big and the boy is small. Tom and his book play in the house.'
 
-    expect(validateArticle({ article, allowedWords: new Set(basicWords), names: ['Tom'] }).valid).toBe(
-      true,
-    )
+    expect(
+      validateArticle({
+        article,
+        allowedWords: new Set(basicWordsByLevel.easy),
+        names: ['Tom'],
+      }).valid,
+    ).toBe(true)
+  })
+
+  it('未知难度退回 easy，绝不悄悄用 hard 的全量表', () => {
+    expect(getBasicWords('insane')).toBe(basicWordsByLevel.easy)
+    expect(getBasicWords(undefined)).toBe(basicWordsByLevel.easy)
+  })
+})
+
+describe('个人基础词（W2）', () => {
+  it('用户标为 new 的实词从该档基础词里移除', () => {
+    const list = getPersonalBasicWords('easy', ['book'])
+
+    expect(basicWordsByLevel.easy.includes('book')).toBe(true)
+    expect(list.includes('book')).toBe(false)
+    expect(list).toHaveLength(basicWordsByLevel.easy.length - 1)
+  })
+
+  it('功能词不可移除：把 the 标成 new 不生效，并回报给调用方记日志', () => {
+    const list = getPersonalBasicWords('easy', ['the'])
+
+    expect(list).toHaveLength(basicWordsByLevel.easy.length)
+    expect(ignoredFunctionWordRemovals(['the', 'book'])).toEqual(['the'])
+  })
+
+  it('移除项与档位无关的词不影响结果', () => {
+    const list = getPersonalBasicWords('easy', ['quizzical'])
+    expect(list).toHaveLength(basicWordsByLevel.easy.length)
   })
 })
 
@@ -315,7 +372,7 @@ describe('日历词白名单', () => {
 
   it('这些词在基础词表里捞不到，只能靠白名单放行', () => {
     for (const word of ['saturday', 'december']) {
-      expect(basicWords.includes(word)).toBe(false)
+      expect(basicWordsByLevel.hard.includes(word)).toBe(false)
     }
 
     // 正文里是大写（Saturday），校验时统一转小写后再命中白名单

@@ -3,9 +3,9 @@ import mongoose from 'mongoose'
 import { createApp } from './app.js'
 import { config } from './config/index.js'
 import { loadDictionary } from './modules/dictionary/dictionary.loader.js'
-import { basicWords } from './modules/readings/basic-words.js'
+import { basicWordsByLevel } from './modules/readings/basic-words.js'
 import { Reading } from './modules/readings/reading.model.js'
-import { basicWordsVersion } from './modules/readings/versions.js'
+import { basicWordsVersions } from './modules/readings/versions.js'
 import { Word } from './modules/words/word.model.js'
 import { logger } from './shared/logger.js'
 
@@ -28,8 +28,11 @@ async function main() {
     `dictionary loaded: ${stats.searchable} words (filtered ${stats.filtered} of ${stats.rawTotal})`,
   )
   // 基础词表是「校验放行」的白名单，不是提示词装饰：文件被换掉/读不到时，
-  // 光看日志就能发现，不用等一次 422 才反应过来（§4.2.4）
-  logger.info(`basic words loaded: ${basicWords.length} (version ${basicWordsVersion})`)
+  // 光看日志就能发现，不用等一次 422 才反应过来（§4.2.4）。
+  // 分档之后三档各打一行——只打合计会掩盖「medium 读不到、悄悄降成 easy」。
+  for (const [level, list] of Object.entries(basicWordsByLevel)) {
+    logger.info(`basic words loaded: ${level} ${list.length} (version ${basicWordsVersions[level]})`)
+  }
 
   const server = app.listen(config.port, () => {
     logger.info(`api listening on http://localhost:${config.port}`)
