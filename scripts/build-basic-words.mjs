@@ -18,6 +18,14 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+// 筛选规则与 extend-basic-words.mjs 共用，见脚本头部说明
+import {
+  ABBREVIATIONS,
+  PROPER_NOUN_KEEP,
+  SHAPE_RE,
+  isSensitiveMeaning,
+} from './lib/basic-word-rules.mjs'
+
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
 const SRC_CANDIDATES = [
@@ -29,46 +37,6 @@ const DEFAULT_OUT = join(ROOT, 'data/basic-words.json')
 
 const POS_RE = /([a-zA-Z][a-zA-Z.&/\s-]{0,14}?)\["(.*?)"\]/g
 const BARE_RE = /\["(.*?)"\]/
-
-/** 释义里出现这些词就不当基础词：阅读材料里用不上，孩子看到也不合适 */
-const SENSITIVE = [
-  '性交',
-  '性行为',
-  '性欲',
-  '色情',
-  '妓',
-  '娼',
-  '强奸',
-  '阴茎',
-  '阴道',
-  '精液',
-  '肛门',
-  '阳具',
-  '屎',
-  '尿',
-  '屁',
-  '他妈',
-  '妈的',
-  '该死',
-  '见鬼',
-  '诅咒',
-  '吸毒',
-  '毒品',
-  '大麻',
-  '可卡因',
-  '海洛因',
-  '鸦片',
-  '安非他命',
-]
-
-/** 缩写/称谓：写文章时不会当普通词用 */
-const ABBREVIATIONS = new Set(['mr', 'mrs', 'ms', 'dr', 'st', 'vs', 'etc', 'pm', 'tv'])
-
-/**
- * 源数据里全大写但其实是普通词的条目。
- * 不列白名单的话，"true" 会因为没有小写词头被当成专有名词误杀。
- */
-const PROPER_NOUN_KEEP = new Set(['true'])
 
 /**
  * 人工复核后确认要剔除的条目。
@@ -173,7 +141,7 @@ function main() {
       continue
     }
     // 只允许纯字母和撇号：连字符复合词、带点缩写、带重音的借词一律不要
-    if (!/^[A-Za-z]+(?:'[A-Za-z]+)?$/.test(word)) {
+    if (!SHAPE_RE.test(word)) {
       dropped.shape.push(word)
       continue
     }
@@ -188,7 +156,7 @@ function main() {
     }
     // 只看第一条释义：force / age / drug / couple 的敏感义项都是靠后的冷门用法，
     // 按整条释义匹配会把基础词大面积误杀
-    if (SENSITIVE.some((keyword) => row.meanings[0].includes(keyword))) {
+    if (isSensitiveMeaning(row.meanings[0])) {
       dropped.sensitive.push(word)
       continue
     }

@@ -269,9 +269,11 @@ describe('validateArticle · 违规词分类', () => {
 })
 
 describe('基础词表', () => {
-  it('产出 600 个词，全部是小写纯字母或撇号词', () => {
-    expect(basicWords).toHaveLength(600)
+  it('产出 2578 个词（600 人工 + 按排名补到 rank ≤ 3000），全部是小写纯字母或撇号词', () => {
+    // 数字是 §4.2 扩表后的确定值：改词表就该改这一行，正好当「被误覆盖」的哨兵
+    expect(basicWords).toHaveLength(2578)
     expect(basicWords.every((word) => /^[a-z]+(?:'[a-z]+)?$/.test(word))).toBe(true)
+    expect(new Set(basicWords).size).toBe(basicWords.length)
   })
 
   it('补齐 COCA 词元表漏掉的虚词（an 漏了会让每篇含 an 的文章失败）', () => {

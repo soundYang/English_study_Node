@@ -12,13 +12,14 @@ vi.mock('../modules/readings/ai.client.js', () => ({ chatJson }))
 
 const { createApp } = await import('../app.js')
 const { config } = await import('../config/index.js')
+const { basicWords } = await import('../modules/readings/basic-words.js')
 const { Reading } = await import('../modules/readings/reading.model.js')
 const { Word } = await import('../modules/words/word.model.js')
 
 const app = createApp()
 
 /**
- * 正文只用基础 600 词里有的词（+ 声明的人名 Tom），
+ * 正文只用基础词表里有的词（+ 声明的人名 Tom），
  * 否则词汇校验会把每个用例都拦在 422，测不到真正的分支。
  * 词数固定 40，落库断言依赖它。
  */
@@ -363,12 +364,13 @@ describe('POST /api/readings/generate · 词汇校验', () => {
 
   it('放行的生词带词典音标与释义', async () => {
     await seedWords(29)
-    chatJson.mockResolvedValue(reply(makePayload({ article: `${ARTICLE} Hospital.` })))
+    // loud 的 rank 是 3120，在 §4.2 扩表后的放行范围之外，才测得到「生词」分支
+    chatJson.mockResolvedValue(reply(makePayload({ article: `${ARTICLE} Loud.` })))
 
     const res = await generate(VALID_BODY)
 
     expect(res.status).toBe(201)
-    expect(res.body.newWords[0]).toMatchObject({ word: 'hospital', source: 'dictionary' })
+    expect(res.body.newWords[0]).toMatchObject({ word: 'loud', source: 'dictionary' })
     expect(res.body.newWords[0].phonetic.us).toBeTruthy()
     expect(res.body.newWords[0].senses[0].meaning).toBeTruthy()
   })
@@ -620,11 +622,11 @@ describe('POST /api/readings/generate · 候选池截断', () => {
     expect(res.status).toBe(201)
 
     // easy 取 35%：ceil(820 × 0.35) = 287 个候选词。
-    // 词表分三段渲染：目标词 10（其中重点词 4）+ 补充可用词 277 + 基础词 600
+    // 词表分三段渲染：目标词 10（其中重点词 4）+ 补充可用词 277 + 基础词（§4.2 后 ~2578）
     const prompt = chatJson.mock.calls[0][0].messages[1].content
     expect(prompt).toContain('【目标词】共 10 个')
     expect(prompt).toContain('【补充可用词】共 277 个')
-    expect(prompt).toContain('【基础词】共 600 个')
+    expect(prompt).toContain(`【基础词】共 ${basicWords.length} 个`)
     expect(prompt).toContain('★ ')
 
     const doc = await Reading.findById(res.body.id)

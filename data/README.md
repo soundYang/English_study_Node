@@ -88,7 +88,7 @@ node scripts/build-dictionary.mjs
 | 文件                    | 用途                                                       | 生成方式                                  |
 | ----------------------- | ---------------------------------------------------------- | ----------------------------------------- |
 | `dictionary/*.json`     | 查词与加词的离线词库，17,419 条可检索                      | `scripts/build-dictionary.mjs`            |
-| `basic-words.json`      | 生成文章时的基础词白名单（600 个 = 功能词 179 + 高频实词 421，人工筛选） | 见 `md/04_基础词库_600词候选清单.md`；**不是** `build-basic-words.mjs` 的直接产物 |
+| `basic-words.json`      | 生成文章时的基础词白名单（2578 个 = 人工筛选 600 + 按 COCA 排名补到 rank ≤ 3000） | 600 词见 `md/04_基础词库_600词候选清单.md`；其余由 `scripts/extend-basic-words.mjs` 追加（§4.2）；**不是** `build-basic-words.mjs` 的直接产物 |
 | `word-ranks.json`       | COCA 词频排名（17,629 条），写入 `Word.cocaRank`、选池时按难度排序 | `scripts/build-word-ranks.mjs`，源数据同 `dictionary` |
 | `irregular-forms.json`  | 词形还原用的不规则变化表（约 238 条），词汇校验依赖它      | 手工维护                                  |
 
