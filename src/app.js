@@ -33,7 +33,22 @@ export function createApp() {
 
   // 顺序不能变：helmet → cors → json → 日志 → 路由 → 404 → errorHandler
   app.use(helmet())
-  app.use(cors({ origin: config.clientOrigin, credentials: false }))
+  app.use(
+    cors({
+      // 白名单判定。三种情况：
+      //   没有 Origin（curl / 服务端调用）→ 放行，CORS 只约束浏览器
+      //   在 CLIENT_ORIGIN 列表里          → 放行
+      //   其它                             → 不回 Access-Control-Allow-Origin
+      // 第三种**不要抛错**：抛错会落到 errorHandler 变成 500，
+      // 而正确行为就是「响应正常返回，浏览器自己拦下」
+      origin: (origin, callback) => {
+        if (!origin) return callback(null, true)
+        const allowed = config.clientOrigins.includes(origin.replace(/\/+$/, ''))
+        callback(null, allowed)
+      },
+      credentials: false,
+    }),
+  )
   app.use(express.json({ limit: '64kb' }))
 
   // pino-http 自带 req.log 和 req.id，不再另写 requestId 中间件（两套会打架）

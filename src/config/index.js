@@ -69,6 +69,26 @@ function readEnum(key, allowed, fallback) {
 }
 
 /**
+ * 允许的浏览器来源（CORS），逗号分隔。
+ *
+ * 支持多源是为了局域网联调：本机用 `http://localhost:5173`、手机用
+ * `http://192.168.x.x:5173`，两者是不同的 Origin，单值配置必然拦掉一个。
+ * 写成字符串数组而不是正则，是因为这里只该放明确知道的站点——
+ * 用 `*` 会把接口对任意网页开放，将来带 Cookie 时更是直接失效。
+ */
+function readClientOrigins() {
+  const raw = process.env.CLIENT_ORIGIN ?? ''
+  const list = raw
+    .split(',')
+    .map((item) => item.trim())
+    // 末尾斜杠会让 `https://a.com/` 与浏览器发来的 `https://a.com` 对不上
+    .map((item) => item.replace(/\/+$/, ''))
+    .filter(Boolean)
+
+  return list.length > 0 ? list : ['http://localhost:5173']
+}
+
+/**
  * Express 的 `trust proxy` 取值（md/35 §3.4）。
  *
  * 不给值时返回 false，与 Express 默认一致。生产在 nginx / Cloudflare 后面时必须设：
@@ -99,7 +119,8 @@ export const config = Object.freeze({
   // 服务
   port: toNumber('PORT', 3000),
   nodeEnv,
-  clientOrigin: process.env.CLIENT_ORIGIN || 'http://localhost:5173',
+  // 逗号分隔多源；局域网联调时把 `http://<本机IP>:5173` 也加进来
+  clientOrigins: readClientOrigins(),
   // 反代后面必须配置，否则 req.ip 不可信（见上方 readTrustProxy）
   trustProxy: readTrustProxy(),
 

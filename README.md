@@ -60,7 +60,7 @@ Mongo 断开时返回 **503** + `status: "degraded"`，这是唯一的健康判�
 | 变量 | 默认 | 什么时候要改 |
 | ---- | ---- | ------------ |
 | `PORT` | 3000 | 本机已有服务占用时（测试实例习惯用 3100–3102） |
-| `CLIENT_ORIGIN` | `http://localhost:5173` | 前端换了地址；CORS 只放行这一个 origin |
+| `CLIENT_ORIGIN` | `http://localhost:5173` | 前端换了地址。**多个用逗号分隔**（局域网联调写 `http://localhost:5173,http://192.168.x.x:5173`），结尾斜杠会被忽略 |
 | `MONGODB_URI` | — | **必填**，缺了进程直接退出并提示 |
 | `DEFAULT_USER_ID` | `local-user` | MVP 无登录，所有请求归属它；采样脚本会改成 fixture 用户 |
 | `DEEPSEEK_API_KEY` | 空 | 不填也能启动，但生成接口会 502 |
