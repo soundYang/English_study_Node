@@ -43,10 +43,12 @@ function makePayload({ questionCount = 3, title = 'A Good Day', article = ARTICL
     questions: Array.from({ length: questionCount }, (_, index) => ({
       id: index + 1,
       question: `Question number ${index + 1} about the story?`,
-      options: ['Tom', 'A dog', 'A park', 'A day'].map(
-        (option) => `${option} ${index + 1}`,
-      ),
-      correctAnswer: index % 4,
+      // W7：type / evidence 必填，且 evidence 必须是正文里真实存在的句子；
+      // detail 题的正确答案还要与 evidence 有实词重合，所以正确答案统一取 Tom
+      type: 'detail',
+      evidence: 'Tom is a good boy.',
+      options: ['Tom', 'book', 'house', 'friends'],
+      correctAnswer: 0,
       explanation: '根据文章内容可知。',
     })),
   }
@@ -179,14 +181,21 @@ describe('POST /api/readings/generate · 正常生成', () => {
     expect(Number.isNaN(Date.parse(res.body.createdAt))).toBe(false)
   })
 
-  it('题目只暴露 id / question / options', async () => {
+  it('题目只暴露 id / question / type / options', async () => {
     await seedWords(400)
     chatJson.mockResolvedValue(reply(makePayload()))
 
     const res = await generate(VALID_BODY)
 
     expect(res.body.questions).toHaveLength(3)
-    expect(Object.keys(res.body.questions[0]).sort()).toEqual(['id', 'options', 'question'])
+    // type 给答题页做题型标签；evidence 是答案所在的句子，不能在这里出现
+    expect(Object.keys(res.body.questions[0]).sort()).toEqual([
+      'id',
+      'options',
+      'question',
+      'type',
+    ])
+    expect(res.body.questions[0].type).toBe('detail')
     expect(res.body.questions[0].options).toHaveLength(4)
   })
 
@@ -235,6 +244,11 @@ describe('POST /api/readings/generate · 正常生成', () => {
     expect(doc.vocabularySnapshot).toHaveLength(140)
     // 测试文章正好 40 个英文词
     expect(doc.actualWords).toBe(40)
+    // W7：题目的 type / evidence 与难度分数都要落库
+    expect(doc.questions[0].type).toBe('detail')
+    expect(doc.questions[0].evidence).toBe('Tom is a good boy.')
+    expect(doc.aiMeta.difficulty.score).toEqual(expect.any(Number))
+    expect(doc.aiMeta.difficulty.metrics.avgSentenceLength).toBeGreaterThan(0)
     expect(doc.aiMeta).toMatchObject({
       model: config.deepseekModel,
       promptTokens: 100,
@@ -303,6 +317,46 @@ describe('POST /api/readings/generate · 结构校验与修正轮', () => {
     expect(res.status).toBe(201)
     expect(chatJson).toHaveBeenCalledTimes(2)
     expect(res.body.questions).toHaveLength(3)
+  })
+
+  it('题目编造 evidence → 只重写题目，正文保留（W7）', async () => {
+    await seedWords(400)
+    const fabricated = makePayload()
+    fabricated.questions[1] = { ...fabricated.questions[1], evidence: 'Tom has a blue car.' }
+
+    chatJson
+      .mockResolvedValueOnce(reply(fabricated))
+      .mockResolvedValueOnce(reply(makePayload()))
+
+    const res = await generate(VALID_BODY)
+
+    expect(res.status).toBe(201)
+    expect(chatJson).toHaveBeenCalledTimes(2)
+    // 正文没问题，不该再整篇重写一遍
+    expect(chatJson.mock.calls[1][0].messages.at(-1).content).toContain('只重写 questions')
+
+    const doc = await Reading.findById(res.body.id).lean()
+    expect(doc.aiMeta.rounds[0].feedbackType).toBe('questions')
+    expect(doc.aiMeta.rounds[1].repairFor).toBe('questions')
+  })
+
+  it('题型配额不满足（easy 全是推断题）→ 同样只重写题目', async () => {
+    await seedWords(400)
+    const wrongQuota = makePayload()
+    wrongQuota.questions = wrongQuota.questions.map((question) => ({
+      ...question,
+      type: 'inference',
+    }))
+
+    chatJson
+      .mockResolvedValueOnce(reply(wrongQuota))
+      .mockResolvedValueOnce(reply(makePayload()))
+
+    const res = await generate(VALID_BODY)
+
+    expect(res.status).toBe(201)
+    const doc = await Reading.findById(res.body.id).lean()
+    expect(doc.aiMeta.rounds[0].feedbackType).toBe('questions')
   })
 
   it('两轮修正后仍不合法 → 502 AI_INVALID_RESPONSE，最多调三次', async () => {
@@ -528,9 +582,9 @@ describe('POST /api/readings/generate · 篇幅与 token', () => {
 
     const messages = chatJson.mock.calls[1][0].messages
     const instruction = messages.at(-1).content
-    // 100 词请求 → 7 句左右，每句词数由目标值 110 反推
-    expect(instruction).toContain('共 6–8 个英文句子')
-    expect(instruction).toContain('每句 15–16 个英文单词')
+    // 100 词请求 + easy（每句 12 词）→ 约 9 句；每句词数由目标值 110 反推
+    expect(instruction).toContain('共 8–10 个英文句子')
+    expect(instruction).toContain('每句 12 个英文单词')
     expect(instruction).toContain('必须落在 100–115 词之间')
     // 带锚定只会让模型做减法，所以重写轮不塞上一篇正文
     expect(messages.some((message) => message.role === 'assistant')).toBe(false)

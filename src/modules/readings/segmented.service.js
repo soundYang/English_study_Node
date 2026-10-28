@@ -240,6 +240,7 @@ export async function generateSegmented({
   rounds,
   questionCount,
   range,
+  level,
 }) {
   // 每段都带上完整计划：并发生成拿不到「上一段的最后一句」，
   // 但至少要知道全文走向，否则四段各写各的（md/20 §5.3，见 md/21 §9 偏离）
@@ -280,6 +281,8 @@ export async function generateSegmented({
       article,
       questionCount,
       paragraphCount: accepted.length,
+      // 题型配额的提示词口径跟难度走（W7）
+      level,
     }),
     signal,
     rounds,

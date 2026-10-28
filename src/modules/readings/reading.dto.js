@@ -45,6 +45,9 @@ export function toSafeDto(doc) {
     questions: (doc.questions || []).map((question) => ({
       id: question.id,
       question: question.question,
+      // W7：题型给答题页做标签（细节题 / 推断题……），不泄露答案。
+      // evidence **不在这里**：那正是答案所在的句子
+      type: question.type ?? null,
       options: [...question.options],
     })),
   }
@@ -63,7 +66,7 @@ function toAnswersMap(userAnswers) {
  * 逐题判分。**只看库里的 correctAnswer，永不信客户端**。
  * 未作答（提交里没有这一题，或 selectedOption 为 null）判错但不报错。
  *
- * @returns {Array<{ questionId: number, selectedOption: number | null, correctAnswer: number, isCorrect: boolean, explanation: string }>}
+ * @returns {Array<{ questionId: number, selectedOption: number | null, correctAnswer: number, isCorrect: boolean, explanation: string, evidence: string }>}
  */
 export function buildResults(doc) {
   const answers = toAnswersMap(doc.userAnswers)
@@ -78,6 +81,8 @@ export function buildResults(doc) {
       correctAnswer: question.correctAnswer,
       isCorrect: selectedOption === question.correctAnswer,
       explanation: question.explanation,
+      // W7：原文依据，只在结果页给——答题前返回等于直接告诉用户答案在哪一句
+      evidence: question.evidence ?? '',
     }
   })
 }

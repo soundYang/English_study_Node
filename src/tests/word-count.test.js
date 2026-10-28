@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  SENTENCE,
   WORD_COUNT,
   classifyLength,
   countWords,
@@ -9,6 +10,7 @@ import {
   planExpandBudget,
   planSentenceBudget,
   planWordRange,
+  wordsPerSentenceFor,
 } from '../modules/readings/word-count.js'
 
 /**
@@ -78,6 +80,16 @@ describe('planSentenceBudget', () => {
   it('极短篇幅也至少给 3 句', () => {
     expect(planSentenceBudget({ min: 20, target: 22, max: 23 }).minSentences).toBe(3)
   })
+
+  it('每句基准词数按难度取，不传 level 时退回 15（旧口径）', () => {
+    const range = planWordRange(200)
+
+    // easy 12 词/句 → 18 句；hard 19 词/句 → 12 句；未传 → 15 词/句 → 15 句
+    expect(planSentenceBudget(range, 'easy').sentences).toBe(18)
+    expect(planSentenceBudget(range, 'hard').sentences).toBe(12)
+    expect(planSentenceBudget(range).sentences).toBe(15)
+    expect(wordsPerSentenceFor('insane')).toBe(SENTENCE.WORDS_PER_SENTENCE)
+  })
 })
 
 describe('planAcceptedRange', () => {
@@ -133,6 +145,13 @@ describe('planExpandBudget', () => {
 
   it('已经很接近目标时至少补一句', () => {
     expect(planExpandBudget(109, planWordRange(100))).toEqual({ shortfall: 1, sentences: 1 })
+  })
+
+  it('补几句按该难度的句长折算：同样差 30 词，easy 要多补一句', () => {
+    const range = planWordRange(100) // target 110
+    // 差 30 词：easy 12 词/句 → 3 句；hard 19 词/句 → 2 句
+    expect(planExpandBudget(80, range, 'easy').sentences).toBe(3)
+    expect(planExpandBudget(80, range, 'hard').sentences).toBe(2)
   })
 })
 

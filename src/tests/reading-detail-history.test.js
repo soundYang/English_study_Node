@@ -7,10 +7,11 @@ import { Reading } from '../modules/readings/reading.model.js'
 
 const app = createApp()
 
+// W7：type 进安全 DTO，evidence 只进结果页的 results[]
 const QUESTIONS = [
-  { id: 1, question: 'Q1?', options: ['a', 'b', 'c', 'd'], correctAnswer: 0, explanation: '解析1' },
-  { id: 2, question: 'Q2?', options: ['a', 'b', 'c', 'd'], correctAnswer: 1, explanation: '解析2' },
-  { id: 3, question: 'Q3?', options: ['a', 'b', 'c', 'd'], correctAnswer: 2, explanation: '解析3' },
+  { id: 1, question: 'Q1?', type: 'detail', evidence: 'Tom is a good boy.', options: ['a', 'b', 'c', 'd'], correctAnswer: 0, explanation: '解析1' },
+  { id: 2, question: 'Q2?', type: 'detail', evidence: 'His dog is big.', options: ['a', 'b', 'c', 'd'], correctAnswer: 1, explanation: '解析2' },
+  { id: 3, question: 'Q3?', type: 'inference', evidence: 'Tom is a good boy.', options: ['a', 'b', 'c', 'd'], correctAnswer: 2, explanation: '解析3' },
 ]
 
 function makeReading(overrides = {}) {
@@ -71,7 +72,13 @@ describe('GET /api/readings/:id · 未提交分支', () => {
     ])
     expect(res.body.status).toBe('generated')
     expect(res.body.questions).toHaveLength(3)
-    expect(Object.keys(res.body.questions[0]).sort()).toEqual(['id', 'options', 'question'])
+    // type 是给答题页的题型标签；evidence 不在这里——它就是答案所在的句子
+    expect(Object.keys(res.body.questions[0]).sort()).toEqual([
+      'id',
+      'options',
+      'question',
+      'type',
+    ])
     expect(res.text).not.toContain('correctAnswer')
     expect(res.text).not.toContain('translation')
     expect(res.text).not.toContain('explanation')
@@ -100,6 +107,8 @@ describe('GET /api/readings/:id · 已提交分支', () => {
       correctAnswer: 0,
       isCorrect: true,
       explanation: '解析1',
+      // W7：原文依据只在答题后给
+      evidence: 'Tom is a good boy.',
     })
   })
 

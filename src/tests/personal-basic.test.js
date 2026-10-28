@@ -31,18 +31,22 @@ const ARTICLE =
 const ARTICLE_WITHOUT_BOOK =
   'Tom is a good boy. His car is big and the boy is small. Tom and his car play in the house. The car runs and the boy runs too. They are good friends. Tom likes his car very much.'
 
-function makePayload(article = ARTICLE) {
+function makePayload(article = ARTICLE, level = 'easy') {
   return {
     title: 'A Good Day',
     article,
     translation:
       '汤姆是个好男孩。他的车很大，男孩很小。汤姆和他的车在房子里玩，他们是非常好的朋友。',
     names: ['Tom'],
+    // W7：evidence 必须是正文里的句子（两篇正文都含这一句），
+    // detail 题的正确答案 good 与 evidence 有实词重合；hard 需要一道推断题
     questions: [1, 2, 3].map((id) => ({
       id,
       question: `Question number ${id} about the story?`,
-      options: ['a', 'b', 'c', 'd'],
-      correctAnswer: id - 1,
+      type: level === 'hard' && id === 3 ? 'inference' : 'detail',
+      evidence: 'Tom is a good boy.',
+      options: ['good', 'big', 'small', 'house'],
+      correctAnswer: 0,
       explanation: '根据文章内容可知。',
     })),
   }
@@ -122,7 +126,7 @@ describe('个人基础词 · 生成链路', () => {
   it('难度决定基础词表：hard 请求拿到 2578 词的完整表', async () => {
     // hard 的已知词门 3778 = 2578 基础词 + 1200 个人词
     await seedWords(1200)
-    chatJson.mockResolvedValue(reply(makePayload()))
+    chatJson.mockResolvedValue(reply(makePayload(ARTICLE, 'hard')))
 
     const res = await generate({ level: 'hard', targetWords: 100, questionCount: 3 })
 

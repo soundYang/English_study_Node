@@ -47,8 +47,21 @@ export function planWordRange(targetWords) {
  *
  * 实测模型数不准词（让删 35 个只删了 15 个），但数得清自己写了几句。
  * 每句按 15 词估算：220 词 → 15 句左右。
+ *
+ * W7：句长也是难度的一部分。原来三档共用 15 词/句，
+ * 等于「easy 和 hard 的句子一样长，只是用的词不一样」——
+ * 这既不符合阅读难度的直觉，也让难度同义词表在提示词里根本不起作用。
+ * 不传 level 时退回 15，老调用方（回放脚本、测试）行为不变。
  */
-export const SENTENCE = Object.freeze({ WORDS_PER_SENTENCE: 15 })
+export const SENTENCE = Object.freeze({
+  WORDS_PER_SENTENCE: 15,
+  BY_LEVEL: Object.freeze({ easy: 12, medium: 15, hard: 19 }),
+})
+
+/** @param {string} [level] 难度；未知或未传时用 15 词/句的旧口径 */
+export function wordsPerSentenceFor(level) {
+  return SENTENCE.BY_LEVEL[level] ?? SENTENCE.WORDS_PER_SENTENCE
+}
 
 /**
  * 每句词数由篇幅区间**反推**，而不是写死 13–16。
@@ -58,10 +71,12 @@ export const SENTENCE = Object.freeze({ WORDS_PER_SENTENCE: 15 })
  *   200 词请求 → 15 句、每句 13–15 词 → 195–225，贴着 200–230。
  *
  * @param {{ min: number, target: number, max: number }} range
+ * @param {string} [level] 难度：只决定「每句基准词数」，句中词数仍按区间反推
  * @returns {{ sentences: number, minSentences: number, maxSentences: number, minWordsPerSentence: number, maxWordsPerSentence: number }}
  */
-export function planSentenceBudget(range) {
-  const sentences = Math.max(3, Math.round(range.target / SENTENCE.WORDS_PER_SENTENCE))
+export function planSentenceBudget(range, level) {
+  const perSentence = wordsPerSentenceFor(level)
+  const sentences = Math.max(3, Math.round(range.target / perSentence))
 
   return {
     sentences,
@@ -125,13 +140,14 @@ export const MAX_EXPAND_SENTENCES = 3
  *
  * @param {number} actualWords
  * @param {{ min: number, target: number, max: number }} range 提示词区间
+ * @param {string} [level] 难度：easy 的句子更短，同样差 20 词就要多补一句
  * @returns {{ shortfall: number, sentences: number }}
  */
-export function planExpandBudget(actualWords, range) {
+export function planExpandBudget(actualWords, range, level) {
   const shortfall = Math.max(0, range.target - actualWords)
   const sentences = Math.min(
     MAX_EXPAND_SENTENCES,
-    Math.max(1, Math.ceil(shortfall / SENTENCE.WORDS_PER_SENTENCE)),
+    Math.max(1, Math.ceil(shortfall / wordsPerSentenceFor(level))),
   )
 
   return { shortfall, sentences }

@@ -39,8 +39,11 @@ function makePayload({ article = SHORT_ARTICLE, questionCount = 3 } = {}) {
     questions: Array.from({ length: questionCount }, (_, index) => ({
       id: index + 1,
       question: `Question number ${index + 1} about the story?`,
-      options: ['Tom', 'A dog', 'A park', 'A day'].map((option) => `${option} ${index + 1}`),
-      correctAnswer: index % 4,
+      // W7：evidence 必须是正文里的句子，detail 的正确答案要与它有实词重合
+      type: 'detail',
+      evidence: 'Tom is a good boy.',
+      options: ['Tom', 'book', 'house', 'friends'],
+      correctAnswer: 0,
       explanation: '根据文章内容可知。',
     })),
   }

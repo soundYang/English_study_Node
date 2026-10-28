@@ -27,11 +27,15 @@ const payload = {
   article: ARTICLE,
   translation: '汤姆是个好男孩。他和他的书在房子里玩。他们是好朋友。',
   names: ['Tom'],
+  // W7：同一份 payload 要同时满足 easy（≥2 detail）与 hard（≥1 inference），
+  // 所以固定 2 道细节题 + 1 道推断题；evidence 取自正文
   questions: Array.from({ length: 3 }, (_, index) => ({
     id: index + 1,
     question: `Question number ${index + 1} about the story?`,
-    options: ['Tom', 'A book', 'A house', 'A day'].map((option) => `${option} ${index + 1}`),
-    correctAnswer: index % 4,
+    type: index === 2 ? 'inference' : 'detail',
+    evidence: 'Tom is a good boy.',
+    options: ['Tom', 'book', 'house', 'friends'],
+    correctAnswer: 0,
     explanation: '根据文章内容可知。',
   })),
 }

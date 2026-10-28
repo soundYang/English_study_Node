@@ -10,10 +10,11 @@ const app = createApp()
 const submit = (id, body) =>
   request(app).post(`/api/readings/${id}/submit`).send(body)
 
+// W7：分析区要显示原文依据，所以 evidence 随 results[] 一起回来
 const QUESTIONS = [
-  { id: 1, question: 'Q1?', options: ['a', 'b', 'c', 'd'], correctAnswer: 0, explanation: '解析1' },
-  { id: 2, question: 'Q2?', options: ['a', 'b', 'c', 'd'], correctAnswer: 1, explanation: '解析2' },
-  { id: 3, question: 'Q3?', options: ['a', 'b', 'c', 'd'], correctAnswer: 2, explanation: '解析3' },
+  { id: 1, question: 'Q1?', type: 'detail', evidence: 'Tom is a good boy.', options: ['a', 'b', 'c', 'd'], correctAnswer: 0, explanation: '解析1' },
+  { id: 2, question: 'Q2?', type: 'detail', evidence: 'His dog is big.', options: ['a', 'b', 'c', 'd'], correctAnswer: 1, explanation: '解析2' },
+  { id: 3, question: 'Q3?', type: 'inference', evidence: 'Tom is a good boy.', options: ['a', 'b', 'c', 'd'], correctAnswer: 2, explanation: '解析3' },
 ]
 
 function makeReading(overrides = {}) {
@@ -111,6 +112,7 @@ describe('POST /api/readings/:id/submit · 判分', () => {
       correctAnswer: 0,
       isCorrect: true,
       explanation: '解析1',
+      evidence: 'Tom is a good boy.',
     })
     expect(res.body.translation).toContain('汤姆')
     expect(res.body.questions).toHaveLength(3)

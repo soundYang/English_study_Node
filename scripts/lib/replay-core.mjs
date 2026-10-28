@@ -102,6 +102,9 @@ export function replayCase(testCase, userRecord, basicList, budget) {
     ? null
     : validateArticle({ article, allowedWords, names })
 
+  // checkQuestions: false —— 历史样本（2026-10 之前）没有 type / evidence，
+  // W7 的题目规则在它们身上无从执行。回放守的是正文层面的结构不变量，
+  // 题目质量由 ai-schema.test.js 与集成测试覆盖。
   const structure = kind === 'empty' || testCase.source !== 'reading'
     ? 'skip'
     : (validateAiReading(
@@ -112,7 +115,7 @@ export function replayCase(testCase, userRecord, basicList, budget) {
           names,
           questions: testCase.questions ?? [],
         },
-        { questionCount: testCase.questionCount },
+        { questionCount: testCase.questionCount, checkQuestions: false },
       ).ok ? 'ok' : 'invalid')
 
   const unknownCount = vocabulary?.unknownWords.length ?? 0

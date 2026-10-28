@@ -25,10 +25,11 @@ const app = createApp()
 const ARTICLE =
   'Tom is a good boy. His book is big and the boy is small. Tom and his book play in the house. The book runs and the boy runs too. They are good friends. Tom likes his book very much.'
 
+// W7：type / evidence 是必填字段，evidence 必须是正文里的原句
 const QUESTIONS = [
-  { id: 1, question: 'Question number 1 about the story?', options: ['a', 'b', 'c', 'd'], correctAnswer: 0, explanation: '根据文章内容可知。' },
-  { id: 2, question: 'Question number 2 about the story?', options: ['a', 'b', 'c', 'd'], correctAnswer: 1, explanation: '根据文章内容可知。' },
-  { id: 3, question: 'Question number 3 about the story?', options: ['a', 'b', 'c', 'd'], correctAnswer: 2, explanation: '根据文章内容可知。' },
+  { id: 1, question: 'Question number 1 about the story?', type: 'detail', evidence: 'Tom is a good boy.', options: ['a', 'b', 'c', 'd'], correctAnswer: 0, explanation: '根据文章内容可知。' },
+  { id: 2, question: 'Question number 2 about the story?', type: 'detail', evidence: 'His book is big', options: ['a', 'b', 'c', 'd'], correctAnswer: 1, explanation: '根据文章内容可知。' },
+  { id: 3, question: 'Question number 3 about the story?', type: 'detail', evidence: 'They are good friends.', options: ['a', 'b', 'c', 'd'], correctAnswer: 2, explanation: '根据文章内容可知。' },
 ]
 
 /**

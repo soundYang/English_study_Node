@@ -25,6 +25,7 @@ import {
 import { parseAiContent, validateAiReading } from './ai.schema.js'
 import { ignoredFunctionWordRemovals } from './basic-words.js'
 import { calendarWords } from './calendar-words.js'
+import { measureDifficulty } from './difficulty.js'
 import { limitOf, measureKnownVocabulary, unknownBudgetFor } from './level-limits.js'
 import { callModel, sumUsage } from './model-call.js'
 import { buildSegmentPlan, planSegmentCount } from './plan.service.js'
@@ -121,7 +122,7 @@ function insufficientVocabularyError() {
  *   result: object,
  *   vocabulary?: { unknownWords: string[], violations: Array },
  *   actualWords?: number,
- *   feedback: null | { type: 'structure'|'vocabulary'|'word_count'|'word_expand', reason: string, violations?: Array, actualWords?: number, range?: object },
+ *   feedback: null | { type: 'structure'|'questions'|'vocabulary'|'word_count'|'word_expand', reason: string, violations?: Array, actualWords?: number, range?: object },
  * }}
  */
 function evaluate({ content, params, allowedWords, range, unknownBudget }) {
@@ -129,8 +130,10 @@ function evaluate({ content, params, allowedWords, range, unknownBudget }) {
 
   if (result.insufficient) return { result, feedback: null }
   if (!result.ok) {
-    // 结构不合法时全文重写，顺便把篇幅区间重申一遍
-    return { result, feedback: { type: 'structure', reason: result.reason, range } }
+    // 题目不合格（md/21 W7）只重写题目，正文保留；其余结构问题整篇重写。
+    // 分这一刀是为了不把一篇文章重写两遍——正文已经过了词表与篇幅校验。
+    const type = result.kind === 'questions' ? 'questions' : 'structure'
+    return { result, feedback: { type, reason: result.reason, range } }
   }
 
   // 每轮都数一次：写进 rounds[]，调篇幅策略时能看出「首轮 290 → 重写 228」
@@ -597,6 +600,8 @@ async function generateReadingInner({ userId, body, signal, diag }) {
       rounds,
       questionCount: params.questionCount,
       range,
+      // 收尾生成题目时要按难度执行题型配额（W7）
+      level: params.level,
     })
 
     segmentStats = generated.stats
@@ -681,15 +686,17 @@ async function generateReadingInner({ userId, body, signal, diag }) {
 
       // 结构合法时把它自己的输出放回上下文；结构不合法时不放，避免把半截 JSON
       // 当成"自己的话"喂回去，反而诱导模型照抄。
-      const previous = state.result.ok ? content : ''
+      // questions 例外：JSON 是好的，只是题目不合格，正需要它看着正文改题。
+      const previous =
+        state.result.ok || state.feedback.type === 'questions' ? content : ''
       const repaired = await callModel({
         kind: 'repair',
         // 记下这一轮是被什么催出来的，和它自己又判出什么分开存
         repairFor: state.feedback.type,
         // 扩写与原稿是同一篇：带上一篇正文当锚点；压缩必须不带（见 buildRepairMessages）
         messages: isExpand
-          ? buildExpandMessages(messages, state.feedback, previous)
-          : buildRepairMessages(messages, state.feedback, previous),
+          ? buildExpandMessages(messages, state.feedback, previous, params.level)
+          : buildRepairMessages(messages, state.feedback, previous, params.level),
         signal,
         rounds,
       })
@@ -733,6 +740,11 @@ async function generateReadingInner({ userId, body, signal, diag }) {
 
   const data = state.result.data
   const actualWords = countWords(data.article)
+
+  // 难度客观化（W7）：六项纯代码指标加权成 0–100 分。
+  // 只记录、不设闸门——先让每次生成都留下分数，阈值等采样之后再定，
+  // 否则「按现在的成功率反推阈值」等于让数据迁就实现。
+  const difficulty = measureDifficulty(data.article)
 
   // 目标词真实覆盖度（W5）：只记录 + warn，不触发修复。
   // 修复要多一轮调用，先用采样数据确认「覆盖率低」真的值得修（md/21 W5）。
@@ -835,6 +847,8 @@ async function generateReadingInner({ userId, body, signal, diag }) {
       // W5：一行摘要，采样报告直接读日志也能看到覆盖度
       coverageRate: targetUsage.coverageRate,
       densityScore: targetUsage.densityScore,
+      // W7：同一档难度的文章，分数应该聚在一起；分布散了说明档位只是个标签
+      difficultyScore: difficulty.score,
       // true = 篇幅额度耗尽后补查的用词，这批文章的违规数以前是假的 0
       lateVocabulary,
       finishReason,
@@ -895,6 +909,8 @@ async function generateReadingInner({ userId, body, signal, diag }) {
       requiredWords: plan.requiredWords,
       // W5：六项覆盖度指标。只记录（M2），不参与重试判断
       targetUsage,
+      // W7：难度分数 + 六项原始指标。同样是只记录，用来核对「档位」和「实际难度」是否一致
+      difficulty,
     },
   })
 

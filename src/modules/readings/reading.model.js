@@ -1,5 +1,6 @@
 import mongoose from 'mongoose'
 
+import { QUESTION_TYPES } from './ai.schema.js'
 import { roundSchema } from './round.schema.js'
 
 const { Schema } = mongoose
@@ -15,6 +16,10 @@ const questionSchema = new Schema(
     options: { type: [String], required: true }, // 四个选项
     correctAnswer: { type: Number, required: true }, // 正确选项下标；只会出现在结果页 DTO 里
     explanation: { type: String, required: true }, // 答案解析（中文），同上
+    // W7：题型与原文依据。老文档没有这两个字段，读取方按 null / '' 兜底。
+    // evidence 只在结果页出现——答题前给出依据等于把答案指出来
+    type: { type: String, enum: QUESTION_TYPES, default: null },
+    evidence: { type: String, default: '' },
   },
   { _id: false },
 )
@@ -73,6 +78,28 @@ const targetUsageSchema = new Schema(
     unused: { type: [String], default: [] }, // 一次都没出现的目标词
     overused: { type: [String], default: [] }, // 出现 > 6 次的词
     densityScore: Number, // 目标词 token / 正文 token
+  },
+  { _id: false },
+)
+
+/**
+ * 难度客观指标（W7）。
+ *
+ * 六项都由 difficulty.js 从正文直接算出，不读模型自述——
+ * 同一个难度标签下，分数应该聚在一起；分布散了就说明标签只是个名字。
+ * M2 阶段只记录，阈值等采样分布出来再定。
+ */
+const difficultySchema = new Schema(
+  {
+    score: Number, // 0–100，六项加权
+    metrics: {
+      avgSentenceLength: Number, // 平均每句词数
+      clauseDensity: Number, // 每句的从句标记数
+      avgWordLength: Number, // 平均词长（字母数）
+      passiveRatio: Number, // 含被动语态的句子占比
+      tenseVariety: Number, // 出现过的时态/体数量
+      medianRank: Number, // 词频中位数；排名表里一个都查不到时为 null
+    },
   },
   { _id: false },
 )
@@ -167,6 +194,7 @@ const readingSchema = new Schema(
       candidatePoolSize: Number, // 候选池大小
       requiredWords: Number, // 计划的目标词数
       targetUsage: { type: targetUsageSchema, default: null }, // W5：真实覆盖度六项
+      difficulty: { type: difficultySchema, default: null }, // W7：难度分数与六项指标
       actualTargetWordCount: Number, // 实际用上的目标词数
       focusWordHits: Number, // 重点词平均复现次数
       userWordTokenRatio: Number, // 个人词占正文词次的比例

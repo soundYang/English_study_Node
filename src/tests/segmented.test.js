@@ -53,11 +53,15 @@ const FINISH = {
   title: 'A Good Day',
   translation: '一个男孩有一本很大的书，他和书在房子里玩，他们是好朋友。',
   names: [],
+  // W7：第 3 道做成推断题，同一份 FINISH 就能同时满足 easy（≥2 detail）与 hard（≥1 inference）；
+  // evidence 取自 SHORT，段落怎么拼都在正文里
   questions: [1, 2, 3].map((id) => ({
     id,
     question: `What is question number ${id} about?`,
-    options: ['A boy', 'A book', 'A house', 'A day'],
-    correctAnswer: id - 1,
+    type: id === 3 ? 'inference' : 'detail',
+    evidence: 'They are good friends.',
+    options: ['good friends', 'A boy', 'A book', 'A house'],
+    correctAnswer: 0,
     explanation: '根据正文可知。',
   })),
 }

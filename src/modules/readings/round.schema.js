@@ -50,15 +50,16 @@ export const roundSchema = new Schema(
 
     // ——— 诊断字段：这一轮为什么发起、产出被判成什么 ———
     // 发起这一轮修正的原因；generate 轮没有上游原因，为 null
+    // questions = 正文合格、只有题目不合格（W7）
     repairFor: {
       type: String,
-      enum: ['structure', 'vocabulary', 'word_count', 'word_expand'],
+      enum: ['structure', 'questions', 'vocabulary', 'word_count', 'word_expand'],
       default: null,
     },
     // 这一轮产出被判出的问题类型；null 表示这一轮通过了验收
     feedbackType: {
       type: String,
-      enum: ['structure', 'vocabulary', 'word_count', 'word_expand'],
+      enum: ['structure', 'questions', 'vocabulary', 'word_count', 'word_expand'],
       default: null,
     },
     // 本轮正文里不在词表内的词（去重、按出现顺序）。

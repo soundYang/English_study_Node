@@ -10,7 +10,21 @@ import {
   planExpandBudget,
   planSentenceBudget,
   planWordRange,
+  wordsPerSentenceFor,
 } from './word-count.js'
+
+/**
+ * 题型配额的提示词口径（W7）。
+ *
+ * 数字与 `ai.schema.js` 的 `TYPE_QUOTA` 一一对应：提示词说错，模型就照着写错，
+ * 再由校验拦下来——等于拿一次模型调用换一个模型本来就能避免的问题。
+ * 两边同时改是这份文件唯一需要人工同步的地方，注释留在这里提醒。
+ */
+function questionTypeRule(level) {
+  if (level === 'easy') return '本难度至少 2 道 detail 题。'
+  if (level === 'hard') return '本难度至少 1 道 inference 或 main_idea 题。'
+  return '本难度不限制题型分布。'
+}
 
 /**
  * 第 7 条必须是**绝对数字**。
@@ -18,9 +32,10 @@ import {
  * （目标 200 词写出 429 词），换成区间后模型才有可执行的目标。
  * 但只给词数区间仍然写不稳（实测首轮 231 / 277 / 293），所以再给一份
  * **句子预算**：模型数不准词，却数得清自己写了几句。
+ * W7 起每句基准词数由难度决定（easy 12 / medium 15 / hard 19）。
  */
-function systemPrompt(range) {
-  const budget = planSentenceBudget(range)
+function systemPrompt(range, level) {
+  const budget = planSentenceBudget(range, level)
 
   return `你是英语阅读材料的编写者。你必须严格遵守以下规则：
 1. 只能使用【目标词】【补充可用词】【基础词】三份清单里出现的单词，以及它们的合法词形变化（复数、第三人称单数、规则过去式、现在分词、比较级、最高级）。
@@ -32,9 +47,14 @@ function systemPrompt(range) {
 7. 正文必须控制在 ${range.min}–${range.max} 个英文单词之间（目标约 ${range.target} 词）：共 ${budget.minSentences}–${budget.maxSentences} 个句子，每句 ${formatWordsPerSentence(budget)} 个英文单词。不含题目、解析和中文翻译。少于 ${range.min} 词或多于 ${range.max} 词都不合格。
 8. 需要人名时最多使用 3 个，并在 names 字段里声明；除人名和星期、月份名称外，不得出现其他专有名词。
 9. 题目必须能根据文章内容回答，每题只有一个正确答案，四个选项互不重复。
-10. 中文翻译必须与英文正文逐段对应，不得增删内容。
-11. 如果三份清单里的词太少、确实无法写出通顺文章，返回 {"error": "INSUFFICIENT_VOCABULARY"}，不要强行编造。
-12. 只输出一个 JSON 对象，不要输出 Markdown 代码块标记或任何解释性文字。`
+10. 每道题必须给出两个字段：
+    - type：detail（原文能直接找到答案）/ paraphrase（换一种说法）/ inference（需要跨句推断）/ main_idea（概括主旨）；
+    - evidence：从正文**原样复制**一句作为依据，不要改写、不要加引号之外的内容。
+    ${questionTypeRule(level)}
+    detail 题的正确答案必须能在 evidence 里找到对应词，不能只靠常识判断。
+11. 中文翻译必须与英文正文逐段对应，不得增删内容。
+12. 如果三份清单里的词太少、确实无法写出通顺文章，返回 {"error": "INSUFFICIENT_VOCABULARY"}，不要强行编造。
+13. 只输出一个 JSON 对象，不要输出 Markdown 代码块标记或任何解释性文字。`
 }
 
 /** 按首字母分组能显著压缩 token，比一个长数组便宜 */
@@ -129,7 +149,8 @@ export function buildMessages({
   })
 
   const range = planWordRange(targetWords)
-  const budget = planSentenceBudget(range)
+  // W7：每句基准词数由难度决定，sentence 预算与 system 提示词必须读同一个预算
+  const budget = planSentenceBudget(range, level)
 
   const userMessage = `level: ${level}
 targetWords: ${range.label}（目标约 ${range.target} 词；约 ${budget.sentences} 句，每句 ${formatWordsPerSentence(budget)} 词）
@@ -144,12 +165,12 @@ ${sections}
   "translation": "string",
   "names": ["string"],
   "questions": [
-    { "id": 1, "question": "string", "options": ["…","…","…","…"], "correctAnswer": 0, "explanation": "string" }
+    { "id": 1, "question": "string", "type": "detail", "evidence": "正文里原样的一句", "options": ["…","…","…","…"], "correctAnswer": 0, "explanation": "string" }
   ]
 }`
 
   return [
-    { role: 'system', content: systemPrompt(range) },
+    { role: 'system', content: systemPrompt(range, level) },
     { role: 'user', content: userMessage },
   ]
 }
@@ -190,11 +211,12 @@ export function buildSegmentedSystem({
 4. 难度（${level}）只能通过句式和情节复杂度提升，不能通过引入生词实现。
 5. 【目标词】清单里的单词必须全部出现在全文里：带 ★ 的重点词各出现 2–3 次，其余目标词各出现 1–2 次。
 6. 不要为了凑目标词写出不自然的句子。实在放不进去时，优先保证文章通顺可读。
-7. 分段写作时，每段控制在本段要求的词数附近；各段合起来要接近全篇目标（约 ${targetWords} 词）。
+7. 分段写作时，每段控制在本段要求的词数附近，每句约 ${wordsPerSentenceFor(level)} 个英文单词（本难度的句长基准）；各段合起来要接近全篇目标（约 ${targetWords} 词）。
 8. 需要人名时最多使用 3 个，并在 names 字段里声明；除人名和星期、月份名称外，不得出现其他专有名词。
 9. 题目必须能根据文章内容回答，每题只有一个正确答案，四个选项互不重复。
-10. 中文翻译必须与英文正文逐段对应，不得增删内容。
-11. 只输出当前步骤要求的 json 对象，不要输出 Markdown 代码块标记或任何解释性文字。
+10. 每道题必须给出 type（detail / paraphrase / inference / main_idea）与 evidence（从正文原样复制的一句）。${questionTypeRule(level)}detail 题的正确答案必须能在 evidence 里找到对应词。
+11. 中文翻译必须与英文正文逐段对应，不得增删内容。
+12. 只输出当前步骤要求的 json 对象，不要输出 Markdown 代码块标记或任何解释性文字。
 
 ${sections}`
 }
@@ -313,7 +335,7 @@ ${mustUse}
 }
 
 /** ⑤ 收尾：正文已定，只补标题、翻译、题目 */
-export function buildFinishMessages(system, { article, questionCount, paragraphCount }) {
+export function buildFinishMessages(system, { article, questionCount, paragraphCount, level }) {
   return [
     { role: 'system', content: system },
     {
@@ -324,9 +346,10 @@ ${article}
 """
 
 请只输出标题、中文翻译、题目与 names：
-{"title":"…","translation":"…","names":["…"],"questions":[{"id":1,"question":"…","options":["…","…","…","…"],"correctAnswer":0,"explanation":"…"}]}
+{"title":"…","translation":"…","names":["…"],"questions":[{"id":1,"question":"…","type":"detail","evidence":"正文里原样的一句","options":["…","…","…","…"],"correctAnswer":0,"explanation":"…"}]}
 
-要求：翻译与正文逐段对应；题目共 ${questionCount} 道，id 从 1 开始连续，四个选项互不重复，答案必须能在正文中找到依据。`,
+要求：翻译与正文逐段对应；题目共 ${questionCount} 道，id 从 1 开始连续，四个选项互不重复，答案必须能在正文中找到依据。
+每道题的 evidence 必须从上面正文里原样复制一句；${questionTypeRule(level)}`,
     },
   ]
 }
@@ -362,14 +385,16 @@ function renderViolations(violations) {
 }
 
 /**
- * 生成修正指令。三种反馈共用一个入口：
+ * 生成修正指令。四种反馈共用一个入口：
  *   structure   —— 结构/JSON 不合法
  *   vocabulary  —— 表外词超过放行额度
  *   word_count  —— 正文超过篇幅上限，**不带上一篇、按句子预算重写**
+ *   questions   —— 正文没问题，只有题目不合格（evidence 编造 / 题型配额 / detail 选项与依据无关），
+ *                  **只重写题目**，正文原样保留
  *
  * @param {Array} messages 原始消息
  * @param {{
- *   type?: 'structure' | 'vocabulary' | 'word_count',
+ *   type?: 'structure' | 'vocabulary' | 'word_count' | 'questions',
  *   reason: string,
  *   violations?: Array<{ token: string, normalized: string, category: string, sentence: string }>,
  *   range?: { min: number, max: number, target: number },
@@ -378,11 +403,13 @@ function renderViolations(violations) {
  *   否则本轮说「你上一次的输出不符合约定」时，模型根本没看过上一次写了什么；
  *   结构不合法时不带，避免把半截 JSON 喂回去；
  *   `word_count` 时也不带——锚定会让模型只做减法，删不干净。
+ * @param {string} [level] 难度：题型配额与句中词数都跟它走
  */
 export function buildRepairMessages(
   messages,
   { type, reason, violations = [], range },
   previousContent = '',
+  level,
 ) {
   // 篇幅修正：**不带上一篇正文**，改成按句子预算重新写一版。
   //
@@ -390,10 +417,20 @@ export function buildRepairMessages(
   // 实测都只删掉 14–20 个，最终停在 263–265。模型数不准词，但数得清句子，
   // 所以给它「几句 × 每句几词」的配料表，重新组织比事后删减可控。
   // 顺带的好处：不带 prior content 的修一轮比压缩便宜约 28%。
-  const sentenceBudget = range ? planSentenceBudget(range) : null
+  const sentenceBudget = range ? planSentenceBudget(range, level) : null
   let instruction
 
-  if (type === 'word_count') {
+  if (type === 'questions') {
+    // 只重写题目：正文已经通过词表与篇幅校验，重写整篇等于把两次调用的成果丢掉，
+    // 还会带出新的表外词。evidence 编造这类问题模型完全有能力只改题目就修好。
+    instruction = `你上一次的题目不符合要求：${reason}。\n\n`
+      + '请保持 title、article、translation 与 names 完全不变，只重写 questions：\n'
+      + '- 每道题都要有 type 与 evidence；evidence 必须从正文里**原样复制**一句，不要改写\n'
+      + `- ${questionTypeRule(level)}\n`
+      + '- detail 题的正确答案必须能在 evidence 里找到对应词\n'
+      + '- 题目数量、id 从 1 开始连续、四个选项互不重复这几条照旧\n'
+      + '重新输出完整的 json 对象。'
+  } else if (type === 'word_count') {
     instruction = `你上一次的正文长度不符合约定：${reason}。\n\n`
       + '请不要在上一篇上删改，直接用同一批目标词重新写一篇文章'
       + (sentenceBudget ? '：\n' : '。\n')
@@ -448,9 +485,15 @@ export function buildRepairMessages(
  *   acceptedRange: { min: number, max: number, label: string },
  * }} feedback
  * @param {string} previousContent 上一轮（结构合法的）完整输出
+ * @param {string} [level] 难度：easy 的句子更短，补几句要按该档的句长折算
  */
-export function buildExpandMessages(messages, { actualWords, range, acceptedRange }, previousContent) {
-  const { shortfall, sentences } = planExpandBudget(actualWords, range)
+export function buildExpandMessages(
+  messages,
+  { actualWords, range, acceptedRange },
+  previousContent,
+  level,
+) {
+  const { shortfall, sentences } = planExpandBudget(actualWords, range, level)
   const shortfallText = shortfall > 0 ? `，约 ${shortfall} 词` : ''
 
   const instruction = `你上一次的正文偏短：只有 ${actualWords} 个英文单词，验收下限是 ${acceptedRange.min}。\n\n`
