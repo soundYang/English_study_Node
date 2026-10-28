@@ -15,6 +15,8 @@ export function errorHandler(err, req, res, _next) {
         code: err.code,
         message: err.message,
         ...(err.field && { field: err.field }),
+        // details 只在业务显式给了才出现：没给的错误，响应体与之前逐字节一致
+        ...(err.details && { details: err.details }),
       },
     })
   }

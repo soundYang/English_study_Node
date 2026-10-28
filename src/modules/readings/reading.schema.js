@@ -1,5 +1,7 @@
 import { z } from 'zod'
 
+import { VOCAB_SCOPES } from './vocabulary-pool.js'
+
 export const LEVELS = ['easy', 'medium', 'hard']
 export const QUESTION_COUNTS = [3, 5, 8]
 
@@ -16,9 +18,20 @@ export const generateReadingSchema = z.object({
   targetWords: z
     .number({ error: 'targetWords 必须是数字' })
     .int('targetWords 必须是整数')
-    .min(50, 'targetWords 最小为 50')
-    .max(300, 'targetWords 最大为 300')
+    .min(100, 'targetWords 最小为 100')
+    .max(800, 'targetWords 最大为 800')
     .refine((value) => value % 10 === 0, 'targetWords 必须是 10 的倍数'),
+  // 词源多选。default 只兜 undefined，显式传 [] 仍会被 min(1) 拦成 400——
+  // 这正是契约要的：前端不该发空数组，发了就是前端 bug，宁可报错也别悄悄全选。
+  vocabScope: z
+    .array(
+      z.enum(VOCAB_SCOPES, {
+        error: 'vocabScope 只能是 today_new / today_reviewed / all',
+      }),
+    )
+    .min(1, 'vocabScope 不能为空数组')
+    .optional()
+    .default(['all']),
   questionCount: z
     .number({ error: 'questionCount 必须是数字' })
     .int('questionCount 必须是整数')
