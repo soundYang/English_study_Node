@@ -161,6 +161,42 @@ export function segmentWordCeiling(maxWords) {
   return Math.max(1, Math.ceil(words * WORD_COUNT.MAX_RATIO - 1e-9))
 }
 
+/**
+ * 把整篇篇幅预算分给各段，作为每段的硬上限（W11 缺口 2）。
+ *
+ * 原来每段各算各的 `segmentWordCeiling(maxWords)`：10 段都按 1.15 倍收下，
+ * 合计能到 1.265N，而验收上界只有 1.15N。于是「每段都合法」的文章仍可能整篇超长——
+ * 实测 1000 词写出 1124 / 1129，离 1150 只剩 2%。
+ *
+ * 这里按各段 `maxWords` 的比例把 `articleMax` 分完，**总和恰好等于 articleMax**。
+ * 只要每段不超过自己的上限，拼出来的文章就不可能超长，不需要再补一次整篇重写。
+ * 余数落在最后一段：四舍五入的零头全在那里，预算不会漏出，也不会悄悄少分。
+ *
+ * @param {Array<{ maxWords: number }>} segments
+ * @param {number} articleMax 整篇硬上限（`planAcceptedRange(N).max`）
+ * @returns {number[]} 与 segments 等长的每段上限
+ */
+export function planSegmentCeilings(segments, articleMax) {
+  if (segments.length === 0) return []
+
+  const max = Math.max(0, Math.round(Number(articleMax) || 0))
+  const words = segments.map((segment) => Math.max(0, Number(segment.maxWords) || 0))
+  const total = words.reduce((sum, item) => sum + item, 0)
+  const evenShare = Math.floor(max / segments.length)
+
+  let remaining = max
+
+  return segments.map((_, index) => {
+    if (index === segments.length - 1) return Math.max(0, remaining)
+
+    const share = total > 0 ? Math.round((max * words[index]) / total) : evenShare
+    const ceiling = Math.max(0, Math.min(remaining, share))
+    remaining -= ceiling
+
+    return ceiling
+  })
+}
+
 /** 扩写轮最多补几句：按每句 15 词折算，1–3 句封顶（补太多等于重写） */
 export const MAX_EXPAND_SENTENCES = 3
 

@@ -49,6 +49,20 @@ const PLAN = {
   ],
 }
 
+/**
+ * 600 词的计划：10 段 × 66 词（合计 660 = 提示词目标）。
+ * 不能拿 3 段的 PLAN 凑数——buildSegmentPlan 会把缺的段按兜底词数补齐再整体缩放，
+ * 前几段只剩 43 词，而本节测试用的 LONG 是 61 词，会被判超长丢掉（W11 缺口 2 之后）。
+ */
+const PLAN_600 = {
+  segments: Array.from({ length: 10 }, (_, index) => ({
+    id: index + 1,
+    goal: `写故事的第 ${index + 1} 部分`,
+    mustUse: [],
+    maxWords: 66,
+  })),
+}
+
 const FINISH = {
   title: 'A Good Day',
   translation: '一个男孩有一本很大的书，他和书在房子里玩，他们是好朋友。',
@@ -202,7 +216,7 @@ describe('分段路径 · 正常闭环', () => {
     expect(doc.aiMeta.rounds.map((round) => round.kind)).toContain('repair')
   })
 
-  it('单段写超 maxWords×1.15 → 只重写这一段，不重写整篇（md/30 §6-2）', async () => {
+  it('单段写超整篇预算分给它的份额 → 只重写这一段，不重写整篇（md/30 §6-2）', async () => {
     await seedWords(400)
     mockHappyPath({
       1: (step, count) => (step.type === 'segment' && count === 1 ? LONG : SHORT),
@@ -216,12 +230,14 @@ describe('分段路径 · 正常闭环', () => {
     const first = doc.aiMeta.segments.find((item) => item.id === 1)
     const others = doc.aiMeta.segments.filter((item) => item.id !== 1)
 
-    // maxWords 37 → 上限 ceil(37 × 1.15) = 43；LONG 是 62 词，必须被压回来
+    // 100 词的验收上界 115 按 maxWords 37/37/37 分给 3 段 → 38/38/39（W11 缺口 2）；
+    // LONG 是 61 词，必须被压回来
     expect(first.maxWords).toBe(37)
-    expect(first.limitWords).toBe(43)
+    expect(first.limitWords).toBe(38)
+    expect(doc.aiMeta.segments.reduce((sum, item) => sum + item.limitWords, 0)).toBe(115)
     expect(first.attempts).toBe(2)
     expect(first.accepted).toBe(true)
-    expect(first.actualWords).toBeLessThanOrEqual(43)
+    expect(first.actualWords).toBeLessThanOrEqual(38)
     expect(first.overLength).toBeFalsy()
 
     // 只重写第 1 段：其余段仍是一次过，整篇没有走整篇重写
@@ -233,27 +249,30 @@ describe('分段路径 · 正常闭环', () => {
     const lengthPrompt = prompts.find((content) => content.includes('超过本段上限'))
 
     expect(lengthPrompt).toContain('有 61 个英文单词')
-    expect(lengthPrompt).toContain('上限 43 个词')
+    expect(lengthPrompt).toContain('上限 38 个词')
   })
 
-  it('词表干净但怎么都压不下来 → 收下这一段并标 overLength，不丢段', async () => {
+  it('词表干净但怎么都压不下来 → 丢段，不拿超长段凑数（W11 缺口 2）', async () => {
     await seedWords(400)
     mockHappyPath({ 1: () => LONG })
 
     const res = await generate({ level: 'easy', targetWords: 100, questionCount: 3 })
 
-    // 3 段 × 62 词 = 186，超了 100 词的验收上界，但段都在、词表干净，
-    // 整篇照样收下（篇幅超长只记 lengthStatus，不判失败）
+    // 收下超长段就等于把整篇推过验收上界，所以宁可少一段：
+    // 剩下 2 段 = 40 词，只记 lengthStatus=short，接收率 2/3 ≥ 0.6 仍返回 201
     expect(res.status).toBe(201)
 
     const doc = await Reading.findById(res.body.id).lean()
     const first = doc.aiMeta.segments.find((item) => item.id === 1)
 
-    // 首轮 + 2 次段内重写 + 1 次降级，全部超长，但词表干净
-    expect(first.accepted).toBe(true)
+    // 首轮 + 2 次段内重写 + 1 次降级 + 1 次补段，全部超长 → 丢弃
+    expect(first.accepted).toBe(false)
     expect(first.overLength).toBe(true)
-    expect(first.attempts).toBe(4)
+    expect(first.attempts).toBe(5)
     expect(first.actualWords).toBe(61)
+
+    expect(doc.actualWords).toBe(40)
+    expect(doc.aiMeta.lengthStatus).toBe('short')
   })
 })
 
@@ -336,7 +355,7 @@ describe('分段路径 · 降级链', () => {
     // hard/600 → 10 段；丢 1 段后 9 段仍 ≥ 510 词
     chatJson.mockImplementation(async ({ messages }) => {
       const step = classify(messages)
-      if (step.type === 'plan') return json(PLAN)
+      if (step.type === 'plan') return json(PLAN_600)
       if (step.type === 'finish') return json(FINISH)
 
       return json({ text: step.index === 7 ? BAD : LONG })

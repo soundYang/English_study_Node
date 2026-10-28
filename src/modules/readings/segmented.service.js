@@ -10,7 +10,11 @@ import {
 } from './ai.prompt.js'
 import { callModel } from './model-call.js'
 import { collectWordForms, validateArticle } from './vocabulary.service.js'
-import { countWords, segmentWordCeiling } from './word-count.js'
+import {
+  countWords,
+  planSegmentCeilings,
+  segmentWordCeiling,
+} from './word-count.js'
 
 /**
  * 句级闭环生成（md/20 §5 / md/21 W4）。
@@ -87,6 +91,9 @@ function annotateRound(rounds, { text, vocabulary, accepted }) {
  *   2..1+maxAttempts. 带违规原句的段内重写（允许删掉这个意思）
  *   最后一次. 去掉没成功用上的目标词，用最简单的说法再写一次
  * 仍不通过 → 丢弃该段（由调用方把篇幅缺口记进日志，不重试）。
+ *
+ * 篇幅与词表一样是硬条件：段的 `limitWords` 是整篇预算分下来的份额（W11 缺口 2），
+ * 收下一段超长的就等于把整篇推过验收上界，所以压不下来时丢段而不是标记放行。
  */
 async function generateOneSegment({
   segment,
@@ -104,8 +111,11 @@ async function generateOneSegment({
   // 它刚走完一整条重写链，再走一遍是重复烧钱。
   singleAttempt = false,
 }) {
-  // 段级篇幅硬上限（md/30 §6-2）：超出就只重写这一段，不重写整篇。
-  const limitWords = segmentWordCeiling(segment.maxWords)
+  // 段级篇幅硬上限：调用方按整篇预算分配好（W11 缺口 2）；
+  // 单独调用本函数时退回「本段目标 × 1.15」的老口径。
+  const limitWords = Number.isFinite(segment.limitWords)
+    ? segment.limitWords
+    : segmentWordCeiling(segment.maxWords)
 
   const stats = {
     id: segment.id,
@@ -187,14 +197,14 @@ async function generateOneSegment({
   }
 
   // 补段只给这一轮：失败就交回调用方，由整篇接收率决定要不要判失败。
-  // 唯一的例外是「只剩篇幅超标」：词表干净但写长了，收下比丢段好——
-  // 丢一段少 60 词、还要再花一次补段调用，而超长只是多十几个词。
+  // 超长同样不能收：这段的 `limitWords` 是整篇预算的一部分，
+  // 收下它就等于让整篇越过验收上界（W11 缺口 2）。
   if (singleAttempt) {
     stats.actualWords = countWords(text)
     stats.unknownWords = first.vocabulary?.unknownWords ?? []
     stats.overLength = !lengthOk
 
-    if (first.vocabularyOk) {
+    if (first.vocabularyOk && lengthOk) {
       stats.accepted = true
       return { accepted: true, text, stats }
     }
@@ -231,7 +241,9 @@ async function generateOneSegment({
     }
   }
 
-  // ③ 降级：去掉这段没成功用上的目标词，用最简单的说法再写一次
+  // ③ 降级：去掉这段没成功用上的目标词，用最简单的说法再写一次。
+  // 若这时的超长还没解决，一并把压缩要求写进提示词——最后一次机会，
+  // 不能只让它「换简单说法」却不知道还得更短。
   const forms = new Set(collectWordForms(text))
   const simplified = {
     ...segment,
@@ -240,23 +252,28 @@ async function generateOneSegment({
   const last = await attempt({
     kind: 'repair',
     repairFor: 'vocabulary',
-    messages: buildSegmentSimplifyMessages(systemPrompt, { segment: simplified, index }),
+    messages: buildSegmentSimplifyMessages(systemPrompt, {
+      segment: simplified,
+      index,
+      overWords: overWords(),
+    }),
   })
 
   stats.actualWords = countWords(text)
   stats.unknownWords = last.vocabulary?.unknownWords ?? []
   stats.overLength = !lengthOk
 
-  // 走到最后一步仍超长：词表干净就收下（理由同上，丢段比超长更伤篇幅）
-  if (last.vocabularyOk) {
+  // 词表和篇幅都干净才收（理由见文件顶部：收下超长段会推高整篇）
+  if (last.vocabularyOk && lengthOk) {
     stats.accepted = true
-    if (!lengthOk) {
-      logger.warn(
-        { segment: segment.id, actualWords: stats.actualWords, limitWords },
-        'segment accepted over length after retries',
-      )
-    }
     return { accepted: true, text, stats }
+  }
+
+  if (last.vocabularyOk) {
+    logger.warn(
+      { segment: segment.id, actualWords: stats.actualWords, limitWords },
+      'segment over length after retries: dropped',
+    )
   }
 
   logger.warn(
@@ -293,20 +310,32 @@ export async function generateSegmented({
   questionCount,
   range,
   level,
+  acceptedMax,
 }) {
   // 每段都带上完整计划：并发生成拿不到「上一段的最后一句」，
   // 但至少要知道全文走向，否则四段各写各的（md/20 §5.3，见 md/21 §9 偏离）
-  const outline = segments.map(({ id, goal }) => `${id}. ${goal}`).join('\n')
+  //
+  // 段级上限来自整篇预算（W11 缺口 2）：Σ 上限 = acceptedMax，
+  // 于是「每段都合格」就等价于「整篇不超长」。不传时退回老的各自 1.15 倍口径，
+  // 只为兼容离线脚本，生产调用方必须传。
+  const ceilings = planSegmentCeilings(
+    segments,
+    Number.isFinite(acceptedMax)
+      ? acceptedMax
+      : segments.reduce((sum, segment) => sum + segmentWordCeiling(segment.maxWords), 0),
+  )
+  const plan = segments.map((segment, index) => ({ ...segment, limitWords: ceilings[index] }))
+  const outline = plan.map(({ id, goal }) => `${id}. ${goal}`).join('\n')
 
   /** 写第 index 段。refill 时清空 mustUse：补段先保住正文，不再强求覆盖目标词。 */
   const writeSegment = (index, refill) =>
     generateOneSegment({
-      segment: refill ? { ...segments[index], mustUse: [] } : segments[index],
+      segment: refill ? { ...plan[index], mustUse: [] } : plan[index],
       index: index + 1,
-      total: segments.length,
+      total: plan.length,
       outline,
-      previousGoal: segments[index - 1]?.goal ?? '',
-      nextGoal: segments[index + 1]?.goal ?? '',
+      previousGoal: plan[index - 1]?.goal ?? '',
+      nextGoal: plan[index + 1]?.goal ?? '',
       systemPrompt,
       allowedWords,
       names,
@@ -354,6 +383,16 @@ export async function generateSegmented({
   const accepted = results.filter((item) => item.accepted)
   const article = accepted.map((item) => item.text).join('\n\n')
   const acceptance = segments.length > 0 ? accepted.length / segments.length : 0
+  const articleWords = countWords(article)
+
+  // 按构造不可能超：每段 ≤ 自己的份额，份额之和 = acceptedMax。
+  // 真超了说明有段绕过了长度校验——留痕，而不是静默返回一篇超长正文。
+  if (Number.isFinite(acceptedMax) && articleWords > acceptedMax) {
+    logger.warn(
+      { actualWords: articleWords, acceptedMax, limits: ceilings },
+      'segmented article over global length budget',
+    )
+  }
 
   if (!accepted.length) {
     throw new ApiError(
@@ -420,7 +459,9 @@ export async function generateSegmented({
       accepted: accepted.length,
       dropped: segments.length - accepted.length,
       refilled: refillAccepted,
-      actualWords: countWords(article),
+      actualWords: articleWords,
+      acceptedMax: Number.isFinite(acceptedMax) ? acceptedMax : null,
+      limits: ceilings,
       targetRange: range.label,
       attempts: stats.map(({ id, attempts }) => ({ id, attempts })),
     },

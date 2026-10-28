@@ -8,6 +8,7 @@ import {
   formatWordsPerSentence,
   planAcceptedRange,
   planExpandBudget,
+  planSegmentCeilings,
   planSentenceBudget,
   planWordRange,
   segmentWordCeiling,
@@ -184,6 +185,43 @@ describe('segmentWordCeiling', () => {
     expect(segmentWordCeiling(-5)).toBe(0)
     expect(segmentWordCeiling('many')).toBe(0)
     expect(segmentWordCeiling(null)).toBe(0)
+  })
+})
+
+describe('planSegmentCeilings', () => {
+  /** 10 段各 110 词（1000 词的提示词目标摊到 10 段），整篇验收上界 1150 */
+  const segments = Array.from({ length: 10 }, () => ({ maxWords: 110 }))
+
+  it('各段上限之和恰好等于整篇上限', () => {
+    const ceilings = planSegmentCeilings(segments, 1150)
+
+    expect(ceilings.reduce((sum, item) => sum + item, 0)).toBe(1150)
+    // 按比例分：1150 / 10 = 115，不再是人人都按 1.15 × maxWords 拿 127
+    expect(ceilings).toEqual(Array.from({ length: 10 }, () => 115))
+  })
+
+  it('按 maxWords 比例分配，余数落在最后一段', () => {
+    // 总上限 115，三段各 37 词 → 38 / 38 / 39
+    expect(planSegmentCeilings([37, 37, 37].map((maxWords) => ({ maxWords })), 115)).toEqual([
+      38, 38, 39,
+    ])
+    // 比例不均时也按份额走：200 的上限，1:3 → 50 / 150
+    expect(planSegmentCeilings([{ maxWords: 10 }, { maxWords: 30 }], 200)).toEqual([50, 150])
+  })
+
+  it('空数组返回空数组', () => {
+    expect(planSegmentCeilings([], 100)).toEqual([])
+  })
+
+  it('maxWords 全为 0 时平均分配，不返回 NaN', () => {
+    const ceilings = planSegmentCeilings([{ maxWords: 0 }, { maxWords: 0 }, { maxWords: 0 }], 100)
+
+    expect(ceilings).toEqual([33, 33, 34])
+  })
+
+  it('非法整篇上限按 0 处理', () => {
+    expect(planSegmentCeilings([{ maxWords: 60 }, { maxWords: 60 }], undefined)).toEqual([0, 0])
+    expect(planSegmentCeilings([{ maxWords: 60 }], 'many')).toEqual([0])
   })
 })
 

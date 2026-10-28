@@ -675,6 +675,8 @@ async function generateReadingInner({ userId, body, signal, diag }) {
       range,
       // 收尾生成题目时要按难度执行题型配额（W7）
       level: params.level,
+      // 整篇硬上限：各段上限之和被它约束，保证「每段合格 ⇒ 全篇不超长」（W11 缺口 2）
+      acceptedMax: planAcceptedRange(params.targetWords).max,
     })
 
     segmentStats = generated.stats

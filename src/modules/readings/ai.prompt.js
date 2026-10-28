@@ -266,6 +266,16 @@ export function buildPlanMessages(system, { segmentCount, range }) {
 }
 
 /** ② 分段写作：只带本段目标与相邻段的方向，不带全篇正文 */
+/**
+ * 段级硬上限：调用方按整篇预算分配好 `limitWords`（W11 缺口 2）；
+ * 没传时退回「本段目标 × 1.15」的老口径，保持离线脚本可用。
+ */
+function segmentLimit(segment) {
+  return Number.isFinite(segment.limitWords)
+    ? segment.limitWords
+    : segmentWordCeiling(segment.maxWords)
+}
+
 export function buildSegmentMessages(
   system,
   { segment, index, total, outline = '', previousGoal = '', nextGoal = '' },
@@ -290,7 +300,7 @@ ${outline}
 第 ${index}/${total} 段。
 本段目标：${segment.goal}
 ${mustUse}
-本段篇幅：约 ${segment.maxWords} 个英文单词，不要超过 ${segmentWordCeiling(segment.maxWords)} 个。
+本段篇幅：约 ${segment.maxWords} 个英文单词，不要超过 ${segmentLimit(segment)} 个。
 ${context ? `${context}\n` : ''}
 只写这一段的英文正文，不要标题、翻译、题目。输出：
 {"text":"这一段英文"}`,
@@ -334,7 +344,7 @@ export function buildSegmentRepairMessages(
   const instruction = violations.length === 0
     ? `你上一次没有返回可用的英文正文。请重新写第 ${index} 段：
 本段目标：${segment.goal}
-只能使用词表里的词，不要引入任何表外词。约 ${segment.maxWords} 个英文单词，不要超过 ${segmentWordCeiling(segment.maxWords)} 个。输出：
+只能使用词表里的词，不要引入任何表外词。约 ${segment.maxWords} 个英文单词，不要超过 ${segmentLimit(segment)} 个。输出：
 {"text":"这一段英文"}`
     : `你刚写的第 ${index} 段里有 ${violations.length} 个不在词表内的单词：${words}
 ${snippets ? `\n其中带原句的几条：\n${snippets}\n` : ''}
@@ -353,7 +363,7 @@ ${overWords ? `另外这一段现在有 ${overWords.actual} 个英文单词，�
  * ④ 降级：去掉没成功用上的目标词，用最简单的说法再写一次。
  * 走到这里说明「既要目标词、又要零表外词」已经无解，先保住文章。
  */
-export function buildSegmentSimplifyMessages(system, { segment, index }) {
+export function buildSegmentSimplifyMessages(system, { segment, index, overWords = null }) {
   const mustUse = segment.mustUse.length
     ? `这一段还尽量用上这些词（用不上可以不用）：${segment.mustUse.join(', ')}`
     : '这一段不必刻意用目标词。'
@@ -366,7 +376,8 @@ export function buildSegmentSimplifyMessages(system, { segment, index }) {
 本段目标：${segment.goal}
 ${mustUse}
 只能使用【目标词】【补充可用词】【基础词】里的词，不要引入任何表外词。
-约 ${segment.maxWords} 个英文单词，不要超过 ${segmentWordCeiling(segment.maxWords)} 个。只输出：
+约 ${segment.maxWords} 个英文单词，不要超过 ${segmentLimit(segment)} 个。
+${overWords ? `上一版这一段有 ${overWords.actual} 个英文单词，超过上限 ${overWords.limit} 个，这次必须压到 ${overWords.limit} 个以内。\n` : ''}只输出：
 {"text":"这一段英文"}`,
     },
   ]
