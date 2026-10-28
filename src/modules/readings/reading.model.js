@@ -62,6 +62,22 @@ const targetPlanSchema = new Schema(
 )
 
 /**
+ * 目标词覆盖度（W5）。M2 阶段只记录，不触发修复。
+ * 数字口径由 target-coverage.js 唯一提供，这里只负责存。
+ */
+const targetUsageSchema = new Schema(
+  {
+    coverageRate: Number, // 出现过的不同目标词 / requiredWords
+    totalOccurrences: Number, // 目标词总出现次数
+    focusRepeatRate: Number, // 复现 ≥2 次的重点词 / 重点词数
+    unused: { type: [String], default: [] }, // 一次都没出现的目标词
+    overused: { type: [String], default: [] }, // 出现 > 6 次的词
+    densityScore: Number, // 目标词 token / 正文 token
+  },
+  { _id: false },
+)
+
+/**
  * 分段明细（W4）。只保留排查需要的数字：
  * 哪一段重写了几次、最后收没收、被丢掉的段里还有哪些生词。
  */
@@ -150,6 +166,7 @@ const readingSchema = new Schema(
       // ——— P1 扩展：P3 的覆盖度指标，也是 P6 回归对比的观察项 ———
       candidatePoolSize: Number, // 候选池大小
       requiredWords: Number, // 计划的目标词数
+      targetUsage: { type: targetUsageSchema, default: null }, // W5：真实覆盖度六项
       actualTargetWordCount: Number, // 实际用上的目标词数
       focusWordHits: Number, // 重点词平均复现次数
       userWordTokenRatio: Number, // 个人词占正文词次的比例

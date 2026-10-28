@@ -150,8 +150,12 @@ describe('分段路径 · 正常闭环', () => {
     expect(doc.newWords).toHaveLength(0)
     expect(doc.aiMeta.violationsCount).toBe(0)
 
-    // 目标词一个没写进去：只记录，不判失败（W5 再做覆盖度）
+    // 目标词一个没写进去：只记录，不判失败
     expect(doc.targetPlan.unused.length).toBe(doc.targetPlan.requiredWords)
+
+    // W5：覆盖度指标与 unused 同源；正文里没有目标词，覆盖率为 0
+    expect(doc.aiMeta.targetUsage).toMatchObject({ coverageRate: 0, totalOccurrences: 0 })
+    expect(doc.aiMeta.targetUsage.unused).toEqual(doc.targetPlan.unused)
 
     // 分段路径统一用 0.5 的温度
     expect(chatJson.mock.calls.every(([args]) => args.temperature === 0.5)).toBe(true)

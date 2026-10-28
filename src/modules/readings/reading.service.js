@@ -28,6 +28,7 @@ import { limitOf, measureKnownVocabulary, unknownBudgetFor } from './level-limit
 import { callModel, sumUsage } from './model-call.js'
 import { buildSegmentPlan, planSegmentCount } from './plan.service.js'
 import { generateSegmented } from './segmented.service.js'
+import { measureTargetCoverage } from './target-coverage.js'
 import { countWords, planAcceptedRange, planWordRange } from './word-count.js'
 import { generationFailureRepository as failureRepo } from './generation-failure.repository.js'
 import { toHistoryItem, toResultDto, toSafeDto } from './reading.dto.js'
@@ -47,6 +48,12 @@ import {
   codeVersion,
   irregularFormsVersion,
 } from './versions.js'
+
+/**
+ * 覆盖度告警线（md/21 W5）：M2 阶段只 warn，M3 再决定是否作为修复触发条件。
+ * 0.9 来自「目标词必须全部出现」这条产品承诺的容忍下限。
+ */
+const TARGET_COVERAGE_ALERT = 0.9
 
 /**
  * 候选词里，哪几个真的出现在这篇正文中。
@@ -693,12 +700,22 @@ async function generateReadingInner({ userId, body, signal, diag }) {
   const data = state.result.data
   const actualWords = countWords(data.article)
 
-  // 目标词没进正文的记录：W4 只记录不重试（md/20 §5.3 降级链第 4 步），
-  // W5 的 coverageRate 会在此基础上做完整覆盖度指标。
-  const articleForms = collectWordForms(data.article)
-  const unusedTargetWords = [...plan.focusWords, ...plan.targetWords].filter(
-    (word) => !articleForms.has(word),
-  )
+  // 目标词真实覆盖度（W5）：只记录 + warn，不触发修复。
+  // 修复要多一轮调用，先用采样数据确认「覆盖率低」真的值得修（md/21 W5）。
+  const targetUsage = measureTargetCoverage({
+    article: data.article,
+    focusWords: plan.focusWords,
+    targetWords: plan.targetWords,
+    requiredWords: plan.requiredWords,
+  })
+  const unusedTargetWords = targetUsage.unused
+
+  if (targetUsage.coverageRate < TARGET_COVERAGE_ALERT) {
+    logger.warn(
+      { ...targetUsage, strategy: config.generationStrategy, level: params.level },
+      'target coverage below threshold (warn only, md/21 W5)',
+    )
+  }
 
   // 篇幅额度用尽后仍然超长时，evaluate() 停在 word_count 分支就返回了，没跑词汇校验。
   // 超长本身照旧放行（界面展示真实词数），但生词必须查出来：否则 unknownWords
@@ -779,6 +796,9 @@ async function generateReadingInner({ userId, body, signal, diag }) {
       wordRange: range.label,
       deviation,
       unknownWordCount: newWords.length,
+      // W5：一行摘要，采样报告直接读日志也能看到覆盖度
+      coverageRate: targetUsage.coverageRate,
+      densityScore: targetUsage.densityScore,
       // true = 篇幅额度耗尽后补查的用词，这批文章的违规数以前是假的 0
       lateVocabulary,
       finishReason,
@@ -831,6 +851,8 @@ async function generateReadingInner({ userId, body, signal, diag }) {
       wordCountDeviation: deviation,
       candidatePoolSize: selection.poolSize,
       requiredWords: plan.requiredWords,
+      // W5：六项覆盖度指标。只记录（M2），不参与重试判断
+      targetUsage,
     },
   })
 
