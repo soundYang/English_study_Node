@@ -31,7 +31,7 @@ npm run dev                 # node --watch，改文件自动重启
 ```text
 mongo connected: english_code_study_MANGODB
 indexes synced
-dictionary loaded: 17419 words (filtered 212 of 17631)
+dictionary loaded: 17436 words (filtered 212 of 17648)
 basic words loaded: easy 600 (version ...)
 ```
 
@@ -42,7 +42,7 @@ basic words loaded: easy 600 (version ...)
 
 ```bash
 curl -s http://localhost:3000/api/health
-# {"status":"ok","mongo":"connected","dictionary":{"words":17419,"loadedAt":"..."}}
+# {"status":"ok","mongo":"connected","dictionary":{"words":17436,"loadedAt":"..."}}
 ```
 
 Mongo 断开时返回 **503** + `status: "degraded"`，这是唯一的健康判定条件。
@@ -95,8 +95,8 @@ npm run test:watch
 不走数据库。`meta.json` 记录两个数字，缺一不可：
 
 ```text
-totalWords      17631   分片里的原始条数
-searchableWords 17419   过滤 212 条后真正可检索的条数
+totalWords      17648   分片里的原始条数
+searchableWords 17436   过滤 212 条后真正可检索的条数
 ```
 
 过滤规则：零义项、词头不匹配 `^[a-z'-]+$`、词头超过 45 字符（详见
@@ -106,6 +106,7 @@ searchableWords 17419   过滤 212 条后真正可检索的条数
 
 ```bash
 node scripts/build-dictionary.mjs        # 写 data/dictionary/
+node scripts/patch-calendar-dictionary.mjs  # 补 COCA 源里没有的 19 个日历词（重建后必须再跑）
 node scripts/build-basic-words.mjs       # 只产出 easy 候选稿，不会覆盖三档表
 node scripts/build-word-ranks.mjs        # 生成 data/word-ranks.json
 ```

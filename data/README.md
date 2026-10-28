@@ -1,7 +1,8 @@
 # 本地词库数据说明
 
-本目录的 `dictionary/a.json` … `dictionary/z.json` 是前端离线词库，由 `scripts/build-dictionary.mjs`
-从 COCA 词频表生成。页面运行时不访问任何外部接口，全部数据随前端打包。
+本目录的 `dictionary/a.json` … `dictionary/z.json` 是运行时词库，由 `scripts/build-dictionary.mjs`
+从 COCA 词频表生成，后端启动时全量载入内存（`src/modules/dictionary/dictionary.loader.js`），
+不在每次请求时读文件。前端不再打包本地词库。
 
 同目录另有几个生成物，本文件第 5 节单独说明：三档 `basic-words.*.json`、`function-words.json`、`word-ranks.json`、`irregular-forms.json`。
 
@@ -47,11 +48,15 @@
 
 **数组顺序即 COCA 词频顺序**，索引越小越高频。搜索排序直接依赖这个顺序，不要重排。
 
+例外：人工补录的条目（`an`、`yourselves`、17 个星期 / 月份名）追加在分片末尾，
+它们没有 COCA 排名。精确查询不受影响（完全匹配在 `searchDictionary` 里排最前），
+只有单字母前缀浏览时它们会排在最后。
+
 ## 3. 数据规模与已知缺口
 
 | 指标           | 数值                                                    |
 | -------------- | ------------------------------------------------------- |
-| 词条总数       | 17,631（含人工补的 `an` / `yourselves`）                |
+| 词条总数       | 17,648（含人工补的 `an` / `yourselves` / 17 个星期与月份名） |
 | 分片总体积     | 2.23 MB（gzip 约 0.91 MB）                              |
 | 最大分片       | `s.json`，2,062 词 / 275 KB / gzip 115 KB               |
 | 无音标         | 506 条，UI 显示 `—`                                     |
@@ -87,7 +92,7 @@ node scripts/build-dictionary.mjs
 
 | 文件                    | 用途                                                       | 生成方式                                  |
 | ----------------------- | ---------------------------------------------------------- | ----------------------------------------- |
-| `dictionary/*.json`     | 查词与加词的离线词库，17,419 条可检索                      | `scripts/build-dictionary.mjs`            |
+| `dictionary/*.json`     | 查词与加词的词库，17,436 条可检索                          | `scripts/build-dictionary.mjs` + `scripts/patch-calendar-dictionary.mjs` |
 | `basic-words.easy.json` | easy 难度放行的基础词（600 = 功能词 179 + 高频实词 421） | 人工筛选，见 `md/04_基础词库_600词候选清单.md`；**不是** `build-basic-words.mjs` 的直接产物 |
 | `basic-words.medium.json` | medium 难度放行（1340 = easy + 按排名补到 rank ≤ 1500） | `extend-basic-words.mjs --base data/basic-words.easy.json --max-rank 1500` |
 | `basic-words.hard.json` | hard 难度放行（2578 = medium + 补到 rank ≤ 3000） | `extend-basic-words.mjs --base data/basic-words.medium.json --max-rank 3000` |
@@ -99,4 +104,6 @@ node scripts/build-dictionary.mjs
 三档必须保持包含关系（easy ⊂ medium ⊂ hard），`npm test` 里有断言守着。
 `word-ranks.json` 必须从 `coca-vocabulary` 源数据生成——`dictionary/*.json` 在按首字母
 切分时已经丢失了跨字母的绝对排名，反推出来的难度分级会完全失真。
-星期与月份名不在 COCA 源里，校验时由 `src/modules/readings/calendar-words.js` 单独放行。
+星期与月份名不在 COCA 源里：校验时由 `src/modules/readings/calendar-words.js` 单独放行，
+词条本身由 `scripts/patch-calendar-dictionary.mjs` 补进 `dictionary/*.json`（含音标、词性、释义）。
+重跑 `build-dictionary.mjs` 会把这 17 条冲掉，重建后必须补跑一次补录脚本。

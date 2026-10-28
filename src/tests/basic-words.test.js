@@ -131,6 +131,24 @@ describe('GET /api/basic-words', () => {
     expect(calendar.body.items.map((item) => item.word)).toContain('may')
   })
 
+  it('日历词的音标 / 词性 / 释义来自词库（COCA 源里没有，由补录脚本补齐）', async () => {
+    const res = await list({ group: 'calendar', pageSize: 100 })
+    const byWord = Object.fromEntries(res.body.items.map((item) => [item.word, item]))
+
+    expect(byWord.monday.phonetic).toEqual({ uk: '/ˈmʌndeɪ/', us: '/ˈmʌndeɪ/' })
+    expect(byWord.monday.senses).toEqual([{ pos: 'n.', meaning: '星期一' }])
+    expect(byWord.monday.summary).toBe('星期一')
+
+    expect(byWord.january.summary).toBe('一月')
+
+    // march 是基础词之外的日历词：补的「三月」排在最前，
+    // 否则 buildSummary 只取前两条，卡片上看不到月份
+    expect(byWord.march.summary.startsWith('三月')).toBe(true)
+
+    // 19 个日历词全都要有义项，不能再出现「卡片上只有一个单词」
+    expect(res.body.items.filter((item) => item.senses.length === 0)).toEqual([])
+  })
+
   it('只有 421 个实词 removable，功能词 / 日历词 / 缩写一律只读', async () => {
     const body = await listAll()
     const byWord = Object.fromEntries(body.items.map((item) => [item.word, item]))

@@ -40,8 +40,8 @@ describe('GET /api/health', () => {
 
     expect(res.status).toBe(200)
     expect(res.body).toMatchObject({ status: 'ok', mongo: 'connected' })
-    // 17419 是可检索条数；17631 是原始条数，写错这个数会让「健康」看起来正常但检索缺词
-    expect(res.body.dictionary.words).toBe(17419)
+    // 17436 是可检索条数；17648 是原始条数，写错这个数会让「健康」看起来正常但检索缺词
+    expect(res.body.dictionary.words).toBe(17436)
     expect(typeof res.body.dictionary.loadedAt).toBe('string')
   })
 
@@ -55,7 +55,7 @@ describe('GET /api/health', () => {
       expect(res.body).toEqual({
         status: 'degraded',
         mongo: 'disconnected',
-        dictionary: { words: 17419, loadedAt: expect.any(String) },
+        dictionary: { words: 17436, loadedAt: expect.any(String) },
       })
     } finally {
       restore()

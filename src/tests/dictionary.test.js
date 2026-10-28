@@ -13,9 +13,26 @@ const app = createApp()
 const search = (query) => request(app).get('/api/dictionary/search').query(query)
 
 describe('词库加载', () => {
-  it('过滤后剩 17419 条，剔除 212 条', () => {
-    expect(dictionaryStats).toEqual({ rawTotal: 17631, filtered: 212, searchable: 17419 })
-    expect(dictionary.size).toBe(17419)
+  it('过滤后剩 17436 条，剔除 212 条', () => {
+    expect(dictionaryStats).toEqual({ rawTotal: 17648, filtered: 212, searchable: 17436 })
+    expect(dictionary.size).toBe(17436)
+  })
+
+  it('日历词有音标和义项（基础词页与词典搜索都靠它）', () => {
+    // COCA 源数据里没有这些专有名词，由 scripts/patch-calendar-dictionary.mjs 补录
+    for (const word of ['monday', 'sunday', 'january', 'december', 'march']) {
+      const entry = dictionary.get(word)
+
+      expect(entry, word).toBeDefined()
+      expect(entry.phonetic.uk, word).toBeTruthy()
+      expect(entry.phonetic.us, word).toBeTruthy()
+      expect(entry.senses.length, word).toBeGreaterThan(0)
+    }
+
+    expect(dictionary.get('monday').senses).toEqual([{ pos: 'n.', meaning: '星期一' }])
+    // march 原本是「行军」义项，补录只追加「三月」，不能覆盖原来的
+    expect(dictionary.get('march').senses.map((sense) => sense.meaning).join('|')).toContain('三月')
+    expect(dictionary.get('march').senses.map((sense) => sense.meaning).join('|')).toContain('行军')
   })
 
   it('26 个首字母分片都在', () => {

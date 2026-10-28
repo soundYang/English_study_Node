@@ -1,9 +1,9 @@
 {
   "source": "coca-20000",
   "generatedAt": "2026-10-27T00:00:00.000Z",
-  "patchedAt": "2026-10-27T20:05:00+08:00",
-  "patchNote": "generatedAt 是建库时的占位时间（不是真实抓取时刻）；an / mine / onto / shall / whom / yourselves 等条目由 a5d675b 人工补录，晚于它。totalWords / searchableWords 由 cf65856 校正，与当前分片一致",
-  "totalWords": 17631,
-  "searchableWords": 17419,
+  "patchedAt": "2026-10-28T21:10:52.072+08:00",
+  "patchNote": "generatedAt 是建库时的占位时间（不是真实抓取时刻）；an / mine / onto / shall / whom / yourselves 等条目由 a5d675b 人工补录，晚于它。19 个日历词（星期 / 月份）与 march 的「三月」义项由 scripts/patch-calendar-dictionary.mjs 补录，重跑 build-dictionary.mjs 会冲掉，补完要再跑一次该脚本。totalWords / searchableWords 由脚本按分片重算，与当前分片一致",
+  "totalWords": 17648,
+  "searchableWords": 17436,
   "upstream": "https://github.com/llt22/coca-vocabulary-20000"
 }
