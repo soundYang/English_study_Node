@@ -32,13 +32,13 @@ function fakeRes() {
 }
 
 describe('generateReadingSchema — 篇幅范围', () => {
-  it('100 与 800 是两个合法端点', () => {
+  it('100 与 600 是两个合法端点', () => {
     expect(parse(body({ targetWords: 100 })).success).toBe(true)
-    expect(parse(body({ targetWords: 800 })).success).toBe(true)
+    expect(parse(body({ targetWords: 600 })).success).toBe(true)
   })
 
-  it('低于 100 或高于 800 → 400', () => {
-    for (const targetWords of [90, 810]) {
+  it('低于 100 或高于 600 → 400', () => {
+    for (const targetWords of [90, 610]) {
       const result = parse(body({ targetWords }))
       expect(result.success).toBe(false)
       expect(result.error.issues[0].path[0]).toBe('targetWords')

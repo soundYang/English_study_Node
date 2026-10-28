@@ -16,12 +16,17 @@ export const HISTORY_LEVEL_FILTERS = ['all', ...LEVELS]
 /**
  * targetWords 的取值规则。生成与预检共用同一份，
  * 否则会出现「预检说能生成、点下去 400」。
+ *
+ * 上限 600：800 词实测写不出来——正文需要约 2000 个高频词才自然，
+ * 而放行词表只有 1697 个（候选池 800 + 基础 600 + 日历词）。
+ * 800 词那次两次全文重写后仍有 40 个表外词（serious / volunteer / business…），
+ * 这些词没有同义替换可换，再修几轮也没用，只会让用户等 38 秒拿 422。
  */
 const targetWordsRules = z
   .number({ error: 'targetWords 必须是数字' })
   .int('targetWords 必须是整数')
   .min(100, 'targetWords 最小为 100')
-  .max(800, 'targetWords 最大为 800')
+  .max(600, 'targetWords 最大为 600')
   .refine((value) => value % 10 === 0, 'targetWords 必须是 10 的倍数')
 
 export const generateReadingSchema = z.object({

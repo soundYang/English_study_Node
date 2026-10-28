@@ -55,23 +55,23 @@ beforeEach(() => {
 })
 
 describe('词量不足以支撑篇幅', () => {
-  it('45 个词 + hard + 800 → 422，并带回差额', async () => {
+  it('45 个词 + hard + 600 → 422，并带回差额', async () => {
     await seedWords(45)
 
-    const res = await generate({ level: 'hard', targetWords: 800, questionCount: 3 })
+    const res = await generate({ level: 'hard', targetWords: 600, questionCount: 3 })
 
     expect(res.status).toBe(422)
     expect(res.body.error.code).toBe('VOCABULARY_TOO_SMALL')
     expect(res.body.error.field).toBe('targetWords')
     expect(res.body.error.details).toEqual({
-      required: 115,
+      required: 86,
       available: 45,
-      requiredWords: 80,
-      targetWords: 800,
+      requiredWords: 60,
+      targetWords: 600,
       scope: ['all'],
       level: 'hard',
     })
-    expect(res.body.error.message).toContain('还差 70 个')
+    expect(res.body.error.message).toContain('还差 41 个')
     // 注定凑不出目标词数，一次模型都不该调
     expect(chatJson).not.toHaveBeenCalled()
     expect(await Reading.countDocuments()).toBe(0)
@@ -89,30 +89,30 @@ describe('词量不足以支撑篇幅', () => {
 })
 
 describe('候选池与目标词计划', () => {
-  it('200 个词 + hard + 800 → 池子取 70% 得 140 个', async () => {
+  it('200 个词 + hard + 600 → 池子取 70% 得 140 个', async () => {
     await seedWords(200)
     chatJson.mockResolvedValue(reply)
 
-    const res = await generate({ level: 'hard', targetWords: 800, questionCount: 3 })
+    const res = await generate({ level: 'hard', targetWords: 600, questionCount: 3 })
 
     expect(res.status).toBe(201)
 
     const doc = await Reading.findById(res.body.id).lean()
     expect(doc.vocabularySnapshot).toHaveLength(140)
     expect(doc.targetPlan.poolSize).toBe(140)
-    expect(doc.targetPlan.requiredWords).toBe(80)
-    expect(doc.targetPlan.focusWords).toHaveLength(28)
+    expect(doc.targetPlan.requiredWords).toBe(60)
+    expect(doc.targetPlan.focusWords).toHaveLength(21)
     expect(doc.targetPlan.scope).toEqual(['all'])
     expect(doc.aiMeta.candidatePoolSize).toBe(140)
-    expect(doc.aiMeta.requiredWords).toBe(80)
+    expect(doc.aiMeta.requiredWords).toBe(60)
   })
 
   it('候选池只会更小，不会因为词库大就按 createdAt 截断', async () => {
-    // 1200 个词，hard 取 70% = 840 → 封顶 800
+    // 1200 个词，hard 取 70% = 840 → 封顶 800（POOL_LIMIT，与 targetWords 上限无关）
     await seedWords(1200)
     chatJson.mockResolvedValue(reply)
 
-    const res = await generate({ level: 'hard', targetWords: 800, questionCount: 3 })
+    const res = await generate({ level: 'hard', targetWords: 600, questionCount: 3 })
 
     expect(res.status).toBe(201)
 
@@ -194,12 +194,12 @@ describe('生成前预检 GET /capacity', () => {
   it('词量不够时给出差额，且与真实闸门同数字', async () => {
     await seedWords(45)
 
-    const res = await capacity({ targetWords: 800 })
+    const res = await capacity({ targetWords: 600 })
 
-    expect(res.body.levels.hard).toEqual({ required: 115, sufficient: false, shortage: 70 })
+    expect(res.body.levels.hard).toEqual({ required: 86, sufficient: false, shortage: 41 })
 
     // 同一组参数真的去生成，422 里回的数字必须一致
-    const rejected = await generate({ level: 'hard', targetWords: 800, questionCount: 3 })
+    const rejected = await generate({ level: 'hard', targetWords: 600, questionCount: 3 })
     expect(rejected.status).toBe(422)
     expect(rejected.body.error.details.required).toBe(res.body.levels.hard.required)
     expect(rejected.body.error.details.available).toBe(res.body.available)
