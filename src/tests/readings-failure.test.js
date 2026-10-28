@@ -1,0 +1,182 @@
+import request from 'supertest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+
+/**
+ * 失败样本留痕（方案 §3.1）。
+ *
+ * 这里测的**不是**生成质量，而是「失败之后能不能解释」：
+ * 每一个非成功返回都要在场，且带着那一轮的违规词、选池数字和原始正文。
+ */
+const { chatJson } = vi.hoisted(() => ({ chatJson: vi.fn() }))
+
+vi.mock('../modules/readings/ai.client.js', () => ({ chatJson }))
+
+const { createApp } = await import('../app.js')
+const { config } = await import('../config/index.js')
+const { GenerationFailure } = await import('../modules/readings/generation-failure.model.js')
+const { Reading } = await import('../modules/readings/reading.model.js')
+const { Word } = await import('../modules/words/word.model.js')
+
+const app = createApp()
+
+const ARTICLE =
+  'Tom is a good boy. His book is big and the boy is small. Tom and his book play in the house. The book runs and the boy runs too. They are good friends. Tom likes his book very much.'
+
+/** 6 个必然不在词表里的词：超过 maxUnknownWords(5)，才会进入修正轮 */
+const OVER_LIMIT_ARTICLE = `${ARTICLE} Quizzical Zephyrish Brontide Crepuscule Farrago Panopticon.`
+
+/** 造一份合法的 AI 输出 */
+function makePayload({ questionCount = 3, article = ARTICLE } = {}) {
+  return {
+    title: 'A Good Day',
+    article,
+    // zod 要求 translation 至少 20 字，短了会被判成结构不合法，测不到生成分支
+    translation:
+      '汤姆是个好男孩。他喜欢和他的书在公园里玩。书很有趣，汤姆也很快乐。他们一整天都很开心。开心的一天。',
+    names: ['Tom'],
+    questions: Array.from({ length: questionCount }, (_, index) => ({
+      id: index + 1,
+      question: `Question number ${index + 1} about the story?`,
+      options: ['Tom', 'A dog', 'A park', 'A day'].map((option) => `${option} ${index + 1}`),
+      correctAnswer: index % 4,
+      explanation: '根据文章内容可知。',
+    })),
+  }
+}
+
+const reply = (payload) => ({
+  content: JSON.stringify(payload),
+  usage: { prompt_tokens: 100, completion_tokens: 200 },
+})
+
+function seedWords(count) {
+  return Word.insertMany(
+    Array.from({ length: count }, (_, index) => ({
+      userId: config.defaultUserId,
+      word: `word${index}`,
+      status: 'learning',
+      source: 'manual',
+      senses: [{ pos: '', meaning: '测试释义' }],
+    })),
+  )
+}
+
+const generate = (body) => request(app).post('/api/readings/generate').send(body)
+
+const VALID_BODY = { level: 'easy', targetWords: 100, questionCount: 3 }
+
+beforeEach(() => {
+  chatJson.mockReset()
+})
+
+describe('生成失败留痕 · 只有生成流程内的失败才入库', () => {
+  it('参数非法 → 400 且不写 GenerationFailure', async () => {
+    const res = await generate({ level: 'insane', targetWords: 100, questionCount: 3 })
+
+    expect(res.status).toBe(400)
+    // 每条非法请求都存一份会把真实样本淹掉，所以这条必须为 0
+    expect(await GenerationFailure.countDocuments()).toBe(0)
+  })
+
+  it('候选池不够 → 422 且留痕，带选池数字但没有模型轮次', async () => {
+    await seedWords(45)
+
+    // easy + 600 词：目标词 60，门槛 ceil(60 ÷ 0.35) = 172 > 45
+    const res = await generate({ level: 'easy', targetWords: 600, questionCount: 3 })
+
+    expect(res.status).toBe(422)
+    expect(res.body.error.code).toBe('VOCABULARY_TOO_SMALL')
+    expect(chatJson).not.toHaveBeenCalled()
+
+    const [failure] = await GenerationFailure.find().lean()
+    expect(await GenerationFailure.countDocuments()).toBe(1)
+    expect(failure.errorCode).toBe('VOCABULARY_TOO_SMALL')
+    expect(failure.level).toBe('easy')
+    expect(failure.targetWords).toBe(600)
+    expect(failure.available).toBe(45)
+    expect(failure.requiredWords).toBe(60)
+    // 一次模型都没调，轮次为空是正确结果，不是丢数据
+    expect(failure.rounds).toHaveLength(0)
+    expect(failure.finalArticle).toBe('')
+  })
+
+  it('修正轮耗尽仍有 6 个生词 → 422 且每轮违规词都留下来了', async () => {
+    await seedWords(29)
+    chatJson.mockResolvedValue(reply(makePayload({ article: OVER_LIMIT_ARTICLE })))
+
+    const res = await generate(VALID_BODY)
+
+    expect(res.status).toBe(422)
+    expect(res.body.error.code).toBe('VOCABULARY_VALIDATION_FAILED')
+    // 首轮 + 两轮修正
+    expect(chatJson).toHaveBeenCalledTimes(3)
+
+    const [failure] = await GenerationFailure.find().lean()
+    expect(failure.errorCode).toBe('VOCABULARY_VALIDATION_FAILED')
+    expect(failure.repairRounds).toBe(2)
+    expect(failure.finalUnknownWords).toHaveLength(6)
+    expect(failure.finalArticle).toContain('Quizzical')
+    expect(failure.allowedWordCount).toBeGreaterThan(0)
+    expect(failure.promptWordCount).toBeGreaterThan(0)
+
+    expect(failure.rounds).toHaveLength(3)
+    // 首轮没有上游原因，但它自己判出的是用词问题
+    expect(failure.rounds[0]).toMatchObject({ kind: 'generate', repairFor: null, feedbackType: 'vocabulary' })
+    expect(failure.rounds[0].unknownWords).toHaveLength(6)
+    // 后两轮是被用词问题催出来的
+    expect(failure.rounds[1]).toMatchObject({ kind: 'repair', repairFor: 'vocabulary', feedbackType: 'vocabulary' })
+    expect(failure.rounds[2].unknownWords).toHaveLength(6)
+  })
+
+  it('结构一直不合法 → 502 且存的是模型原始输出', async () => {
+    await seedWords(29)
+    chatJson.mockResolvedValue({ content: '当然可以！这是文章：Tom is a boy.' })
+
+    const res = await generate(VALID_BODY)
+
+    expect(res.status).toBe(502)
+    expect(res.body.error.code).toBe('AI_INVALID_RESPONSE')
+
+    const [failure] = await GenerationFailure.find().lean()
+    expect(failure.errorCode).toBe('AI_INVALID_RESPONSE')
+    // 结构不合法时没有 data.article，退回原始输出才能分清「截断」和「格式错」
+    expect(failure.finalArticle).toContain('当然可以')
+    expect(failure.rounds).toHaveLength(3)
+    expect(failure.rounds[0].feedbackType).toBe('structure')
+    expect(failure.rounds[1].repairFor).toBe('structure')
+    expect(failure.rounds[0].unknownWords).toEqual([])
+  })
+
+  it('成功一次 → 不写 GenerationFailure，但 aiMeta.rounds 同样带诊断字段', async () => {
+    await seedWords(29)
+    chatJson.mockResolvedValue(reply(makePayload()))
+
+    const res = await generate(VALID_BODY)
+
+    expect(res.status).toBe(201)
+    expect(await GenerationFailure.countDocuments()).toBe(0)
+
+    const doc = await Reading.findById(res.body.id).lean()
+    expect(doc.aiMeta.rounds).toHaveLength(1)
+    expect(doc.aiMeta.rounds[0]).toMatchObject({ kind: 'generate', repairFor: null, feedbackType: null })
+    expect(doc.aiMeta.rounds[0].unknownWords).toEqual([])
+    expect(doc.aiMeta.rounds[0].actualWords).toBe(40)
+  })
+
+  it('第一轮超长触发重写 → 重写轮记下 repairFor=word_count', async () => {
+    await seedWords(29)
+    chatJson
+      .mockResolvedValueOnce(reply(makePayload({ article: Array.from({ length: 4 }, () => ARTICLE).join(' ') })))
+      .mockResolvedValueOnce(reply(makePayload()))
+
+    const res = await generate(VALID_BODY)
+
+    expect(res.status).toBe(201)
+
+    const doc = await Reading.findById(res.body.id).lean()
+    expect(doc.aiMeta.rounds[0].feedbackType).toBe('word_count')
+    // 篇幅超长时 evaluate() 直接返回，没跑词汇校验——空数组表示「没查」，不是「没问题」
+    expect(doc.aiMeta.rounds[0].unknownWords).toEqual([])
+    expect(doc.aiMeta.rounds[1]).toMatchObject({ kind: 'repair', repairFor: 'word_count', feedbackType: null })
+  })
+})

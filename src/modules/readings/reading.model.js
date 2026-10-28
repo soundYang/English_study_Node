@@ -1,5 +1,7 @@
 import mongoose from 'mongoose'
 
+import { roundSchema } from './round.schema.js'
+
 const { Schema } = mongoose
 
 /**
@@ -38,22 +40,10 @@ const newWordSchema = new Schema(
 /**
  * 一次模型调用的用量明细（本次新增）。
  * 只记累计值会把「修了两轮」的真实成本抹掉，所以每轮单独一条。
+ *
+ * 结构定义在 round.schema.js：失败样本 GenerationFailure 也要用同一张表，
+ * 定义分家就会慢慢长出两套字段。
  */
-const roundSchema = new Schema(
-  {
-    kind: { type: String, enum: ['generate', 'repair'], required: true },
-    promptTokens: Number, // 输入 token
-    completionTokens: Number, // 输出 token
-    totalTokens: Number, // 输入 + 输出
-    cacheHitTokens: Number, // 命中前缀缓存的输入 token，单价更低
-    cacheMissTokens: Number, // 未命中的输入 token
-    finishReason: String, // stop / length
-    maxTokens: Number, // 当次请求的上限，排查截断用
-    durationMs: Number, // 单次调用耗时
-    actualWords: Number, // 这一轮正文实际词数，用于观察篇幅策略是否生效（结构不合法时为 null）
-  },
-  { _id: false },
-)
 
 /**
  * 本次生成的选池与目标词计划（P1 新增）。

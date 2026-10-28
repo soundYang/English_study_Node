@@ -19,6 +19,7 @@ import { parseAiContent, validateAiReading } from './ai.schema.js'
 import { basicWords } from './basic-words.js'
 import { calendarWords } from './calendar-words.js'
 import { countWords, planAcceptedRange, planWordRange } from './word-count.js'
+import { generationFailureRepository as failureRepo } from './generation-failure.repository.js'
 import { toHistoryItem, toResultDto, toSafeDto } from './reading.dto.js'
 import { readingRepository as repo } from './reading.repository.js'
 import {
@@ -39,7 +40,7 @@ import { selectVocabularyPool } from './vocabulary-pool.js'
  * 按实际 completion_tokens 计费，估小了反而会被截断成 AI_INVALID_RESPONSE，
  * 用户看到的是「生成失败」而不是「文章有点长」。
  */
-async function callModel({ kind, messages, signal, rounds }) {
+async function callModel({ kind, messages, signal, rounds, repairFor = null }) {
   const startedAt = Date.now()
   const response = await chatJson({
     messages,
@@ -62,6 +63,8 @@ async function callModel({ kind, messages, signal, rounds }) {
     finishReason: response.finishReason ?? null,
     maxTokens: config.maxOutputTokens,
     durationMs: Date.now() - startedAt,
+    // 这一轮是被什么问题催出来的；首轮没有上游原因
+    repairFor,
   })
 
   return response
@@ -182,6 +185,23 @@ function evaluate({ content, params, allowedWords, range }) {
 }
 
 /**
+ * 把一轮的判定结果写回该轮明细，并顺手更新失败诊断用的最新状态。
+ *
+ * 三件事必须贴在一起做：rounds 是给人看的明细，diag 是给 recordFailure 用的
+ * 最后一帧。分开写时最容易漏的是 `unknownWords`——它在 evaluate() 里
+ * 只存在于返回值上，不主动搬就会被丢掉。
+ */
+function recordRound({ rounds, state, content, diag }) {
+  const last = rounds.at(-1)
+
+  last.actualWords = state.actualWords ?? null
+  last.unknownWords = state.vocabulary?.unknownWords ?? []
+  last.feedbackType = state.feedback?.type ?? null
+  diag.state = state
+  diag.content = content
+}
+
+/**
  * 把一个未学词补全成前端能直接渲染的条目。
  * 词典 → 缩写表 → 兜底，三级都查不到时 source 为 unknown，前端显示「暂无释义」。
  */
@@ -211,6 +231,56 @@ function describeNewWord(word) {
 }
 
 /**
+ * 把一次失败落进 GenerationFailure。
+ *
+ * 原则：诊断数据永远不能盖过原始错误。写库失败只记日志，
+ * 调用方继续抛原来的异常——用户该看到的是「生成失败」，不是「存日志失败」。
+ *
+ * 这里用 await 而不是 void：失败响应多几十毫秒，换的是每条样本都不丢。
+ */
+async function recordFailure(diag, error) {
+  const state = diag.state
+
+  const payload = {
+    userId: diag.userId,
+
+    level: diag.params?.level,
+    targetWords: diag.params?.targetWords,
+    questionCount: diag.params?.questionCount,
+    scope: diag.selection?.scope ?? [],
+
+    available: diag.selection?.available,
+    poolSize: diag.selection?.poolSize,
+    requiredWords: diag.selection?.requiredWords,
+    allowedWordCount: diag.allowedWordCount,
+    promptWordCount: diag.promptWordCount,
+
+    // 上游异常没有业务错误码，落 INTERNAL_ERROR；原始 code 留在日志里
+    errorCode: error?.code ?? ERROR_CODES.INTERNAL_ERROR,
+    finalUnknownWords: state?.vocabulary?.unknownWords ?? [],
+    finalViolations: state?.vocabulary?.violations ?? [],
+    // 结构不合法时没有 data.article，退回模型原始输出：
+    // 「被截断」和「JSON 格式错」要靠这个才分得开
+    finalArticle: String(state?.result?.data?.article ?? diag.content ?? '').slice(0, 8000),
+
+    rounds: diag.rounds,
+    repairRounds: diag.repairRounds ?? 0,
+    totalTokens: diag.totalTokens ?? 0,
+    durationMs: diag.durationMs,
+    model: config.deepseekModel,
+  }
+
+  try {
+    await failureRepo.create(payload)
+  } catch (saveError) {
+    logger.error(
+      { err: saveError, errorCode: payload.errorCode },
+      'failed to record generation failure',
+    )
+  }
+}
+
+/**
  * POST /api/readings/generate
  *
  * 流程：参数校验 → 词汇量总闸 → 选池（scope + 优先级 + 难度比例）
@@ -225,9 +295,43 @@ function describeNewWord(word) {
  *   1. 词数 < 20 → INSUFFICIENT_VOCABULARY（和以前一样，最前面拦）
  *   2. 候选池装不下本次篇幅 → VOCABULARY_TOO_SMALL，**禁止生成**
  * 第 2 道是按「本次参数」算的，所以缩短篇幅或降低难度就能过——提示语要把这个说出来。
+ *
+ * 外面套一层薄壳只做一件事：**失败的生成也要留痕**。
+ * 原实现预算耗尽后直接 throw，中间轮的违规词只进 pino stdout，
+ * 想统计「违规词长什么样、属于哪一类」时既没有分母也没法回查。
+ * 薄壳保证任何业务异常都落一条 GenerationFailure，同时原错误原样抛给调用方。
  */
 export async function generateReading({ userId, body, signal }) {
+  const diag = { userId, startedAt: Date.now(), rounds: [] }
+
+  try {
+    return await generateReadingInner({ userId, body, signal, diag })
+  } catch (error) {
+    // 用户主动断开不是「生成失败」，记下来只会污染成功率的分母
+    if (signal?.aborted || error?.name === 'AbortError') throw error
+
+    // 参数没过校验说明还没进生成流程。每条非法请求都存一份，
+    // 真实样本会被大量的 400 淹掉，报表也就没法看了。
+    if (!diag.params) throw error
+
+    diag.durationMs = Date.now() - diag.startedAt
+    // recordFailure 内部自己 try/catch：诊断数据丢了可以再跑一次，
+    // 用户原本该看到的错误不能被写库失败顶掉
+    await recordFailure(diag, error)
+
+    throw error
+  }
+}
+
+/**
+ * 真正的生成流程。诊断信息走 diag 这个可变对象回传给外壳，
+ * 用不到返回值——异常路径下根本没有返回值可用。
+ */
+async function generateReadingInner({ userId, body, signal, diag }) {
   const params = parseOrThrow(generateReadingSchema, body)
+  diag.params = params
+
+  const rounds = diag.rounds
 
   // 只有 learning / mastered 算可用词汇，new 不算
   const vocabularyCount = await wordRepository.countVocabulary(userId)
@@ -246,6 +350,14 @@ export async function generateReading({ userId, body, signal }) {
     scope: params.vocabScope,
     targetWords: params.targetWords,
   })
+
+  // 先记选池结果再判够不够：VOCABULARY_TOO_SMALL 恰恰最需要这组数字
+  diag.selection = {
+    scope: selection.scope,
+    available: selection.available,
+    poolSize: selection.poolSize,
+    requiredWords: selection.requiredWords,
+  }
 
   // 池子装不下就必须拦在这里：调一次模型要几秒和几千 token，
   // 而按当前参数注定凑不出目标词数。
@@ -303,6 +415,12 @@ export async function generateReading({ userId, body, signal }) {
     ...ABBREVIATION_WORDS,
   ])
 
+  // 提示词里的词数（池）与校验放行的词数（全部已学词）不是一回事，都记下来；
+  // 失败样本里缺了这两个数，就没法判断是「没给模型这个词」还是「给了没用」
+  const promptWordCount = selection.poolSize + basicWords.length + calendarWords.length
+  diag.allowedWordCount = allowedWords.size
+  diag.promptWordCount = promptWordCount
+
   logger.info(
     {
       level: params.level,
@@ -311,8 +429,7 @@ export async function generateReading({ userId, body, signal }) {
       scope: selection.scope,
       available: selection.available,
       poolSize: selection.poolSize,
-      // 提示词里的词数（池）与校验放行的词数（全部已学词）不是一回事，都记下来
-      promptWordCount: selection.poolSize + basicWords.length + calendarWords.length,
+      promptWordCount,
       allowedWordCount: allowedWords.size,
       requiredWords: plan.requiredWords,
       focusCount: plan.focusWords.length,
@@ -330,13 +447,12 @@ export async function generateReading({ userId, body, signal }) {
     basicWords,
   })
 
-  const rounds = []
   const first = await callModel({ kind: 'generate', messages, signal, rounds })
 
   let content = first.content
   let finishReason = first.finishReason
   let state = evaluate({ content, params, allowedWords, range })
-  rounds.at(-1).actualWords = state.actualWords ?? null
+  recordRound({ rounds, state, content, diag })
 
   // 修正轮分两种额度：
   //   content —— 结构 / 用词，默认 2 轮（发生过重写时 +1）
@@ -380,6 +496,8 @@ export async function generateReading({ userId, body, signal }) {
     const previous = state.result.ok ? content : ''
     const repaired = await callModel({
       kind: 'repair',
+      // 记下这一轮是被什么催出来的，和它自己又判出什么分开存
+      repairFor: state.feedback.type,
       messages: buildRepairMessages(messages, state.feedback, previous),
       signal,
       rounds,
@@ -388,7 +506,7 @@ export async function generateReading({ userId, body, signal }) {
     content = repaired.content
     finishReason = repaired.finishReason ?? finishReason
     state = evaluate({ content, params, allowedWords, range })
-    rounds.at(-1).actualWords = state.actualWords ?? null
+    recordRound({ rounds, state, content, diag })
 
     // 模型主动认输时再修也没用，跳出去交给下面的统一处理
     if (state.result.insufficient) break
@@ -396,6 +514,9 @@ export async function generateReading({ userId, body, signal }) {
 
   const repairRounds = contentRounds + lengthRounds
   const tokenUsage = sumUsage(rounds)
+  // 后面的三条 throw 都在预算耗尽之后，这两个数要让它们能看见
+  diag.repairRounds = repairRounds
+  diag.totalTokens = tokenUsage.totalTokens
 
   if (state.result.insufficient) {
     logger.warn(
