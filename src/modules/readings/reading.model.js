@@ -21,7 +21,7 @@ const questionSchema = new Schema(
 
 /**
  * 正文里出现、但用户没学过的词（本次新增）。
- * 数量受 config.maxUnknownWords 限制（默认 5），随文章一起回给前端做折叠提示。
+ * 数量受该难度的生词预算限制（easy 0 / medium 3 / hard 5），随文章一起回给前端做折叠提示。
  */
 const newWordSchema = new Schema(
   {
@@ -97,7 +97,7 @@ const readingSchema = new Schema(
     // ——— P1 新增：生成计划与实际复现，老文档没有时分别取 null / [] ———
     targetPlan: { type: targetPlanSchema, default: null },
     usedWords: { type: [usedWordSchema], default: [] },
-    // 放行给用户看的未学词（≤ maxUnknownWords），默认空数组，老文档不需要迁移
+    // 放行给用户看的未学词（≤ 该难度的 unknownBudget），默认空数组，老文档不需要迁移
     newWords: { type: [newWordSchema], default: [] },
 
     status: {

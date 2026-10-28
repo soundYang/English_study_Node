@@ -17,8 +17,10 @@ process.env.MONGODB_URI = process.env.MONGODB_URI ?? 'mongodb://127.0.0.1:27017/
 process.env.MAX_REPAIR_ROUNDS = '2'
 // 篇幅压缩有独立额度；调成 0 会让「超长应触发压缩轮」的用例退化成一次调用
 process.env.MAX_LENGTH_ROUNDS = '1'
-// 放行生词的额度同理：.env 里调成 3 时，「6 个生词应被拦下」的断言会变成 201
-process.env.MAX_UNKNOWN_WORDS = '5'
+// 生词预算按难度取（easy 0 / medium 3 / hard 5），不再是全局数字。
+// 这里显式留空而不删除：dotenv 不会覆盖已存在的变量，留空能挡住开发机 .env
+// 里的 MAX_UNKNOWN_WORDS（那会变成全局覆盖，把三档压成同一个数，W3 的断言全失效）。
+process.env.MAX_UNKNOWN_WORDS = ''
 process.env.MAX_OUTPUT_TOKENS = '8192'
 
 const { loadDictionary } = await import('../modules/dictionary/dictionary.loader.js')

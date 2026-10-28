@@ -8,7 +8,7 @@
  *   node scripts/replay-suite.mjs --update   重写 expected.json（改词表/改规则后用）
  *
  * 判定的是**不变量**，不是成功率：
- *   · unknownCount ≤ 预算（当前 config.maxUnknownWords）
+ *   · unknownCount ≤ 该难度的生词预算（easy 0 / medium 3 / hard 5）
  *   · counts 之和 = violations 条数
  *   · 成功样本的结构仍然合法
  * 任何一条在某个样本上翻转，脚本都会指名道姓地打出来。
@@ -22,12 +22,13 @@ import { fileURLToPath } from 'node:url'
 
 import { config } from '../src/config/index.js'
 import { basicWordsByLevel } from '../src/modules/readings/basic-words.js'
+import { LEVEL_LIMITS, unknownBudgetFor } from '../src/modules/readings/level-limits.js'
 import {
   basicWordsVersion,
   basicWordsVersions,
   codeVersion,
 } from '../src/modules/readings/versions.js'
-import { replayAll, summarize } from './lib/replay-core.mjs'
+import { budgetFor, replayAll, summarize } from './lib/replay-core.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const FIXTURES = join(ROOT, 'samples', 'replay', 'fixtures.json')
@@ -69,7 +70,10 @@ function toComparable(result) {
 }
 
 function printReport(summary, results, basicLabel, budget) {
-  console.log(`\n允许词表：${basicLabel}　生词预算：${budget}`)
+  const budgetLabel = typeof budget === 'number'
+    ? String(budget)
+    : Object.entries(budget).map(([level, value]) => `${level}=${value}`).join(' / ')
+  console.log(`\n允许词表：${basicLabel}　生词预算：${budgetLabel}`)
   console.log(`样本 ${summary.cases} 篇（跳过空正文若干）　平均表外词 ${summary.averageUnknown}\n`)
 
   console.log('难度/篇幅    样本  历史成功  现超预算  平均表外词')
@@ -122,7 +126,13 @@ function main() {
     : Object.entries(basicWordsByLevel)
         .map(([level, list]) => `${level}=${list.length}`)
         .join(' / ')
-  const budget = config.maxUnknownWords
+  // 预算按难度取（easy 0 / medium 3 / hard 5）；MAX_UNKNOWN_WORDS 显式设置时压成同一个数
+  const budget = Object.fromEntries(
+    Object.keys(LEVEL_LIMITS).map((level) => [
+      level,
+      unknownBudgetFor(level, config.maxUnknownWordsOverride),
+    ]),
+  )
 
   const { results, skipped } = replayAll(fixtures, basicList, budget)
   const summary = summarize(results)
@@ -139,7 +149,7 @@ function main() {
     if (countSum !== result.violationCount) {
       broken.push(`${result.id}: counts 之和 ${countSum} ≠ violations ${result.violationCount}`)
     }
-    if (result.withinBudget !== (result.unknownCount <= budget)) {
+    if (result.withinBudget !== (result.unknownCount <= budgetFor(budget, result.level))) {
       broken.push(`${result.id}: withinBudget 与 unknownCount 不一致`)
     }
   }

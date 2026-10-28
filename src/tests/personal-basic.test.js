@@ -22,12 +22,21 @@ const app = createApp()
 const ARTICLE =
   'Tom is a good boy. His book is big and the boy is small. Tom and his book play in the house. The book runs and the boy runs too. They are good friends. Tom likes his book very much.'
 
-function makePayload() {
+/**
+ * 不含 book 的同一篇正文。
+ * 用户把 book 标成 new 之后，easy 的生词预算是 0——
+ * 模型必须换一个基础词重写，否则这篇正文永远过不了校验。
+ * car / friend / like / run / play 都在 easy 600 内，friends / likes / runs 由词形闭包放行。
+ */
+const ARTICLE_WITHOUT_BOOK =
+  'Tom is a good boy. His car is big and the boy is small. Tom and his car play in the house. The car runs and the boy runs too. They are good friends. Tom likes his car very much.'
+
+function makePayload(article = ARTICLE) {
   return {
     title: 'A Good Day',
-    article: ARTICLE,
+    article,
     translation:
-      '汤姆是个好男孩。他的书很大，男孩很小。汤姆和他的书在房子里玩，他们是非常好的朋友。',
+      '汤姆是个好男孩。他的车很大，男孩很小。汤姆和他的车在房子里玩，他们是非常好的朋友。',
     names: ['Tom'],
     questions: [1, 2, 3].map((id) => ({
       id,
@@ -44,7 +53,11 @@ const reply = (payload) => ({
   usage: { prompt_tokens: 100, completion_tokens: 200 },
 })
 
-function seedWords(count = 29) {
+/**
+ * easy 的已知词门是 1000（600 基础词 + 个人词，md/20 定的个人下限是 400），
+ * 所以默认播 400 个；hard 的门槛 3778 需要约 1200 个个人词，那条用例单独播。
+ */
+function seedWords(count = 400) {
   return Word.insertMany(
     Array.from({ length: count }, (_, index) => ({
       userId: config.defaultUserId,
@@ -81,7 +94,7 @@ describe('个人基础词 · 生成链路', () => {
   it('用户把 book 标成 new → easy 档基础词少一个，提示词里不再出现 book', async () => {
     await seedWords()
     await markNew('book')
-    chatJson.mockResolvedValue(reply(makePayload()))
+    chatJson.mockResolvedValue(reply(makePayload(ARTICLE_WITHOUT_BOOK)))
 
     const res = await generate({ level: 'easy', targetWords: 100, questionCount: 3 })
 
@@ -107,7 +120,8 @@ describe('个人基础词 · 生成链路', () => {
   })
 
   it('难度决定基础词表：hard 请求拿到 2578 词的完整表', async () => {
-    await seedWords()
+    // hard 的已知词门 3778 = 2578 基础词 + 1200 个人词
+    await seedWords(1200)
     chatJson.mockResolvedValue(reply(makePayload()))
 
     const res = await generate({ level: 'hard', targetWords: 100, questionCount: 3 })

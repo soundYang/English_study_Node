@@ -74,8 +74,14 @@ export const config = Object.freeze({
   // 篇幅压缩单独计数：实测一轮修完用词后只剩一次压缩机会，253 词只删到 239。
   // 给篇幅独立的一次机会，最坏情况 1 + 2 + 1 = 4 次调用。
   maxLengthRounds: toNumber('MAX_LENGTH_ROUNDS', 1),
-  // 文章允许出现的「用户没学过」的词数。刻意不写进提示词：
-  // 一旦告诉模型有这个额度，它会稳定用满 5 个；放行只是兜底，不是配额。
+  // 生词预算按难度取 level-limits.js：easy 0 / medium 3 / hard 5（md/20 §3）。
+  // MAX_UNKNOWN_WORDS 仍然有效，但只作为**全局覆盖**：显式设置时三档压成同一个数，
+  // 用于调试与回归对比；没设置时是 null，表示「按难度」。代码里请用
+  // unknownBudgetFor(level, config.maxUnknownWordsOverride)，不要直接读下面的旧字段。
+  maxUnknownWordsOverride: process.env.MAX_UNKNOWN_WORDS?.trim()
+    ? toNumber('MAX_UNKNOWN_WORDS', 5)
+    : null,
+  // 兼容字段：文档与旧脚本还引用它，新代码不再读。
   maxUnknownWords: toNumber('MAX_UNKNOWN_WORDS', 5),
   basicWordsRank: toNumber('BASIC_WORDS_RANK', 3000),
 

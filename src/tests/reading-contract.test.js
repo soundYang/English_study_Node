@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest'
 
 import { generateReadingSchema } from '../modules/readings/reading.schema.js'
-import { ApiError, ERROR_CODES, vocabularyTooSmall } from '../shared/errors.js'
+import {
+  ApiError,
+  ERROR_CODES,
+  knownWordsTooSmall,
+  targetWordsTooLong,
+  vocabularyTooSmall,
+} from '../shared/errors.js'
 import { errorHandler } from '../shared/middleware/errorHandler.js'
 
 /**
@@ -92,7 +98,8 @@ describe('vocabularyTooSmall', () => {
   })
 
   it('details 带全部四个数字，前端不用自己推', () => {
-    expect(vocabularyTooSmall(payload).details).toEqual(payload)
+    // kind 区分 A 门（凑不齐目标词）与 B 门（已知词不够），其余数字原样透传
+    expect(vocabularyTooSmall(payload).details).toEqual({ kind: 'target_words', ...payload })
   })
 
   it('提示语用中文难度名，并算出差额', () => {
@@ -105,6 +112,45 @@ describe('vocabularyTooSmall', () => {
 
   it('词比门槛多时差额不会变成负数', () => {
     expect(vocabularyTooSmall({ ...payload, available: 500 }).message).toContain('还差 0 个')
+  })
+})
+
+describe('B 门 — 已知词汇量不够', () => {
+  it('422，kind=known_words，挂在 level 上，文案给出还差多少个', () => {
+    const error = knownWordsTooSmall({ level: 'medium', required: 1900, available: 1758 })
+
+    expect(error).toBeInstanceOf(ApiError)
+    expect(error.status).toBe(422)
+    expect(error.code).toBe(ERROR_CODES.VOCABULARY_TOO_SMALL)
+    expect(error.field).toBe('level')
+    expect(error.details).toEqual({
+      kind: 'known_words',
+      level: 'medium',
+      required: 1900,
+      available: 1758,
+      shortage: 142,
+    })
+    expect(error.message).toContain('中等模式需要认识约 1900 个单词')
+    expect(error.message).toContain('当前已有 1758 个（还差 142 个）')
+    expect(error.message).not.toContain('medium')
+  })
+})
+
+describe('篇幅门 — 该难度不支持这么长', () => {
+  it('400，kind=target_words_cap，文案说明上限与本次请求', () => {
+    const error = targetWordsTooLong({ level: 'easy', targetWords: 400, maxTargetWords: 300 })
+
+    expect(error.status).toBe(400)
+    expect(error.code).toBe(ERROR_CODES.INVALID_REQUEST)
+    expect(error.field).toBe('targetWords')
+    expect(error.details).toEqual({
+      kind: 'target_words_cap',
+      level: 'easy',
+      targetWords: 400,
+      maxTargetWords: 300,
+    })
+    expect(error.message).toContain('简单模式最高支持 300 词')
+    expect(error.message).toContain('本次请求 400 词')
   })
 })
 
@@ -124,6 +170,7 @@ describe('errorHandler — details 透传', () => {
     expect(res.statusCode).toBe(422)
     expect(res.body.error.code).toBe(ERROR_CODES.VOCABULARY_TOO_SMALL)
     expect(res.body.error.details).toEqual({
+      kind: 'target_words',
       required: 115,
       available: 45,
       requiredWords: 80,

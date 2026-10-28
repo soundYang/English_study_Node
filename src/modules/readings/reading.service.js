@@ -5,7 +5,9 @@ import {
   ApiError,
   ERROR_CODES,
   conflict,
+  knownWordsTooSmall,
   readingNotFound,
+  targetWordsTooLong,
   vocabularyTooSmall,
 } from '../../shared/errors.js'
 import { logger } from '../../shared/logger.js'
@@ -16,8 +18,9 @@ import { ABBREVIATIONS, ABBREVIATION_WORDS } from './abbreviations.js'
 import { chatJson } from './ai.client.js'
 import { buildMessages, buildRepairMessages } from './ai.prompt.js'
 import { parseAiContent, validateAiReading } from './ai.schema.js'
-import { getPersonalBasicWords, ignoredFunctionWordRemovals } from './basic-words.js'
+import { ignoredFunctionWordRemovals } from './basic-words.js'
 import { calendarWords } from './calendar-words.js'
+import { limitOf, measureKnownVocabulary, unknownBudgetFor } from './level-limits.js'
 import { countWords, planAcceptedRange, planWordRange } from './word-count.js'
 import { generationFailureRepository as failureRepo } from './generation-failure.repository.js'
 import { toHistoryItem, toResultDto, toSafeDto } from './reading.dto.js'
@@ -155,7 +158,7 @@ function insufficientVocabularyError() {
  *   feedback: null | { type: 'structure'|'vocabulary'|'word_count', reason: string, violations?: Array, actualWords?: number, range?: object },
  * }}
  */
-function evaluate({ content, params, allowedWords, range }) {
+function evaluate({ content, params, allowedWords, range, unknownBudget }) {
   const result = inspect(content, params)
 
   if (result.insufficient) return { result, feedback: null }
@@ -188,8 +191,9 @@ function evaluate({ content, params, allowedWords, range }) {
     names: result.data.names,
   })
 
-  // 不超过额度的生词直接放行：这是兜底，不是配额
-  if (vocabulary.unknownWords.length > config.maxUnknownWords) {
+  // 不超过预算的生词直接放行：预算按难度取（easy 0 / medium 3 / hard 5），
+  // 它是产品承诺——easy 的「一个生词都没有」不是兜底，是卖点。
+  if (vocabulary.unknownWords.length > unknownBudget) {
     return {
       result,
       vocabulary,
@@ -319,13 +323,16 @@ async function recordFailure(diag, error) {
  *       → 结构校验 → 用词校验 → 篇幅校验 →（最多 2 轮修正，三者共用）
  *       → 落库 → 返回安全 DTO。
  *
- * 放行规则：用词校验不再要求「一个生词都没有」，允许 maxUnknownWords 个（默认 5），
- * 它们会带音标与释义落进 newWords，由前端做折叠提示。
+ * 放行规则：用词校验的预算是**按难度**给的（easy 0 / medium 3 / hard 5），
+ * 预算内的生词带音标与释义落进 newWords，由前端做折叠提示。
  *
- * 两道闸门顺序不能换：
- *   1. 词数 < 20 → INSUFFICIENT_VOCABULARY（和以前一样，最前面拦）
- *   2. 候选池装不下本次篇幅 → VOCABULARY_TOO_SMALL，**禁止生成**
- * 第 2 道是按「本次参数」算的，所以缩短篇幅或降低难度就能过——提示语要把这个说出来。
+ * 闸门顺序不能换（md/20 §2.1、md/21 W3）：
+ *   0. 篇幅超过该难度上限 → 400 INVALID_REQUEST（纯参数错，不读库）
+ *   1. 词数 < 20 → 422 INSUFFICIENT_VOCABULARY
+ *   2. 候选池装不下本次篇幅 → 422 VOCABULARY_TOO_SMALL（kind=target_words）
+ *   3. 已知词汇量低于该难度下限 → 422 VOCABULARY_TOO_SMALL（kind=known_words）
+ * 2 说的是「这次参数凑不齐」，3 说的是「这个难度还没准备好」；先报成本更低的解法
+ * （缩篇幅 / 换词源），再报加词或降难度。每一道都在调模型之前，判定与 /capacity 共用同一套函数。
  *
  * 外面套一层薄壳只做一件事：**失败的生成也要留痕**。
  * 原实现预算耗尽后直接 throw，中间轮的违规词只进 pino stdout，
@@ -362,6 +369,20 @@ async function generateReadingInner({ userId, body, signal, diag }) {
   const params = parseOrThrow(generateReadingSchema, body)
   diag.params = params
 
+  // 篇幅上限跟难度走（md/20 §2.2）。放在读库之前——这是纯参数判定，
+  // 和「词汇量为 0 也先报参数错」是同一个约定。
+  const limit = limitOf(params.level)
+  if (params.targetWords > limit.maxTargetWords) {
+    throw targetWordsTooLong({
+      level: params.level,
+      targetWords: params.targetWords,
+      maxTargetWords: limit.maxTargetWords,
+    })
+  }
+
+  // 生词预算：按难度取，显式 MAX_UNKNOWN_WORDS 时全局覆盖
+  const unknownBudget = unknownBudgetFor(params.level, config.maxUnknownWordsOverride)
+
   const rounds = diag.rounds
 
   // 只有 learning / mastered 算可用词汇，new 不算
@@ -385,7 +406,14 @@ async function generateReadingInner({ userId, body, signal, diag }) {
       'basic words: function words cannot be removed, ignored',
     )
   }
-  const personalBasicWords = getPersonalBasicWords(params.level, removedBasicWords)
+
+  // B 门要用的已知词汇量；顺便拿到扣掉 new 词之后的个人基础词
+  const known = measureKnownVocabulary({
+    level: params.level,
+    learnedWords: words.map((item) => item.word),
+    removedBasicWords,
+  })
+  const personalBasicWords = known.personalBasicWords
 
   // 版本信息在选池之前就记下：VOCABULARY_TOO_SMALL 的失败样本也要知道
   // 当时用的是哪一档词表，否则这批数据事后无法归因
@@ -394,6 +422,11 @@ async function generateReadingInner({ userId, body, signal, diag }) {
     size: personalBasicWords.length,
     removed: removedBasicWords.length - ignoredRemovals.length,
     version: basicWordsVersions[params.level],
+  }
+  diag.known = {
+    knownWords: known.knownWords,
+    requiredKnown: known.requiredKnown,
+    unknownBudget,
   }
 
   const selection = selectVocabularyPool({
@@ -432,6 +465,30 @@ async function generateReadingInner({ userId, body, signal, diag }) {
       targetWords: params.targetWords,
       scope: selection.scope,
       level: params.level,
+    })
+  }
+
+  // B 门：已知词汇量（md/20 §2.1）。
+  //
+  // 放在 A 门之后是有意的：A 门说「这次参数凑不齐目标词」，缩短篇幅或换词源就能过；
+  // B 门说「这个难度你还没准备好」，只有加词或降难度能过。先报成本更低的解法。
+  // 两道都在调模型之前——一次调用几秒、几千 token，注定失败就不该发出去。
+  if (!known.sufficient) {
+    logger.warn(
+      {
+        level: params.level,
+        targetWords: params.targetWords,
+        knownWords: known.knownWords,
+        requiredKnown: known.requiredKnown,
+        personalBasicSize: personalBasicWords.length,
+        learnedWords: words.length,
+      },
+      'reading generate rejected: known words below level floor',
+    )
+    throw knownWordsTooSmall({
+      level: params.level,
+      required: known.requiredKnown,
+      available: known.knownWords,
     })
   }
 
@@ -503,7 +560,7 @@ async function generateReadingInner({ userId, body, signal, diag }) {
 
   let content = first.content
   let finishReason = first.finishReason
-  let state = evaluate({ content, params, allowedWords, range })
+  let state = evaluate({ content, params, allowedWords, range, unknownBudget })
   recordRound({ rounds, state, content, diag })
 
   // 修正轮分两种额度：
@@ -557,7 +614,7 @@ async function generateReadingInner({ userId, body, signal, diag }) {
 
     content = repaired.content
     finishReason = repaired.finishReason ?? finishReason
-    state = evaluate({ content, params, allowedWords, range })
+    state = evaluate({ content, params, allowedWords, range, unknownBudget })
     recordRound({ rounds, state, content, diag })
 
     // 模型主动认输时再修也没用，跳出去交给下面的统一处理
@@ -619,7 +676,7 @@ async function generateReadingInner({ userId, body, signal, diag }) {
   // evaluate() 已经保证不超过额度，这里是防御：任何路径下都不该写出满篇生词。
   // 唯一的例外是上面补查的超长文章：它已经没有额度可用了，再拦下来等于白白烧掉
   // 几次调用，只记日志，让「超长 + 生词超标」在日志和 aiMeta 里都看得见。
-  if (unknownWords.length > config.maxUnknownWords && !lateVocabulary) {
+  if (unknownWords.length > unknownBudget && !lateVocabulary) {
     logger.warn(
       {
         violations: state.vocabulary.violations.slice(0, 20),
@@ -637,7 +694,7 @@ async function generateReadingInner({ userId, body, signal, diag }) {
     )
   }
 
-  if (lateVocabulary && unknownWords.length > config.maxUnknownWords) {
+  if (lateVocabulary && unknownWords.length > unknownBudget) {
     logger.warn(
       {
         violations: state.vocabulary.violations.slice(0, 20),
@@ -742,13 +799,22 @@ async function generateReadingInner({ userId, body, signal, diag }) {
  *
  * 生成前的预检：前端据此禁用做不到的难度，并显示「还需 N 个单词解锁」。
  *
- * 直接调用 selectVocabularyPool——和 generate 用的是**同一个函数**，
- * 所以预检数字与真实闸门永远一致，不存在「预检说能、点下去 422」。
- * 代价是要把用户词表读进内存；单用户、万词量级足够，破 2 万再改聚合计数。
+ * 三道门禁的数字一次全回：
+ *   A 目标词门  required / sufficient / shortage（scope 相关，缩篇幅可解）
+ *   B 已知词门  knownWords / requiredKnown / knownSufficient / knownShortage
+ *   C 生词预算 + 篇幅上限 unknownBudget / maxTargetWords / targetWordsAllowed
+ * 前端「能不能点」= 三个都通过；「还差多少」直接取对应的 shortage。
+ *
+ * 选池与已知词量分别调用 selectVocabularyPool / measureKnownVocabulary——
+ * 和 generate 用的是**同一组函数**，所以预检数字与真实闸门永远一致，
+ * 不存在「预检说能、点下去 422」。代价是要把用户词表读进内存；
+ * 单用户、万词量级足够，破 2 万再改聚合计数。
  */
 export async function getCapacity({ userId, query }) {
   const { targetWords, vocabScope } = parseOrThrow(capacityQuerySchema, query)
   const words = await wordRepository.findVocabulary(userId)
+  const removedBasicWords = (await wordRepository.findNewWords(userId)).map((item) => item.word)
+  const learnedWords = words.map((item) => item.word)
   const range = planWordRange(targetWords)
 
   const levels = {}
@@ -756,11 +822,25 @@ export async function getCapacity({ userId, query }) {
 
   for (const level of LEVELS) {
     const selection = selectVocabularyPool({ words, level, scope: vocabScope, targetWords })
+    // 与 generateReadingInner 调的是同一个函数，预检数字和真实闸门不会分叉
+    const known = measureKnownVocabulary({ level, learnedWords, removedBasicWords })
+    const limit = limitOf(level)
+
     available = selection.available
     levels[level] = {
+      // A 目标词门：这次参数凑不齐目标词，缩篇幅 / 换词源可解
       required: selection.neededVocab,
       sufficient: selection.sufficient,
       shortage: Math.max(0, selection.neededVocab - selection.available),
+      // B 已知词门：该难度要求认识多少词，只有加词 / 降难度可解
+      knownWords: known.knownWords,
+      requiredKnown: known.requiredKnown,
+      knownSufficient: known.sufficient,
+      knownShortage: known.shortage,
+      // C 生词预算，以及该难度允许的篇幅上限（前端滑块的 max）
+      unknownBudget: unknownBudgetFor(level, config.maxUnknownWordsOverride),
+      maxTargetWords: limit.maxTargetWords,
+      targetWordsAllowed: targetWords <= limit.maxTargetWords,
     }
   }
 
@@ -770,7 +850,6 @@ export async function getCapacity({ userId, query }) {
     wordRange: range,
     acceptedRange: planAcceptedRange(targetWords),
     available,
-    maxUnknownWords: config.maxUnknownWords,
     levels,
   }
 }

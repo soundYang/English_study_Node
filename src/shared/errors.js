@@ -103,5 +103,45 @@ export const vocabularyTooSmall = ({
       + `（还差 ${Math.max(0, required - available)} 个）。`
       + '请添加更多单词，或缩短篇幅、降低难度。',
     'targetWords',
-    { required, available, requiredWords, targetWords, scope, level },
+    // kind 让前端区分两道 422：目标词凑不齐（缩篇幅/降难度）与已知词汇量不够（加词）
+    { kind: 'target_words', required, available, requiredWords, targetWords, scope, level },
+  )
+
+/**
+ * 400：该难度不支持这么长的请求（md/20 §2.2 篇幅上限跟难度走）。
+ *
+ * 与 422 分开：这不是「你词不够」，而是「这个组合不存在」。
+ * 滑块上限应当直接读 /capacity 的 maxTargetWords，正常前端走不到这里。
+ */
+export const targetWordsTooLong = ({ level, targetWords, maxTargetWords }) =>
+  new ApiError(
+    400,
+    ERROR_CODES.INVALID_REQUEST,
+    `${LEVEL_LABELS[level] ?? level}模式最高支持 ${maxTargetWords} 词（本次请求 ${targetWords} 词）。`
+      + '请缩短篇幅，或提高难度。',
+    'targetWords',
+    { kind: 'target_words_cap', level, targetWords, maxTargetWords },
+  )
+
+/**
+ * 422：已知词汇量达不到该难度的下限（md/20 §2.1 的 B 门）。
+ *
+ * `available` 是**并集**后的已知词数（含基础词表），不是个人词库条数——
+ * 用户看到「当前已有 1180 个」时会疑惑自己只背了 700 个，所以文案里写明口径。
+ */
+export const knownWordsTooSmall = ({ level, required, available }) =>
+  new ApiError(
+    422,
+    ERROR_CODES.VOCABULARY_TOO_SMALL,
+    `${LEVEL_LABELS[level] ?? level}模式需要认识约 ${required} 个单词（个人词库 + 基础词表），`
+      + `当前已有 ${available} 个（还差 ${Math.max(0, required - available)} 个）。`
+      + '请添加更多单词，或降低难度。',
+    'level',
+    {
+      kind: 'known_words',
+      level,
+      required,
+      available,
+      shortage: Math.max(0, required - available),
+    },
   )

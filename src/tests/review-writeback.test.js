@@ -31,8 +31,11 @@ const QUESTIONS = [
   { id: 3, question: 'Question number 3 about the story?', options: ['a', 'b', 'c', 'd'], correctAnswer: 2, explanation: '根据文章内容可知。' },
 ]
 
-/** 28 个填充词 + 一个真的会出现在正文里的 book，凑够 20 词闸门 */
-function seedWords(count = 28) {
+/**
+ * 399 个填充词 + 一个真的会出现在正文里的 book = 400 个个人词。
+ * easy 的已知词门是 1000：400 + 600 基础词 + 日历词（book 本身就在基础表里）。
+ */
+function seedWords(count = 399) {
   return Word.insertMany([
     ...Array.from({ length: count }, (_, index) => ({
       userId: config.defaultUserId,

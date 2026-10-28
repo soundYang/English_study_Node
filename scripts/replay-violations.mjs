@@ -26,6 +26,7 @@ import { config } from '../src/config/index.js'
 import { ABBREVIATION_WORDS } from '../src/modules/readings/abbreviations.js'
 import { calendarWords } from '../src/modules/readings/calendar-words.js'
 import { basicWordsByLevel } from '../src/modules/readings/basic-words.js'
+import { unknownBudgetFor } from '../src/modules/readings/level-limits.js'
 import { GenerationFailure } from '../src/modules/readings/generation-failure.model.js'
 import { Reading } from '../src/modules/readings/reading.model.js'
 import { validateArticle } from '../src/modules/readings/vocabulary.service.js'
@@ -85,7 +86,7 @@ async function main() {
 
   console.log(
     `\n当前基础词 easy/medium/hard = ${Object.values(basicWordsByLevel).map((list) => list.length).join('/')}`
-      + `｜候选 ${candidateBasics.length}｜maxUnknownWords=${config.maxUnknownWords}\n`,
+      + `｜候选 ${candidateBasics.length}｜生词预算 easy/medium/hard = 0/3/5\n`,
   )
 
   await mongoose.connect(config.mongodbUri)
@@ -136,7 +137,9 @@ async function main() {
         candidate: countOf(replayCandidate),
         currentMissing: missingCommon(replayCurrent),
         candidateMissing: missingCommon(replayCandidate),
-        wouldPass: countOf(replayCandidate) <= config.maxUnknownWords,
+        // 预算按难度取：easy 0 / medium 3 / hard 5（与线上 evaluate() 同一口径）
+        budget: unknownBudgetFor(doc.level),
+        wouldPass: countOf(replayCandidate) <= unknownBudgetFor(doc.level),
         words: replayCandidate.unknownWords.slice(0, 5).join('、'),
       })
     }
@@ -146,7 +149,7 @@ async function main() {
     for (const row of rows) {
       console.log(
         `| ${row.level}/${row.targetWords} | ${row.stored} | ${row.current} | ${row.candidate} |` +
-          ` ${row.candidate > config.maxUnknownWords ? '是' : '**否**'} | ${row.words || '—'} |`,
+          ` ${row.candidate > row.budget ? '是' : '**否**'} | ${row.words || '—'} |`,
       )
     }
 

@@ -12,6 +12,7 @@ vi.mock('../modules/readings/ai.client.js', () => ({ chatJson }))
 
 const { createApp } = await import('../app.js')
 const { config } = await import('../config/index.js')
+const { basicWordsByLevel } = await import('../modules/readings/basic-words.js')
 const { Reading } = await import('../modules/readings/reading.model.js')
 const { Word } = await import('../modules/words/word.model.js')
 
@@ -64,6 +65,7 @@ describe('词量不足以支撑篇幅', () => {
     expect(res.body.error.code).toBe('VOCABULARY_TOO_SMALL')
     expect(res.body.error.field).toBe('targetWords')
     expect(res.body.error.details).toEqual({
+      kind: 'target_words',
       required: 86,
       available: 45,
       requiredWords: 60,
@@ -77,38 +79,81 @@ describe('词量不足以支撑篇幅', () => {
     expect(await Reading.countDocuments()).toBe(0)
   })
 
-  it('同样 45 个词，缩短篇幅就能通过闸门', async () => {
+  it('A 门只看本次 scope：缩短篇幅（或缩小词源）就能过', async () => {
+    // 已知词门看全库，与 scope 无关：1200 + hard 2578 + 日历 > 3778，两道请求都能过 B 门
+    await seedWords(1200, 'old')
+    await Word.collection.updateMany(
+      { userId: config.defaultUserId },
+      { $set: { createdAt: new Date('2020-01-01T00:00:00Z') } },
+    )
+    await seedWords(45, 'fresh')
+    chatJson.mockResolvedValue(reply)
+
+    // hard + 600：目标词 60 个，门槛 ceil(60 ÷ 0.7) = 86 个，45 个 fresh 不够
+    const long = await generate({
+      level: 'hard',
+      targetWords: 600,
+      questionCount: 3,
+      vocabScope: ['today_new'],
+    })
+
+    expect(long.status).toBe(422)
+    expect(long.body.error.details.kind).toBe('target_words')
+
+    // hard + 100：目标词 10 个，门槛 ceil(10 ÷ 0.7) = 15 个，45 个够用
+    const short = await generate({
+      level: 'hard',
+      targetWords: 100,
+      questionCount: 3,
+      vocabScope: ['today_new'],
+    })
+
+    expect(short.status).toBe(201)
+  })
+
+  it('已知词汇量不够时，缩短篇幅也救不了——只能加词或降难度', async () => {
     await seedWords(45)
     chatJson.mockResolvedValue(reply)
 
-    // 100 词 hard：目标词 10 个，门槛 ceil(10 ÷ 0.7) = 15 个，45 够用
+    // hard / 100：A 门（15 个）过了，B 门（3778）过不了
     const res = await generate({ level: 'hard', targetWords: 100, questionCount: 3 })
 
-    expect(res.status).toBe(201)
+    expect(res.status).toBe(422)
+    expect(res.body.error.code).toBe('VOCABULARY_TOO_SMALL')
+    expect(res.body.error.details).toMatchObject({
+      kind: 'known_words',
+      level: 'hard',
+      required: 3778,
+      // 45 个个人词 ∪ hard 2578 ∪ 日历 18（may 已在 hard 表里）——并集去重后的真实数字
+      available: 45 + 2578 + 18,
+    })
+    expect(res.body.error.message).toContain('还差')
+    expect(chatJson).not.toHaveBeenCalled()
   })
 })
 
 describe('候选池与目标词计划', () => {
-  it('200 个词 + hard + 600 → 池子取 70% 得 140 个', async () => {
-    await seedWords(200)
+  it('600 个词 + medium + 300 → 池子取 50% 得 300 个', async () => {
+    await seedWords(600)
     chatJson.mockResolvedValue(reply)
 
-    const res = await generate({ level: 'hard', targetWords: 600, questionCount: 3 })
+    const res = await generate({ level: 'medium', targetWords: 300, questionCount: 3 })
 
     expect(res.status).toBe(201)
 
     const doc = await Reading.findById(res.body.id).lean()
-    expect(doc.vocabularySnapshot).toHaveLength(140)
-    expect(doc.targetPlan.poolSize).toBe(140)
-    expect(doc.targetPlan.requiredWords).toBe(60)
-    expect(doc.targetPlan.focusWords).toHaveLength(21)
+    expect(doc.vocabularySnapshot).toHaveLength(300)
+    expect(doc.targetPlan.poolSize).toBe(300)
+    expect(doc.targetPlan.requiredWords).toBe(30)
+    expect(doc.targetPlan.focusWords).toHaveLength(11)
     expect(doc.targetPlan.scope).toEqual(['all'])
-    expect(doc.aiMeta.candidatePoolSize).toBe(140)
-    expect(doc.aiMeta.requiredWords).toBe(60)
+    expect(doc.aiMeta.candidatePoolSize).toBe(300)
+    expect(doc.aiMeta.requiredWords).toBe(30)
   })
 
   it('候选池只会更小，不会因为词库大就按 createdAt 截断', async () => {
-    // 1200 个词，hard 取 70% = 840 → 封顶 800（POOL_LIMIT，与 targetWords 上限无关）
+    // hard 的已知词门是 3778，1200 个人词刚好跨过去；70% = 840 → 封顶 800
+    // （POOL_LIMIT，与 targetWords 上限无关）。这也意味着 hard 场景下 800 总是生效。
     await seedWords(1200)
     chatJson.mockResolvedValue(reply)
 
@@ -123,8 +168,8 @@ describe('候选池与目标词计划', () => {
 
 describe('校验词表与提示词词表分离', () => {
   it('池外但用户学过的词不算表外', async () => {
-    await seedWords(200)
-    // cocaRank 极大 → easy 按排名升序取前 71 个，这个词必然落在池外
+    await seedWords(400)
+    // cocaRank 极大 → easy 按排名升序取前 141 个，这个词必然落在池外
     await Word.create({
       userId: config.defaultUserId,
       word: 'zephyrous',
@@ -153,8 +198,8 @@ describe('校验词表与提示词词表分离', () => {
   })
 
   it('超过额度的真正生词仍然要被拦下', async () => {
-    await seedWords(200)
-    // 6 个 > maxUnknownWords(5)：才会进入修正轮，两轮后仍超额 → 422
+    await seedWords(400)
+    // 6 个 > easy 预算 0：进入修正轮，两轮后仍超额 → 422
     const unknown = 'Quizzical zephyrish brontide crepuscule farrago panopticon.'
     chatJson.mockResolvedValue({
       ...reply,
@@ -171,22 +216,52 @@ describe('校验词表与提示词词表分离', () => {
 describe('生成前预检 GET /capacity', () => {
   const capacity = (query) => request(app).get('/api/readings/capacity').query(query)
 
-  it('200 词时返回三档门槛与预计篇幅', async () => {
-    await seedWords(200)
+  it('三档门禁一次全回：目标词门 / 已知词门 / 生词预算 / 篇幅上限', async () => {
+    await seedWords(400)
 
     const res = await capacity({ targetWords: 200 })
 
     expect(res.status).toBe(200)
     expect(res.body).toMatchObject({
       targetWords: 200,
-      available: 200,
-      maxUnknownWords: 5,
+      available: 400,
       wordRange: { min: 200, target: 220, max: 230, label: '200–230 词' },
       acceptedRange: { min: 170, target: 220, max: 230, label: '170–230 词' },
       levels: {
-        easy: { required: 58, sufficient: true, shortage: 0 },
-        medium: { required: 40, sufficient: true, shortage: 0 },
-        hard: { required: 29, sufficient: true, shortage: 0 },
+        easy: {
+          required: 58,
+          sufficient: true,
+          shortage: 0,
+          // 400 个人词 ∪ 600 基础词 ∪ 日历 18 = 1018 ≥ 1000
+          knownWords: 1018,
+          requiredKnown: 1000,
+          knownSufficient: true,
+          knownShortage: 0,
+          unknownBudget: 0,
+          maxTargetWords: 300,
+          targetWordsAllowed: true,
+        },
+        medium: {
+          required: 40,
+          sufficient: true,
+          // 400 + 1340 + 18 = 1758 < 1900：词量够写，但这个难度还没解锁
+          knownWords: 1758,
+          requiredKnown: 1900,
+          knownSufficient: false,
+          knownShortage: 142,
+          unknownBudget: 3,
+          maxTargetWords: 450,
+        },
+        hard: {
+          required: 29,
+          sufficient: true,
+          knownWords: 2996,
+          requiredKnown: 3778,
+          knownSufficient: false,
+          knownShortage: 782,
+          unknownBudget: 5,
+          maxTargetWords: 600,
+        },
       },
     })
   })
@@ -196,13 +271,55 @@ describe('生成前预检 GET /capacity', () => {
 
     const res = await capacity({ targetWords: 600 })
 
-    expect(res.body.levels.hard).toEqual({ required: 86, sufficient: false, shortage: 41 })
+    expect(res.body.levels.hard).toMatchObject({
+      required: 86,
+      sufficient: false,
+      shortage: 41,
+      knownWords: 2641,
+      knownSufficient: false,
+    })
 
-    // 同一组参数真的去生成，422 里回的数字必须一致
+    // 同一组参数真的去生成，422 里回的数字必须一致（A 门先报）
     const rejected = await generate({ level: 'hard', targetWords: 600, questionCount: 3 })
     expect(rejected.status).toBe(422)
+    expect(rejected.body.error.details.kind).toBe('target_words')
     expect(rejected.body.error.details.required).toBe(res.body.levels.hard.required)
     expect(rejected.body.error.details.available).toBe(res.body.available)
+  })
+
+  it('已知词门：预检的 knownShortage 与生成的 422 文案是同一个数', async () => {
+    await seedWords(400)
+
+    const res = await capacity({ targetWords: 100 })
+    expect(res.body.levels.medium.knownSufficient).toBe(false)
+
+    const rejected = await generate({ level: 'medium', targetWords: 100, questionCount: 3 })
+    expect(rejected.status).toBe(422)
+    expect(rejected.body.error.details).toMatchObject({
+      kind: 'known_words',
+      required: res.body.levels.medium.requiredKnown,
+      available: res.body.levels.medium.knownWords,
+    })
+    expect(rejected.body.error.message).toContain(
+      `还差 ${res.body.levels.medium.knownShortage} 个`,
+    )
+  })
+
+  it('篇幅上限跟难度走：easy 300 词能过，400 词是参数错', async () => {
+    await seedWords(400)
+
+    // 500 词：easy(300) / medium(450) 都不允许，只有 hard(600) 可以
+    const wide = await capacity({ targetWords: 500 })
+    expect(wide.body.levels.easy.targetWordsAllowed).toBe(false)
+    expect(wide.body.levels.medium.targetWordsAllowed).toBe(false)
+    expect(wide.body.levels.hard.targetWordsAllowed).toBe(true)
+
+    const res = await generate({ level: 'easy', targetWords: 400, questionCount: 3 })
+
+    expect(res.status).toBe(400)
+    expect(res.body.error.field).toBe('targetWords')
+    expect(res.body.error.message).toContain('简单模式最高支持 300 词')
+    expect(chatJson).not.toHaveBeenCalled()
   })
 
   it('单个 vocabScope 写成字符串也能收', async () => {
@@ -231,6 +348,55 @@ describe('生成前预检 GET /capacity', () => {
 
     expect(res.status).toBe(400)
     expect(res.body.error.field).toBe('targetWords')
+  })
+})
+
+describe('700 词库的产品含义（md/20 §2.3）', () => {
+  /**
+   * 700 个词，其中 300 个本来就在 medium 基础词里。
+   * 真实用户的词库不可能与基础表不相交——把 700 个填充词当成「互不相交」，
+   * 会算出 700 + 1340 > 1900 的假通过，验收标准就测不到。
+   */
+  async function seed700() {
+    const docs = basicWordsByLevel.medium.slice(0, 300).map((word, index) => ({
+      userId: config.defaultUserId,
+      word,
+      status: 'learning',
+      source: 'manual',
+      senses: [{ pos: '', meaning: `基础词 ${index}` }],
+    }))
+
+    await Word.insertMany([
+      ...docs,
+      ...Array.from({ length: 400 }, (_, index) => ({
+        userId: config.defaultUserId,
+        word: `extra${index}`,
+        status: 'learning',
+        source: 'manual',
+        senses: [{ pos: '', meaning: '测试释义' }],
+      })),
+    ])
+  }
+
+  it('easy 300 通过；medium 422 并说清「还差多少个词」', async () => {
+    await seed700()
+    chatJson.mockResolvedValue(reply)
+
+    // easy：600 基础 + 400 新词 + 日历 18 = 1018 ≥ 1000
+    const easy = await generate({ level: 'easy', targetWords: 300, questionCount: 3 })
+    expect(easy.status).toBe(201)
+
+    // medium：1340 + 400 + 18 = 1758 < 1900，短线 142
+    const medium = await generate({ level: 'medium', targetWords: 300, questionCount: 3 })
+    expect(medium.status).toBe(422)
+    expect(medium.body.error.details).toMatchObject({
+      kind: 'known_words',
+      level: 'medium',
+      required: 1900,
+      available: 1758,
+      shortage: 142,
+    })
+    expect(medium.body.error.message).toContain('还差 142 个')
   })
 })
 
@@ -275,7 +441,7 @@ describe('词源筛选', () => {
   })
 
   it('all 与其它值同时出现时按全选处理', async () => {
-    await seedWords(45)
+    await seedWords(400)
     chatJson.mockResolvedValue(reply)
 
     const res = await generate({

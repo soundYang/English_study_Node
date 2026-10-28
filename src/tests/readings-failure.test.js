@@ -84,8 +84,8 @@ describe('生成失败留痕 · 只有生成流程内的失败才入库', () => 
   it('候选池不够 → 422 且留痕，带选池数字但没有模型轮次', async () => {
     await seedWords(45)
 
-    // easy + 600 词：目标词 60，门槛 ceil(60 ÷ 0.35) = 172 > 45
-    const res = await generate({ level: 'easy', targetWords: 600, questionCount: 3 })
+    // hard + 600 词：目标词 60，门槛 ceil(60 ÷ 0.7) = 86 > 45
+    const res = await generate({ level: 'hard', targetWords: 600, questionCount: 3 })
 
     expect(res.status).toBe(422)
     expect(res.body.error.code).toBe('VOCABULARY_TOO_SMALL')
@@ -94,7 +94,7 @@ describe('生成失败留痕 · 只有生成流程内的失败才入库', () => 
     const [failure] = await GenerationFailure.find().lean()
     expect(await GenerationFailure.countDocuments()).toBe(1)
     expect(failure.errorCode).toBe('VOCABULARY_TOO_SMALL')
-    expect(failure.level).toBe('easy')
+    expect(failure.level).toBe('hard')
     expect(failure.targetWords).toBe(600)
     expect(failure.available).toBe(45)
     expect(failure.requiredWords).toBe(60)
@@ -104,7 +104,7 @@ describe('生成失败留痕 · 只有生成流程内的失败才入库', () => 
   })
 
   it('修正轮耗尽仍有 6 个生词 → 422 且每轮违规词都留下来了', async () => {
-    await seedWords(29)
+    await seedWords(400)
     chatJson.mockResolvedValue(reply(makePayload({ article: OVER_LIMIT_ARTICLE })))
 
     const res = await generate(VALID_BODY)
@@ -137,7 +137,7 @@ describe('生成失败留痕 · 只有生成流程内的失败才入库', () => 
   })
 
   it('结构一直不合法 → 502 且存的是模型原始输出', async () => {
-    await seedWords(29)
+    await seedWords(400)
     chatJson.mockResolvedValue({ content: '当然可以！这是文章：Tom is a boy.' })
 
     const res = await generate(VALID_BODY)
@@ -156,7 +156,7 @@ describe('生成失败留痕 · 只有生成流程内的失败才入库', () => 
   })
 
   it('成功一次 → 不写 GenerationFailure，但 aiMeta.rounds 同样带诊断字段', async () => {
-    await seedWords(29)
+    await seedWords(400)
     chatJson.mockResolvedValue(reply(makePayload()))
 
     const res = await generate(VALID_BODY)
@@ -181,7 +181,7 @@ describe('生成失败留痕 · 只有生成流程内的失败才入库', () => 
   })
 
   it('成功样本带生成快照：词表版本 / 代码版本 / 模型名', async () => {
-    await seedWords(29)
+    await seedWords(400)
     chatJson.mockResolvedValue(reply(makePayload()))
 
     const res = await generate(VALID_BODY)
@@ -199,7 +199,7 @@ describe('生成失败留痕 · 只有生成流程内的失败才入库', () => 
   it('失败样本记同一套快照，两类数据才能同框对比', async () => {
     await seedWords(45)
 
-    const res = await generate({ level: 'easy', targetWords: 600, questionCount: 3 })
+    const res = await generate({ level: 'hard', targetWords: 600, questionCount: 3 })
 
     expect(res.status).toBe(422)
 
@@ -210,7 +210,7 @@ describe('生成失败留痕 · 只有生成流程内的失败才入库', () => 
   })
 
   it('第一轮超长触发重写 → 重写轮记下 repairFor=word_count', async () => {
-    await seedWords(29)
+    await seedWords(400)
     chatJson
       .mockResolvedValueOnce(reply(makePayload({ article: Array.from({ length: 4 }, () => ARTICLE).join(' ') })))
       .mockResolvedValueOnce(reply(makePayload()))
@@ -230,7 +230,7 @@ describe('生成失败留痕 · 只有生成流程内的失败才入库', () => 
   })
 
   it('篇幅额度用尽后仍超长：补查用词，照常放行但生词必须记下来', async () => {
-    await seedWords(29)
+    await seedWords(400)
     // 两次都超长且带 6 个生词：首轮触发重写，重写后额度耗尽 → 210 词版本被放行
     chatJson.mockResolvedValue(
       reply(makePayload({ article: `${LONG_ARTICLE} ${OVER_LIMIT_ARTICLE}` })),

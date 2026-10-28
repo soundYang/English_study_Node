@@ -24,6 +24,7 @@ import { config } from '../src/config/index.js'
 import { ABBREVIATION_WORDS } from '../src/modules/readings/abbreviations.js'
 import { basicWords } from '../src/modules/readings/basic-words.js'
 import { calendarWords } from '../src/modules/readings/calendar-words.js'
+import { unknownBudgetFor } from '../src/modules/readings/level-limits.js'
 import { Reading } from '../src/modules/readings/reading.model.js'
 import { validateArticle } from '../src/modules/readings/vocabulary.service.js'
 import { Word } from '../src/modules/words/word.model.js'
@@ -68,7 +69,7 @@ async function main() {
 
     console.log(
       `\n扫描 ${docs.length} 篇文章，其中「超长且没查过」${targets.length} 篇` +
-        `（maxUnknownWords=${config.maxUnknownWords}）\n`,
+        '（生词预算按难度：easy 0 / medium 3 / hard 5）\n',
     )
 
     if (targets.length === 0) {
@@ -98,7 +99,8 @@ async function main() {
         actualWords: doc.actualWords,
         stored: doc.aiMeta.violationsCount ?? 0,
         rechecked: result.unknownWords.length,
-        over: result.unknownWords.length > config.maxUnknownWords,
+        budget: unknownBudgetFor(doc.level),
+        over: result.unknownWords.length > unknownBudgetFor(doc.level),
         counts: result.counts,
         sample: result.unknownWords.slice(0, 6).join('、'),
       })
@@ -125,7 +127,7 @@ async function main() {
       `  补算违规 ${total('rechecked')} 处（库里记的 ${total('stored')} 处），` +
         `平均每篇 ${(total('rechecked') / rows.length).toFixed(1)} 个`,
     )
-    console.log(`  超过 ${config.maxUnknownWords} 个的：${over.length}/${rows.length} 篇`)
+    console.log(`  超过该难度生词预算的：${over.length}/${rows.length} 篇`)
     console.log(
       `  分类：${['abbreviation', 'proper_noun', 'wordform', 'missing_common', 'rare', 'unknown_token']
         .map((category) => `${category}=${categorySum(category)}`)

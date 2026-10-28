@@ -4,9 +4,10 @@ import { fileURLToPath } from 'node:url'
 
 import { describe, expect, it } from 'vitest'
 
-import { replayAll } from '../../scripts/lib/replay-core.mjs'
+import { budgetFor, replayAll } from '../../scripts/lib/replay-core.mjs'
 import { config } from '../config/index.js'
 import { basicWordsByLevel } from '../modules/readings/basic-words.js'
+import { LEVEL_LIMITS, unknownBudgetFor } from '../modules/readings/level-limits.js'
 
 /**
  * 离线回放：拿库里已经生成过的正文，跑当前校验链路。
@@ -25,8 +26,15 @@ const ready = existsSync(FIXTURES) && existsSync(EXPECTED)
 describe.skipIf(!ready)('离线回放夹具', () => {
   const fixtures = ready ? JSON.parse(readFileSync(FIXTURES, 'utf8')) : null
   const expected = ready ? JSON.parse(readFileSync(EXPECTED, 'utf8')) : null
+  // 生词预算按难度取，和线上 evaluate() 同一口径
+  const budgets = Object.fromEntries(
+    Object.keys(LEVEL_LIMITS).map((level) => [
+      level,
+      unknownBudgetFor(level, config.maxUnknownWordsOverride),
+    ]),
+  )
   const { results, skipped } = ready
-    ? replayAll(fixtures, basicWordsByLevel, config.maxUnknownWords)
+    ? replayAll(fixtures, basicWordsByLevel, budgets)
     : { results: [], skipped: [] }
 
   it('夹具不是空的（导出脚本真的跑过）', () => {
@@ -43,7 +51,9 @@ describe.skipIf(!ready)('离线回放夹具', () => {
 
   it('withinBudget 由 unknownCount 唯一决定，不受其他状态影响', () => {
     for (const result of results) {
-      expect(result.withinBudget, result.id).toBe(result.unknownCount <= config.maxUnknownWords)
+      expect(result.withinBudget, result.id).toBe(
+        result.unknownCount <= budgetFor(budgets, result.level),
+      )
     }
   })
 

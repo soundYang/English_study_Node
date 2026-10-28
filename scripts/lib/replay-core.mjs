@@ -79,6 +79,19 @@ export function extractArticle(raw) {
  *   agreesWithStored: boolean,
  * }}
  */
+/**
+ * 按难度取生词预算。
+ *
+ * W3 之后预算不再是一个全局数字（easy 0 / medium 3 / hard 5）。回放要么传
+ * `{ easy, medium, hard }`，要么传一个数字把所有难度压成同一口径（用于 A/B 对比）。
+ * 这与 `basicList` 的处理方式一致：分档是默认，扁平是显式覆盖。
+ */
+export function budgetFor(budget, level) {
+  if (typeof budget === 'number') return budget
+
+  return budget?.[level] ?? budget?.easy ?? 0
+}
+
 export function replayCase(testCase, userRecord, basicList, budget) {
   const { kind, article, names } = testCase.kind === 'plain'
     ? { kind: 'plain', article: testCase.article, names: testCase.names ?? [] }
@@ -103,7 +116,7 @@ export function replayCase(testCase, userRecord, basicList, budget) {
       ).ok ? 'ok' : 'invalid')
 
   const unknownCount = vocabulary?.unknownWords.length ?? 0
-  const withinBudget = unknownCount <= budget
+  const withinBudget = unknownCount <= budgetFor(budget, testCase.level)
   const storedOutcome = testCase.source === 'reading' ? 'accepted' : 'failed'
   // 失败样本记的是 finalUnknownWords，成功样本记的是 aiMeta.violationsCount
   const storedViolationsCount = testCase.source === 'reading'
