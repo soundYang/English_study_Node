@@ -31,6 +31,7 @@ export const REPEAT_PLAN = Object.freeze({
  *   pool: string[],          // 已按「优先级 + 难度」排好序的词形
  *   level: string,           // 目前不参与切分，保留给后续按难度调复现计划
  *   targetWords: number,     // 请求里的篇幅参数（正文词数），不是目标词数
+ *   selectTargets?: boolean, // false = 不挑目标词（最终模式，md/30 §7.3）
  * }} params
  * @returns {{
  *   requiredWords: number,   // 按篇幅算出的目标词数
@@ -45,12 +46,27 @@ export const REPEAT_PLAN = Object.freeze({
  *
  * 池子可能装不下 `requiredWords` 个词（`sufficient` 为 true 但池子很小的边界）：
  * 此时后面的段位自然为空数组，不抛错——覆盖度本来只 warn，不阻断生成。
+ *
+ * `selectTargets: false` 是最终模式（md/30 §7.3）：1000 词的文章里挑 100 个目标词
+ * 只会把正文变成「凑词练习」，反倒写不流畅。这时三个列表只剩 `supportWords`——
+ * 整个池子降级成「可用词表」，提示词照样给词，只是不再要求必须出现。
+ * `requiredWords` 必须一起归零：它同时是覆盖度的分母，留着 100 会让覆盖度永远 0。
  */
-export function buildTargetPlan({ pool, level, targetWords }) {
+export function buildTargetPlan({ pool, level, targetWords, selectTargets = true }) {
+  const list = Array.isArray(pool) ? pool : []
+
+  if (!selectTargets) {
+    return {
+      requiredWords: 0,
+      focusWords: [],
+      targetWords: [],
+      supportWords: list,
+      repeatPlan: REPEAT_PLAN,
+    }
+  }
+
   const requiredWords = requiredTargetWords(targetWords)
   const focusCount = Math.round(requiredWords * FOCUS_RATIO)
-
-  const list = Array.isArray(pool) ? pool : []
 
   return {
     requiredWords,

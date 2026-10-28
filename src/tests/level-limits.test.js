@@ -10,10 +10,11 @@ import {
 } from '../modules/readings/level-limits.js'
 
 /**
- * 三道门禁的数字（md/21 W3）。
+ * 难度的两个常量（md/21 W3）与已知词汇量的口径。
  *
- * 这些常量是「难度」唯一的产品定义：改一个数字，生成与 /capacity 会
- * 同时变化。测试守的是数字本身、口径（个人词库 ∪ 基础词表 ∪ 日历词），
+ * md/30 §7 之后，第三个常量 `requiredKnown`（按难度写死的已知词下限）已删除，
+ * 改由 `capacity-table.js` 的 `minKnownFor(N)` 按篇幅给——那份表的测试在
+ * `capacity-table.test.js`。本文件只守剩下的数字、并集口径，
  * 以及那个最容易做错的边界：功能词不参与个人基础词的减法。
  */
 
@@ -29,11 +30,11 @@ const fakeWords = (count, prefix = 'known') =>
 const baseUnion = () => new Set([...basicWordsByLevel.easy, ...calendarWords]).size
 
 describe('LEVEL_LIMITS', () => {
-  it('三档数字与 md/20 §2.2 一致', () => {
+  it('只剩篇幅上限与生词预算，requiredKnown 已删除（md/30 §7）', () => {
     expect(LEVEL_LIMITS).toEqual({
-      easy: { maxTargetWords: 300, requiredKnown: 1000, unknownBudget: 0 },
-      medium: { maxTargetWords: 450, requiredKnown: 1900, unknownBudget: 3 },
-      hard: { maxTargetWords: 600, requiredKnown: 3778, unknownBudget: 5 },
+      easy: { maxTargetWords: 300, unknownBudget: 0 },
+      medium: { maxTargetWords: 450, unknownBudget: 3 },
+      hard: { maxTargetWords: 600, unknownBudget: 5 },
     })
   })
 
@@ -61,27 +62,15 @@ describe('measureKnownVocabulary', () => {
     const result = measureKnownVocabulary({ level: 'easy', learnedWords: [] })
 
     expect(result.knownWords).toBe(baseUnion('easy'))
-    expect(result.requiredKnown).toBe(1000)
-    expect(result.sufficient).toBe(false)
-    expect(result.shortage).toBe(1000 - baseUnion('easy'))
+    // 只回两个字段：够不够取决于请求的篇幅，函数本身不知道 N
+    expect(Object.keys(result).sort()).toEqual(['knownWords', 'personalBasicWords'])
   })
 
-  it('刚好够 / 差一个', () => {
-    const needed = 1000 - baseUnion('easy')
-    const short = measureKnownVocabulary({
-      level: 'easy',
-      learnedWords: fakeWords(needed - 1),
-    })
-    const exact = measureKnownVocabulary({
-      level: 'easy',
-      learnedWords: fakeWords(needed),
-    })
+  it('个人词逐个累加，且与基础表去重', () => {
+    const learned = fakeWords(37)
+    const result = measureKnownVocabulary({ level: 'easy', learnedWords: learned })
 
-    expect(short.sufficient).toBe(false)
-    expect(short.shortage).toBe(1)
-    expect(exact.knownWords).toBe(1000)
-    expect(exact.sufficient).toBe(true)
-    expect(exact.shortage).toBe(0)
+    expect(result.knownWords).toBe(baseUnion('easy') + 37)
   })
 
   it('与基础表重复的个人词不会重复计数', () => {
@@ -117,19 +106,12 @@ describe('measureKnownVocabulary', () => {
     expect(after.knownWords).toBe(before.knownWords)
   })
 
-  it('hard 的个人词下限 = 3778 −（600 基础 ∪ 日历）= 3159', () => {
-    const needed = 3778 - baseUnion()
-    const almost = measureKnownVocabulary({
-      level: 'hard',
-      learnedWords: fakeWords(needed - 1),
-    })
-    const enough = measureKnownVocabulary({
-      level: 'hard',
-      learnedWords: fakeWords(needed),
-    })
+  it('三档共用同一份基础表：同一批词在三档算出同一个 knownWords', () => {
+    const learned = fakeWords(120)
+    const values = ['easy', 'medium', 'hard'].map(
+      (level) => measureKnownVocabulary({ level, learnedWords: learned }).knownWords,
+    )
 
-    expect(almost.sufficient).toBe(false)
-    expect(almost.shortage).toBe(1)
-    expect(enough.sufficient).toBe(true)
+    expect(new Set(values).size).toBe(1)
   })
 })

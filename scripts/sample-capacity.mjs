@@ -98,7 +98,9 @@ async function runOnce({ userId, level, targetWords }) {
       inRange: deviation >= LOWER && deviation <= UPPER,
       lengthStatus: stored.aiMeta?.lengthStatus ?? null,
       knownWords: stored.aiMeta?.knownWords ?? null,
-      requiredKnown: stored.aiMeta?.requiredKnown ?? null,
+      minKnown: stored.aiMeta?.minKnown ?? null,
+      personalWords: stored.aiMeta?.personalWords ?? null,
+      finalMode: stored.aiMeta?.finalMode ?? null,
       poolSize: stored.aiMeta?.candidatePoolSize ?? null,
       requiredWords: stored.aiMeta?.requiredWords ?? null,
       targetCoverage: stored.aiMeta?.targetUsage?.coverageRate ?? null,
@@ -123,7 +125,8 @@ async function runOnce({ userId, level, targetWords }) {
       message: error?.message ?? String(error),
       durationMs: Date.now() - startedAt,
       knownWords: failure?.knownWords ?? null,
-      requiredKnown: failure?.requiredKnown ?? null,
+      minKnown: failure?.minKnown ?? null,
+      personalWords: failure?.personalWords ?? null,
       poolSize: failure?.poolSize ?? null,
       available: failure?.available ?? null,
       requiredWords: failure?.requiredWords ?? null,
@@ -173,17 +176,18 @@ async function main() {
   }
   if (!Number.isInteger(times) || times < 1) throw new Error('--times 必须是正整数')
 
-  // 采样必须在「跳过 B 门」的配置下跑，否则低于门槛的点全部 422，
+  // 采样必须在「跳过已知词门槛」的配置下跑，否则低于 minKnown 的点全部 422，
   // 测出来的是门槛本身。与其让采样静默失败，不如直接拒绝启动。
+  // （md/30 §7 删掉了旧 B 门，这个开关现在跳过的是 `minKnownFor(N)` 那道。）
   if (!config.skipKnownWordsGate && !dryRun) {
-    throw new Error('采样需要 SKIP_KNOWN_WORDS_GATE=true（否则低于 B 门的点全部被拦）')
+    throw new Error('采样需要 SKIP_KNOWN_WORDS_GATE=true（否则低于 minKnown 的点全部被拦）')
   }
 
   await mongoose.connect(config.mongodbUri)
   console.log(`mongo connected: ${mongoose.connection.name}`)
   console.log(
     `\n[${new Date().toISOString()}] 篇幅 ${targetWords} 词｜难度 ${level}｜` +
-      `每组 ${times} 次｜跳过 B 门：${config.skipKnownWordsGate ? '是' : '否'}${dryRun ? '｜dry-run' : ''}\n`,
+      `每组 ${times} 次｜跳过已知词门槛：${config.skipKnownWordsGate ? '是' : '否'}${dryRun ? '｜dry-run' : ''}\n`,
   )
 
   try {

@@ -162,6 +162,7 @@ md/                     设计、实施、限制与缺陷文档
 | 生成 502 `AI_PROVIDER_ERROR` | key 错 / 余额不足 / 上游超时 | 看日志里的 `deepseek request failed`，它会抹掉 key 片段 |
 | 生成 502 `AI_INVALID_RESPONSE` | 模型输出结构或题目不合格，修正轮也没救回来 | 失败样本在 `GenerationFailure` 里，`finalArticle` 可复查 |
 | 生成 429 `RATE_LIMITED` | 同一 IP 超过 20 次/分 | 等窗口结束；批量脚本要设 `RATE_LIMIT_ENABLED=false` |
-| 生成 422 `VOCABULARY_TOO_SMALL` | 已知词不够该难度的门槛（1000 / 1900 / 3778） | 加词或降难度；这是预期拦截，不是故障 |
-| 生成 400 `target_words_cap` | 篇幅超过该难度上限（300 / 450 / 600） | 前端滑块上限读 `/capacity` 的 `maxTargetWords` |
+| 生成 422 `VOCABULARY_TOO_SMALL` | 已知词不够写这么长（门槛随篇幅走，见 `capacity-table.js` 的 `minKnownFor`） | 缩篇幅或加词；这是预期拦截，不是故障 |
+| 生成 400 `final_mode_locked` | hard 写 601–1000 词，但个人词库不足 3000 | 继续攒词；解锁后上限从 600 抬到 1000（md/30 §2.2） |
+| 生成 400 `target_words_cap` | 篇幅超过该难度上限（300 / 450 / 600；hard 已解锁时 1000） | 前端滑块上限读 `/capacity` 的 `levels[level].maxTargetWords` |
 | 测试首次跑卡住几分钟 | 正在下载 mongodb-memory-server 二进制 | 等它下完；断网环境需要预置缓存 |

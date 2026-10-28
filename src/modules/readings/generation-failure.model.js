@@ -65,9 +65,13 @@ const generationFailureSchema = new Schema(
     basicWordsVersion: String,
     // 分档之后必须记用的是哪一档：同一个 hash 只有配合档位才有意义
     basicWordsLevel: String,
-    // W3 的门禁数字（W8 补齐）：失败样本多数死在 A/B 门，没有这三个数无法归因
+    // W3 的门禁数字（W8 补齐）：失败样本多数死在门禁上，没有这几个数无法归因。
+    // `requiredKnown` 已于 md/30 §7 改为随篇幅走的 `minKnown`，并补上解锁口径的
+    // `personalWords` 与 `finalMode`——最终模式的两类 400 都靠它们区分。
     knownWords: Number,
-    requiredKnown: Number,
+    minKnown: Number,
+    personalWords: Number,
+    finalMode: Boolean,
     unknownBudget: Number,
     codeVersion: String,
   },

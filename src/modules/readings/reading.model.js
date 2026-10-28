@@ -218,10 +218,15 @@ const readingSchema = new Schema(
       codeVersion: String, // git 提交号，读不到时为 'unknown'
 
       // ——— W8：把门禁数字也留一份 ———
-      // 失败样本里已经有这三项；成功样本没有的话，同一批次没法解释「为什么这篇能过」
+      // 失败样本里已经有这几项；成功样本没有的话，同一批次没法解释「为什么这篇能过」
       knownWords: Number, // 个人词库 ∪ 该档基础表 ∪ 日历词
-      requiredKnown: Number, // 该难度的已知词下限
-      // true = 在跳过 B 门的采样实例上生成（md/27 阶段二容量采样）。
+      // md/30 §7：按难度写死的 requiredKnown 改成随篇幅走的 minKnown。
+      // 老文档上的 requiredKnown 保留原值（子文档是严格模式，新代码不再写它）
+      requiredKnown: Number, // 旧字段，仅供历史样本对比
+      minKnown: Number, // 写 targetWords 词所需的最低 knownWords
+      personalWords: Number, // 个人词库条数（learning + mastered），最终模式的解锁口径
+      finalMode: Boolean, // true = 最终模式（无目标词）
+      // true = 在跳过已知词门槛的采样实例上生成（md/27 阶段二容量采样）。
       // 这类样本不能和线上样本一起算成功率：它们是刻意在门槛以下跑的
       knownGateSkipped: Boolean,
       unknownBudget: Number, // 该难度的生词预算

@@ -29,8 +29,14 @@
 import mongoose from 'mongoose'
 
 import { config } from '../src/config/index.js'
+import {
+  FINAL_MODE_PERSONAL_WORDS,
+  isFinalMode,
+  maxTargetWordsFor,
+  minKnownFor,
+} from '../src/modules/readings/capacity-table.js'
 import { GenerationFailure } from '../src/modules/readings/generation-failure.model.js'
-import { limitOf, measureKnownVocabulary } from '../src/modules/readings/level-limits.js'
+import { measureKnownVocabulary } from '../src/modules/readings/level-limits.js'
 import { Reading } from '../src/modules/readings/reading.model.js'
 import { VIOLATION_CATEGORIES } from '../src/modules/readings/vocabulary.service.js'
 import { neededVocabulary, selectVocabularyPool } from '../src/modules/readings/vocabulary-pool.js'
@@ -412,36 +418,47 @@ function summarize(allCases, times) {
 }
 
 /**
- * 按**线上同源**的函数判这条用例会走到哪一步：
- * 档位上限（400）→ A 门（池子够不够）→ B 门（已知词够不够）。
- * 只算 A 门会漏掉「池子够但难度没解锁」的大多数情况（W3 之后 B 门先拦）。
+ * 按**线上同源**的函数判这条用例会走到哪一步（md/30 §7.3 的顺序）：
+ * 解锁检查（400）→ 篇幅上限（400）→ 最低词量（422）→ A 门（池子够不够）。
+ * 最终模式（hard + > 600 + 已解锁）跳过 A 门，只走前三道。
  */
 function gateOf({ words, learnedWords, removedBasicWords, testCase }) {
   const { level, targetWords, vocabScope } = testCase
+  const personalWords = learnedWords.length
+  const finalMode = isFinalMode({ level, targetWords, personalWords })
   // 与服务器同源：实例带 MAX_TARGET_WORDS 时，dry-run 也必须按同一个上限判
-  const limit = limitOf(level, config.maxTargetWordsOverride)
+  const maxTargetWords = config.maxTargetWordsOverride ?? maxTargetWordsFor(level, personalWords)
 
-  if (targetWords > limit.maxTargetWords) {
-    return { code: 'INVALID_REQUEST', note: `档位上限 ${limit.maxTargetWords} 词` }
+  if (targetWords > maxTargetWords) {
+    return targetWords > 600 && level === 'hard' && !config.maxTargetWordsOverride
+      ? {
+          code: 'INVALID_REQUEST',
+          note: `最终模式未解锁（个人词库 ${personalWords} < ${FINAL_MODE_PERSONAL_WORDS}）`,
+        }
+      : { code: 'INVALID_REQUEST', note: `档位上限 ${maxTargetWords} 词` }
+  }
+
+  const known = measureKnownVocabulary({ level, learnedWords, removedBasicWords })
+  const minKnown = finalMode ? 0 : minKnownFor(targetWords, level)
+  if (known.knownWords < minKnown) {
+    return {
+      code: 'VOCABULARY_TOO_SMALL',
+      note: `已知词 ${known.knownWords} < minKnown ${minKnown}`,
+    }
   }
 
   const selection = selectVocabularyPool({ words, level, scope: vocabScope, targetWords })
-  if (!selection.sufficient) {
+  if (!finalMode && !selection.sufficient) {
     return {
       code: 'VOCABULARY_TOO_SMALL',
       note: `A 门 available=${selection.available} needed=${selection.neededVocab}`,
     }
   }
 
-  const known = measureKnownVocabulary({ level, learnedWords, removedBasicWords })
-  if (!known.sufficient) {
-    return {
-      code: 'VOCABULARY_TOO_SMALL',
-      note: `B 门 known=${known.knownWords} required=${known.requiredKnown}`,
-    }
+  return {
+    code: 'ok',
+    note: `池子 ${selection.poolSize}，已知词 ${known.knownWords}${finalMode ? '，最终模式' : ''}`,
   }
-
-  return { code: 'ok', note: `池子 ${selection.poolSize}，已知词 ${known.knownWords}` }
 }
 
 async function dryRun(cases, times, base) {

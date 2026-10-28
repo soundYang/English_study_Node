@@ -5,7 +5,8 @@ import {
   ApiError,
   ERROR_CODES,
   conflict,
-  knownWordsTooSmall,
+  finalModeLocked,
+  knownWordsBelowLength,
   readingNotFound,
   targetWordsTooLong,
   vocabularyTooSmall,
@@ -26,8 +27,18 @@ import {
 import { parseAiContent, validateAiReading } from './ai.schema.js'
 import { ignoredFunctionWordRemovals } from './basic-words.js'
 import { calendarWords } from './calendar-words.js'
+import {
+  FINAL_MODE_MAX_WORDS,
+  FINAL_MODE_PERSONAL_WORDS,
+  baseMaxWordsFor,
+  isFinalMode,
+  isFinalModeUnlocked,
+  lengthLadder,
+  maxTargetWordsFor,
+  minKnownFor,
+} from './capacity-table.js'
 import { measureDifficulty } from './difficulty.js'
-import { limitOf, measureKnownVocabulary, unknownBudgetFor } from './level-limits.js'
+import { measureKnownVocabulary, unknownBudgetFor } from './level-limits.js'
 import { callModel, sumUsage } from './model-call.js'
 import { buildSegmentPlan, planSegmentCount } from './plan.service.js'
 import { generateSegmented } from './segmented.service.js'
@@ -297,9 +308,11 @@ async function recordFailure(diag, error) {
     strategy: config.generationStrategy,
     basicWordsVersion: diag.basicWords?.version ?? basicWordsVersions.hard,
     basicWordsLevel: diag.basicWords?.level ?? null,
-    // W3 的门禁数字：失败样本多数正是死在这三道门上，不记就没法归因
+    // W3 的门禁数字：失败样本多数正是死在这几道门上，不记就没法归因
     knownWords: diag.known?.knownWords,
-    requiredKnown: diag.known?.requiredKnown,
+    minKnown: diag.known?.minKnown,
+    personalWords: diag.known?.personalWords,
+    finalMode: diag.known?.finalMode,
     unknownBudget: diag.known?.unknownBudget,
     codeVersion,
   }
@@ -325,13 +338,14 @@ async function recordFailure(diag, error) {
  * 放行规则：用词校验的预算是**按难度**给的（easy 0 / medium 3 / hard 5），
  * 预算内的生词带音标与释义落进 newWords，由前端做折叠提示。
  *
- * 闸门顺序不能换（md/20 §2.1、md/21 W3）：
- *   0. 篇幅超过该难度上限 → 400 INVALID_REQUEST（纯参数错，不读库）
+ * 闸门顺序不能换（md/30 §7.3）：
  *   1. 词数 < 20 → 422 INSUFFICIENT_VOCABULARY
- *   2. 候选池装不下本次篇幅 → 422 VOCABULARY_TOO_SMALL（kind=target_words）
- *   3. 已知词汇量低于该难度下限 → 422 VOCABULARY_TOO_SMALL（kind=known_words）
- * 2 说的是「这次参数凑不齐」，3 说的是「这个难度还没准备好」；先报成本更低的解法
- * （缩篇幅 / 换词源），再报加词或降难度。每一道都在调模型之前，判定与 /capacity 共用同一套函数。
+ *   2. 解锁检查：hard 要写 601–1000 词但个人词库 < 3000 → 400 final_mode_locked
+ *   3. 篇幅上限：超过本档可用上限 → 400 target_words_cap
+ *   4. 最低词量：已知词 < minKnown(N) → 422 VOCABULARY_TOO_SMALL（kind=known_words）
+ *   5. 候选池装不下本次篇幅 → 422 VOCABULARY_TOO_SMALL（kind=target_words，最终模式跳过）
+ * 2–5 都在调模型之前。2 必须在 3、4 前面：还没解锁时报「词不够」，
+ * 用户照着加词也过不去。判定与 /capacity 共用 `capacity-table.js` 同一套函数。
  *
  * 外面套一层薄壳只做一件事：**失败的生成也要留痕**。
  * 原实现预算耗尽后直接 throw，中间轮的违规词只进 pino stdout，
@@ -368,16 +382,9 @@ async function generateReadingInner({ userId, body, signal, diag }) {
   const params = parseOrThrow(generateReadingSchema, body)
   diag.params = params
 
-  // 篇幅上限跟难度走（md/20 §2.2）。放在读库之前——这是纯参数判定，
-  // 和「词汇量为 0 也先报参数错」是同一个约定。
-  const limit = limitOf(params.level, config.maxTargetWordsOverride)
-  if (params.targetWords > limit.maxTargetWords) {
-    throw targetWordsTooLong({
-      level: params.level,
-      targetWords: params.targetWords,
-      maxTargetWords: limit.maxTargetWords,
-    })
-  }
+  // 篇幅上限曾经放在读库之前（纯参数判定）。md/30 §7 之后它要依赖个人词库规模
+  // （hard 攒够 3000 词才能写到 1000），只能挪到读完词库之后，
+  // 和「解锁检查 → 篇幅上限 → 最低词量」那道顺序一起排在下面。
 
   // 生词预算：按难度取，显式 MAX_UNKNOWN_WORDS 时全局覆盖
   const unknownBudget = unknownBudgetFor(params.level, config.maxUnknownWordsOverride)
@@ -406,7 +413,7 @@ async function generateReadingInner({ userId, body, signal, diag }) {
     )
   }
 
-  // B 门要用的已知词汇量；顺便拿到扣掉 new 词之后的个人基础词
+  // 已知词汇量：篇幅门槛（`minKnownFor`）与最终模式共用；顺便拿到扣掉 new 词之后的个人基础词
   const known = measureKnownVocabulary({
     level: params.level,
     learnedWords: words.map((item) => item.word),
@@ -424,10 +431,78 @@ async function generateReadingInner({ userId, body, signal, diag }) {
     // 会让人误以为 medium/hard 用的是各自那份表
     version: basicWordsVersions.easy,
   }
+  // ——— 三道门槛（md/30 §7.3）———
+  //
+  // **顺序不能变：解锁检查 → 篇幅上限 → 最低词量。**
+  // 反过来会出现「还没解锁，却先被告知词不够」——用户照着加词，加到 3000 也还是
+  // 过不了，因为他真正缺的是「没解锁」这个状态。三道都在调模型之前。
+  //
+  // personalWords 用上面 countVocabulary 的结果：它和 findVocabulary 是同一个
+  // 查询条件的两个视图（learning + mastered），不必再查一次库。
+  const personalWords = vocabularyCount
+  const finalMode = isFinalMode({
+    level: params.level,
+    targetWords: params.targetWords,
+    personalWords,
+  })
+  const finalModeUnlocked = isFinalModeUnlocked({ personalWords })
+  // 采样实例显式设了 MAX_TARGET_WORDS：它要验证「没攒够词也写得出」，必须绕开解锁。
+  const overrideMax = Number.isInteger(config.maxTargetWordsOverride)
+    ? config.maxTargetWordsOverride
+    : null
+  const maxTargetWords = overrideMax ?? maxTargetWordsFor(params.level, personalWords)
+  // 最低已知词量随篇幅走（md/30 §7.2）。最终模式不查这条：
+  // 它的真实闸门是 personalWords，再用 knownWords 拦一次只会自相矛盾。
+  const minKnown = finalMode ? 0 : minKnownFor(params.targetWords, params.level)
+
+  // 先落诊断再抛错：下面三道门任意一道拦下都要能归因。
+  // 旧实现把这一块放在 B 门之前、A 门之后，结果 A 门的失败样本一直没有门禁数字。
   diag.known = {
     knownWords: known.knownWords,
-    requiredKnown: known.requiredKnown,
+    minKnown,
+    personalWords,
+    finalMode,
     unknownBudget,
+  }
+
+  if (params.targetWords > maxTargetWords) {
+    // hard 档 601–1000 是「最终模式」的地盘：没解锁报 400 final_mode_locked（去加词），
+    // 而不是 target_words_cap（去缩短）——两者用户要做的事完全不同。
+    if (overrideMax === null && params.level === 'hard' && !finalModeUnlocked) {
+      throw finalModeLocked({
+        targetWords: params.targetWords,
+        available: personalWords,
+        unlockAt: FINAL_MODE_PERSONAL_WORDS,
+      })
+    }
+
+    throw targetWordsTooLong({
+      level: params.level,
+      targetWords: params.targetWords,
+      maxTargetWords,
+      // 「已解锁」只对 hard 有意义：easy 用户就算攒了 5000 词，能做的也是提高难度
+      finalModeUnlocked: params.level === 'hard' && finalModeUnlocked,
+    })
+  }
+
+  if (minKnown > 0 && known.knownWords < minKnown && !config.skipKnownWordsGate) {
+    logger.warn(
+      {
+        level: params.level,
+        targetWords: params.targetWords,
+        knownWords: known.knownWords,
+        minKnown,
+        personalBasicSize: personalBasicWords.length,
+        learnedWords: words.length,
+      },
+      'reading generate rejected: known words below length floor',
+    )
+    throw knownWordsBelowLength({
+      level: params.level,
+      targetWords: params.targetWords,
+      required: minKnown,
+      available: known.knownWords,
+    })
   }
 
   const selection = selectVocabularyPool({
@@ -445,9 +520,11 @@ async function generateReadingInner({ userId, body, signal, diag }) {
     requiredWords: selection.requiredWords,
   }
 
-  // 池子装不下就必须拦在这里：调一次模型要几秒和几千 token，
-  // 而按当前参数注定凑不出目标词数。
-  if (!selection.sufficient) {
+  // A 门：候选池装不下本次篇幅所需的目标词。调一次模型要几秒和几千 token，
+  // 按当前参数注定凑不齐就不该发出去。
+  //
+  // 最终模式跳过：它根本不挑目标词（`selectTargets: false`），池子够不够与成文无关。
+  if (!finalMode && !selection.sufficient) {
     logger.warn(
       {
         level: params.level,
@@ -469,37 +546,15 @@ async function generateReadingInner({ userId, body, signal, diag }) {
     })
   }
 
-  // B 门：已知词汇量（md/20 §2.1）。
-  //
-  // 放在 A 门之后是有意的：A 门说「这次参数凑不齐目标词」，缩短篇幅或换词源就能过；
-  // B 门说「这个难度你还没准备好」，只有加词或降难度能过。先报成本更低的解法。
-  // 两道都在调模型之前——一次调用几秒、几千 token，注定失败就不该发出去。
-  // `SKIP_KNOWN_WORDS_GATE` 只给 md/27 阶段二采样用：要找到「写 N 词至少需要
-  // 多少已知词」，就必须能跑低于当前门槛的样本。跳过时数字照常记进 aiMeta，
-  // 样本里 `knownGateSkipped=true`，不会和线上样本混在一起。
-  if (!known.sufficient && !config.skipKnownWordsGate) {
-    logger.warn(
-      {
-        level: params.level,
-        targetWords: params.targetWords,
-        knownWords: known.knownWords,
-        requiredKnown: known.requiredKnown,
-        personalBasicSize: personalBasicWords.length,
-        learnedWords: words.length,
-      },
-      'reading generate rejected: known words below level floor',
-    )
-    throw knownWordsTooSmall({
-      level: params.level,
-      required: known.requiredKnown,
-      available: known.knownWords,
-    })
-  }
+  // B 门（`requiredKnown` = 1000 / 1900 / 3778）已于 md/30 §7 删除，
+  // 由上面的 `minKnownFor(N)` 取代。`SKIP_KNOWN_WORDS_GATE` 保留给采样。
 
   const plan = buildTargetPlan({
     pool: selection.pool,
     level: params.level,
     targetWords: params.targetWords,
+    // 最终模式不挑目标词：1000 词里塞 100 个必用词只会写成凑词练习
+    selectTargets: !finalMode,
   })
 
   // 篇幅口径：目标 ×1.1、上限 ×1.15，提示词、校验、DTO 全从这里取
@@ -546,6 +601,10 @@ async function generateReadingInner({ userId, body, signal, diag }) {
       allowedWordCount: allowedWords.size,
       requiredWords: plan.requiredWords,
       focusCount: plan.focusWords.length,
+      // 最终模式下 requiredWords/focusCount 恒为 0，只看这两个数会以为选池坏了
+      finalMode,
+      minKnown,
+      personalWords,
     },
     'vocabulary pool selected',
   )
@@ -578,6 +637,7 @@ async function generateReadingInner({ userId, body, signal, diag }) {
       focusWords: plan.focusWords,
       targetWordList: plan.targetWords,
       supportWords: plan.supportWords,
+      freeForm: finalMode,
     })
 
     const segmentCount = planSegmentCount(params.targetWords)
@@ -693,6 +753,7 @@ async function generateReadingInner({ userId, body, signal, diag }) {
       targetWordList: plan.targetWords,
       supportWords: plan.supportWords,
       basicWords: personalBasicWords,
+      freeForm: finalMode,
     })
 
     const first = await callModel({ kind: 'generate', messages, signal, rounds })
@@ -814,7 +875,9 @@ async function generateReadingInner({ userId, body, signal, diag }) {
   })
   const unusedTargetWords = targetUsage.unused
 
-  if (targetUsage.coverageRate < TARGET_COVERAGE_ALERT) {
+  // 最终模式没有目标词，requiredWords = 0 时 coverageRate 恒为 0（0/0 的约定），
+  // 不判一下这篇长文每次生成都会留一条假告警，把真告警淹掉。
+  if (!finalMode && targetUsage.coverageRate < TARGET_COVERAGE_ALERT) {
     logger.warn(
       { ...targetUsage, strategy: config.generationStrategy, level: params.level },
       'target coverage below threshold (warn only, md/21 W5)',
@@ -949,7 +1012,11 @@ async function generateReadingInner({ userId, body, signal, diag }) {
       basicWordsLevel: params.level,
       // W8：门禁数字随文章留下，报告里才能回答「这篇为什么能过」
       knownWords: known.knownWords,
-      requiredKnown: known.requiredKnown,
+      // 篇幅对应的最低已知词量（md/30 §7.2），取代按难度写死的 requiredKnown
+      minKnown,
+      personalWords,
+      // true = 最终模式（hard + > 600 词 + 个人词库 ≥ 3000），没有目标词
+      finalMode,
       // true = 这篇是在跳过 B 门的采样实例上跑出来的（md/27 阶段二）。
       // 它与线上样本不可比，报表/回归必须能一眼区分开。
       knownGateSkipped: config.skipKnownWordsGate,
@@ -995,16 +1062,19 @@ async function generateReadingInner({ userId, body, signal, diag }) {
  *
  * 生成前的预检：前端据此禁用做不到的难度，并显示「还需 N 个单词解锁」。
  *
- * 三道门禁的数字一次全回：
- *   A 目标词门  required / sufficient / shortage（scope 相关，缩篇幅可解）
- *   B 已知词门  knownWords / requiredKnown / knownSufficient / knownShortage
- *   C 生词预算 + 篇幅上限 unknownBudget / maxTargetWords / targetWordsAllowed
- * 前端「能不能点」= 三个都通过；「还差多少」直接取对应的 shortage。
+ * md/30 §7 之后每档回四组数：
+ *   A 目标词门    required / sufficient / shortage（scope 相关，缩篇幅可解）
+ *   篇幅门槛      knownWords / personalWords / minKnown / maxTargetWords / targetWordsAllowed
+ *   解锁状态      finalMode { unlocked, unlockAt, shortage }
+ *   篇幅阶梯      lengths[]（100–1000 每 100 词一行，带 blockedBy）
  *
- * 选池与已知词量分别调用 selectVocabularyPool / measureKnownVocabulary——
- * 和 generate 用的是**同一组函数**，所以预检数字与真实闸门永远一致，
- * 不存在「预检说能、点下去 422」。代价是要把用户词表读进内存；
- * 单用户、万词量级足够，破 2 万再改聚合计数。
+ * 前端「能不能点」= `targetWordsAllowed && (本次是否最终模式 ? finalMode.unlocked : lengths 里对应行 unlocked)`
+ * ——但是简单起见，直接用 `levels[level].lengths` 里 `targetWords` 那一行的 `unlocked` 就够了，
+ * 它已经把三道门合并成一个布尔值。
+ *
+ * 与 generate 读同一份 `capacity-table.js` / `selectVocabularyPool` / `measureKnownVocabulary`，
+ * 预检数字与真实闸门不会分叉。代价是要把用户词表读进内存；单用户、万词量级足够，
+ * 破 2 万再改聚合计数。
  */
 export async function getCapacity({ userId, query }) {
   const { targetWords, vocabScope } = parseOrThrow(capacityQuerySchema, query)
@@ -1013,36 +1083,61 @@ export async function getCapacity({ userId, query }) {
   const learnedWords = words.map((item) => item.word)
   const range = planWordRange(targetWords)
 
+  // 解锁口径：个人词库条数（learning + mastered），与生成里 countVocabulary 同源
+  const personalWords = words.length
+  const finalModeUnlocked = isFinalModeUnlocked({ personalWords })
+  const unlockAt = FINAL_MODE_PERSONAL_WORDS
+  const unlockShortage = Math.max(0, unlockAt - personalWords)
+
   const levels = {}
   // 兼容字段：循环结束后留下来的是最后一档（hard）的池子大小。
   // 新代码一律读 levels[level].available——难度不同，池子本来就不是一个数
   let available = 0
+  let knownWords = 0
 
   for (const level of LEVELS) {
     const selection = selectVocabularyPool({ words, level, scope: vocabScope, targetWords })
     // 与 generateReadingInner 调的是同一个函数，预检数字和真实闸门不会分叉
     const known = measureKnownVocabulary({ level, learnedWords, removedBasicWords })
-    const limit = limitOf(level, config.maxTargetWordsOverride)
+    const ladder = lengthLadder({ level, knownWords: known.knownWords, personalWords })
+    // 采样实例（MAX_TARGET_WORDS）按同一个覆盖值报，否则预检与生成对不上
+    const maxTargetWords = Number.isInteger(config.maxTargetWordsOverride)
+      ? config.maxTargetWordsOverride
+      : maxTargetWordsFor(level, personalWords)
+    // 本次请求是不是最终模式：hard + > 600 + 已解锁
+    const finalMode = isFinalMode({ level, targetWords, personalWords })
+    const minKnown = finalMode ? 0 : minKnownFor(targetWords, level)
 
     available = selection.available
+    knownWords = known.knownWords
     levels[level] = {
-      // A 目标词门：这次参数凑不齐目标词，缩篇幅 / 换词源可解
-      required: selection.neededVocab,
-      sufficient: selection.sufficient,
-      shortage: Math.max(0, selection.neededVocab - selection.available),
+      // A 目标词门：这次参数凑不齐目标词，缩篇幅 / 换词源可解。
+      // 最终模式不挑目标词，这道门不存在——报 0 / true，免得前端显示「还差 100 个」
+      required: finalMode ? 0 : selection.neededVocab,
+      sufficient: finalMode ? true : selection.sufficient,
+      shortage: finalMode ? 0 : Math.max(0, selection.neededVocab - selection.available),
       // 每档各自的候选池大小（English_vue/md/13 B1）：
       // 顶层 available 是循环里最后一次赋值的 hard 口径，easy 的池子更小，
       // 用 hard 的数字解释 easy 说「不够」，用户会觉得系统在骗人
       available: selection.available,
-      // B 已知词门：该难度要求认识多少词，只有加词 / 降难度可解
+      // 篇幅门槛（md/30 §7.2）：写 targetWords 词至少要认识 minKnown 个
       knownWords: known.knownWords,
-      requiredKnown: known.requiredKnown,
-      knownSufficient: known.sufficient,
-      knownShortage: known.shortage,
-      // C 生词预算，以及该难度允许的篇幅上限（前端滑块的 max）
+      personalWords,
+      minKnown,
       unknownBudget: unknownBudgetFor(level, config.maxUnknownWordsOverride),
-      maxTargetWords: limit.maxTargetWords,
-      targetWordsAllowed: targetWords <= limit.maxTargetWords,
+      maxTargetWords,
+      targetWordsAllowed: targetWords <= maxTargetWords,
+      // 解锁状态。`supported` 标明这一档有没有最终模式（只有 hard 有），
+      // 前端不必把 "hard" 写进页面逻辑。
+      finalMode: {
+        supported: level === 'hard',
+        unlocked: finalModeUnlocked,
+        unlockAt,
+        shortage: unlockShortage,
+        active: finalMode,
+      },
+      // 篇幅阶梯：按难度算，所以挂在档下面而不是顶层（md/30 §7.5 偏离记录）
+      lengths: ladder,
     }
   }
 
@@ -1052,6 +1147,15 @@ export async function getCapacity({ userId, query }) {
     wordRange: range,
     acceptedRange: planAcceptedRange(targetWords),
     available,
+    // 三个顶层汇总字段：与 personalWords 并排放，前端能看到「已知词 3180 / 个人词库 2562」
+    knownWords,
+    personalWords,
+    finalMode: {
+      unlocked: finalModeUnlocked,
+      unlockAt,
+      shortage: unlockShortage,
+      maxTargetWords: FINAL_MODE_MAX_WORDS,
+    },
     levels,
   }
 }

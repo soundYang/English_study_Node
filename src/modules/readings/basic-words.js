@@ -60,13 +60,14 @@ export const basicWordsByLevel = Object.freeze(
  * 但**生成链路不再按难度取表**——三档共用同一份白名单。
  *
  * 这样做把「难度」的承载物收敛到三处：
- *   · `LEVEL_LIMITS.requiredKnown` —— 要求你认识多少词（个人词库为主）
- *   · `LEVEL_LIMITS.maxTargetWords` —— 写多长
+ *   · `capacity-table.js` 的 `minKnownFor(N)` —— 写这么长要认识多少词（随篇幅走）
+ *   · `LEVEL_LIMITS.maxTargetWords` —— 写多长（最终模式另由 `maxTargetWordsFor` 给）
  *   · `LEVEL_LIMITS.unknownBudget`  —— 允许带几个生词
  * 不再有「基础表变大 ⇒ 难度变大」这个隐含杠杆。
  *
- * 代价（md/26 记录）：基础表从 2578 降到 600 后，hard 的 B 门要 3778 个已知词，
- * 意味着个人词库必须攒到 3159 个；medium 要 1281 个。
+ * 旧 B 门（`requiredKnown` = 3778，个人词库要攒到 3159）已于 md/30 §7 删除：
+ * 它不随篇幅变化，实测 600 词只要 704 个已知词。基础表 600 带来的「地板」效应
+ * 现在只体现在 `knownWords = personalWords + 618` 这一层。
  *
  * 参数保留只是为了让旧的调用点与测试不必同步改签名。
  */

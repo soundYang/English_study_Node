@@ -4,7 +4,8 @@ import { generateReadingSchema } from '../modules/readings/reading.schema.js'
 import {
   ApiError,
   ERROR_CODES,
-  knownWordsTooSmall,
+  finalModeLocked,
+  knownWordsBelowLength,
   targetWordsTooLong,
   vocabularyTooSmall,
 } from '../shared/errors.js'
@@ -118,25 +119,53 @@ describe('vocabularyTooSmall', () => {
   })
 })
 
-describe('B 门 — 已知词汇量不够', () => {
-  it('422，kind=known_words，挂在 level 上，文案给出还差多少个', () => {
-    const error = knownWordsTooSmall({ level: 'medium', required: 1900, available: 1758 })
+describe('篇幅门槛 — 已知词不够写这么长（md/30 §7.4）', () => {
+  it('422，kind=known_words，挂在 targetWords 上，文案给出差额', () => {
+    const error = knownWordsBelowLength({
+      level: 'medium',
+      targetWords: 400,
+      required: 690,
+      available: 658,
+    })
 
     expect(error).toBeInstanceOf(ApiError)
     expect(error.status).toBe(422)
     expect(error.code).toBe(ERROR_CODES.VOCABULARY_TOO_SMALL)
-    expect(error.field).toBe('level')
+    // 门槛随篇幅走，用户能做的动作是缩篇幅 → 挂在 targetWords 而不是 level 上
+    expect(error.field).toBe('targetWords')
     expect(error.details).toEqual({
       kind: 'known_words',
       level: 'medium',
-      required: 1900,
-      available: 1758,
-      shortage: 142,
+      targetWords: 400,
+      required: 690,
+      available: 658,
+      shortage: 32,
     })
     // 与界面按钮同一套叫法（进阶 / 挑战），不是「中等 / 困难」
-    expect(error.message).toContain('进阶模式需要认识约 1900 个单词')
-    expect(error.message).toContain('当前已有 1758 个（还差 142 个）')
+    expect(error.message).toContain('写 400 词的文章需要认识约 690 个单词')
+    expect(error.message).toContain('当前已有 658 个（还差 32 个）')
+    expect(error.message).toContain('请缩短篇幅，或添加更多单词')
     expect(error.message).not.toContain('medium')
+  })
+})
+
+describe('最终模式未解锁', () => {
+  it('400，kind=final_mode_locked，口径写清是个人词库而不是 knownWords', () => {
+    const error = finalModeLocked({ targetWords: 800, available: 1200, unlockAt: 3000 })
+
+    expect(error.status).toBe(400)
+    expect(error.code).toBe(ERROR_CODES.INVALID_REQUEST)
+    expect(error.field).toBe('targetWords')
+    expect(error.details).toEqual({
+      kind: 'final_mode_locked',
+      targetWords: 800,
+      metric: 'personal_words',
+      unlockAt: 3000,
+      available: 1200,
+      shortage: 1800,
+    })
+    expect(error.message).toContain('需要个人词库里有 3000 个单词才能解锁')
+    expect(error.message).toContain('当前有 1200 个（还差 1800 个）')
   })
 })
 
@@ -152,9 +181,22 @@ describe('篇幅门 — 该难度不支持这么长', () => {
       level: 'easy',
       targetWords: 400,
       maxTargetWords: 300,
+      finalModeUnlocked: false,
     })
     expect(error.message).toContain('简单模式最高支持 300 词')
     expect(error.message).toContain('本次请求 400 词')
+  })
+
+  it('已解锁时不再提示「提高难度」——hard 已经是最高档', () => {
+    const error = targetWordsTooLong({
+      level: 'hard',
+      targetWords: 1200,
+      maxTargetWords: 1000,
+      finalModeUnlocked: true,
+    })
+
+    expect(error.message).not.toContain('提高难度')
+    expect(error.details.finalModeUnlocked).toBe(true)
   })
 })
 

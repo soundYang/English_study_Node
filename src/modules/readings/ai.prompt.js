@@ -35,16 +35,23 @@ function questionTypeRule(level) {
  * **句子预算**：模型数不准词，却数得清自己写了几句。
  * W7 起每句基准词数由难度决定（easy 12 / medium 15 / hard 19）。
  */
-function systemPrompt(range, level) {
+function systemPrompt(range, level, freeForm = false) {
   const budget = planSentenceBudget(range, level)
+  // 最终模式（md/30 §7.3）：没有目标词，清单少一份，第 5、6 条换成自由写作口径。
+  // 不换的话模型会去找一份不存在的【目标词】，抽风式重复某个词来「凑」。
+  const wordRule = freeForm
+    ? '1. 只能使用【补充可用词】【基础词】两份清单里出现的单词，以及它们的合法词形变化（复数、第三人称单数、规则过去式、现在分词、比较级、最高级）。'
+    : '1. 只能使用【目标词】【补充可用词】【基础词】三份清单里出现的单词，以及它们的合法词形变化（复数、第三人称单数、规则过去式、现在分词、比较级、最高级）。'
+  const targetRule = freeForm
+    ? '5. 本次没有指定的目标词：正文不要求出现任何特定单词，从清单里自由选词即可。\n6. 优先保证文章通顺可读，不要为了用某个词写出不自然的句子。'
+    : '5. 【目标词】清单里的单词必须全部出现在正文中：带 ★ 的重点词各出现 2–3 次，其余目标词各出现 1–2 次。\n6. 不要为了凑目标词写出不自然的句子。实在放不进去时，优先保证文章通顺可读。'
 
   return `你是英语阅读材料的编写者。你必须严格遵守以下规则：
-1. 只能使用【目标词】【补充可用词】【基础词】三份清单里出现的单词，以及它们的合法词形变化（复数、第三人称单数、规则过去式、现在分词、比较级、最高级）。
+${wordRule}
 2. 不得为了表达需要使用表外词汇。需要表达表外概念时，改写句子，而不是换词。
-3. 文章必须语法正确、逻辑连贯。难度由两件事共同决定：句式复杂度（easy 用短句和常见句式；medium 允许句子连接与人物互动；hard 允许更长的从句和更复杂的信息组织）和用词层级（easy 以【基础词】为主，hard 可以更多使用【目标词】与【补充可用词】）。
+3. 文章必须语法正确、逻辑连贯。难度由两件事共同决定：句式复杂度（easy 用短句和常见句式；medium 允许句子连接与人物互动；hard 允许更长的从句和更复杂的信息组织）和用词层级（easy 以【基础词】为主，hard 可以更多使用${freeForm ? '【补充可用词】' : '【目标词】与【补充可用词】'}）。
 4. 难度提升只能通过句式和情节复杂度实现，不能通过引入生词实现。
-5. 【目标词】清单里的单词必须全部出现在正文中：带 ★ 的重点词各出现 2–3 次，其余目标词各出现 1–2 次。
-6. 不要为了凑目标词写出不自然的句子。实在放不进去时，优先保证文章通顺可读。
+${targetRule}
 7. 正文必须控制在 ${range.min}–${range.max} 个英文单词之间（目标约 ${range.target} 词）：共 ${budget.minSentences}–${budget.maxSentences} 个句子，每句 ${formatWordsPerSentence(budget)} 个英文单词。不含题目、解析和中文翻译。少于 ${range.min} 词或多于 ${range.max} 词都不合格。
 8. 需要人名时最多使用 3 个，并在 names 字段里声明；除人名和星期、月份名称外，不得出现其他专有名词。
 9. 题目必须能根据文章内容回答，每题只有一个正确答案，四个选项互不重复。
@@ -130,6 +137,7 @@ function renderWordSections({ focusWords, targetWordList, supportWords, basicWor
  *   targetWordList?: string[],  // 普通目标词
  *   supportWords?: string[],    // 池内但不必出现的词
  *   basicWords?: string[],      // 个人基础词
+ *   freeForm?: boolean,         // 最终模式：不设目标词（md/30 §7.3）
  * }} params
  * @returns {Array<{ role: 'system' | 'user', content: string }>}
  */
@@ -141,6 +149,7 @@ export function buildMessages({
   targetWordList = [],
   supportWords = [],
   basicWords = [],
+  freeForm = false,
 }) {
   const sections = renderWordSections({
     focusWords: [...focusWords],
@@ -171,7 +180,7 @@ ${sections}
 }`
 
   return [
-    { role: 'system', content: systemPrompt(range, level) },
+    { role: 'system', content: systemPrompt(range, level, freeForm) },
     { role: 'user', content: userMessage },
   ]
 }
@@ -195,6 +204,7 @@ export function buildSegmentedSystem({
   focusWords = [],
   targetWordList = [],
   supportWords = [],
+  freeForm = false,
 }) {
   const sections = renderWordSections({
     focusWords: [...focusWords],
@@ -203,15 +213,24 @@ export function buildSegmentedSystem({
     basicWords: [...basicWords],
   })
 
+  // 最终模式（md/30 §7.3）：没有目标词清单，第 1、5、6 条换成自由写作口径。
+  // 这条分支必须和 renderWordSections 的空列表分支同时生效，
+  // 否则模型会被要求「用不存在的【目标词】」而开始复读某个词。
+  const wordRule = freeForm
+    ? '1. 只能使用下面两份清单里的单词，以及它们的合法词形变化（复数、第三人称单数、规则过去式、现在分词、比较级、最高级）。'
+    : '1. 只能使用下面三份清单里的单词，以及它们的合法词形变化（复数、第三人称单数、规则过去式、现在分词、比较级、最高级）。'
+  const targetRule = freeForm
+    ? '5. 本次没有指定的目标词：全文不要求出现任何特定单词，从清单里自由选词即可。\n6. 优先保证文章通顺可读，不要为了用某个词写出不自然的句子。'
+    : '5. 【目标词】清单里的单词必须全部出现在全文里：带 ★ 的重点词各出现 2–3 次，其余目标词各出现 1–2 次。\n6. 不要为了凑目标词写出不自然的句子。实在放不进去时，优先保证文章通顺可读。'
+
   return `你是英语阅读材料的编写者。整篇文章分三步完成：先规划段落，再逐段写作，最后补标题、翻译与题目。你会分多次收到任务，每次只完成当前步骤，并且只输出一个 json 对象。
 
 写作规则：
-1. 只能使用下面三份清单里的单词，以及它们的合法词形变化（复数、第三人称单数、规则过去式、现在分词、比较级、最高级）。
+${wordRule}
 2. 不得为了表达需要使用表外词汇。需要表达表外概念时，改写句子，而不是换词。
 3. 每一段必须语法正确，并与前后段连贯：人物、时间、地点不能互相矛盾。
 4. 难度（${level}）只能通过句式和情节复杂度提升，不能通过引入生词实现。
-5. 【目标词】清单里的单词必须全部出现在全文里：带 ★ 的重点词各出现 2–3 次，其余目标词各出现 1–2 次。
-6. 不要为了凑目标词写出不自然的句子。实在放不进去时，优先保证文章通顺可读。
+${targetRule}
 7. 分段写作时，每段控制在本段要求的词数附近，每句约 ${wordsPerSentenceFor(level)} 个英文单词（本难度的句长基准）；各段合起来要接近全篇目标（约 ${targetWords} 词）。
 8. 需要人名时最多使用 3 个，并在 names 字段里声明；除人名和星期、月份名称外，不得出现其他专有名词。
 9. 题目必须能根据文章内容回答，每题只有一个正确答案，四个选项互不重复。

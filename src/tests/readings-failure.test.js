@@ -19,6 +19,9 @@ const { Word } = await import('../modules/words/word.model.js')
 
 const app = createApp()
 
+/** 基础（600）∪ 日历词的去重大小 = 618：knownWords 的地板（md/30 §7.1） */
+const BASE_UNION = 618
+
 const ARTICLE =
   'Tom is a good boy. His book is big and the boy is small. Tom and his book play in the house. The book runs and the boy runs too. They are good friends. Tom likes his book very much.'
 
@@ -84,10 +87,10 @@ describe('生成失败留痕 · 只有生成流程内的失败才入库', () => 
     expect(await GenerationFailure.countDocuments()).toBe(0)
   })
 
-  it('候选池不够 → 422 且留痕，带选池数字但没有模型轮次', async () => {
+  it('已知词不够写这么长 → 422 且留痕，带篇幅门槛数字但没有模型轮次', async () => {
     await seedWords(45)
 
-    // hard + 600 词：目标词 60，门槛 ceil(60 ÷ 0.7) = 86 > 45
+    // hard + 600 词：minKnown(600) = 704 > 45 + 618 = 663
     const res = await generate({ level: 'hard', targetWords: 600, questionCount: 3 })
 
     expect(res.status).toBe(422)
@@ -99,8 +102,11 @@ describe('生成失败留痕 · 只有生成流程内的失败才入库', () => 
     expect(failure.errorCode).toBe('VOCABULARY_TOO_SMALL')
     expect(failure.level).toBe('hard')
     expect(failure.targetWords).toBe(600)
-    expect(failure.available).toBe(45)
-    expect(failure.requiredWords).toBe(60)
+    // md/30 §7 之后：失败样本记的是篇幅门槛，不再是按难度写死的 requiredKnown
+    expect(failure.minKnown).toBe(704)
+    expect(failure.knownWords).toBe(45 + BASE_UNION)
+    expect(failure.personalWords).toBe(45)
+    expect(failure.finalMode).toBe(false)
     // 一次模型都没调，轮次为空是正确结果，不是丢数据
     expect(failure.rounds).toHaveLength(0)
     expect(failure.finalArticle).toBe('')

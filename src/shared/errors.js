@@ -127,16 +127,41 @@ export const vocabularyTooSmall = ({
  *
  * 与 422 分开：这不是「你词不够」，而是「这个组合不存在」。
  * 滑块上限应当直接读 /capacity 的 maxTargetWords，正常前端走不到这里。
+ *
+ * `finalModeUnlocked` 让前端能区分「提高难度就有」与「再难也只有 600」：
+ * 没解锁时文案提示去攒个人词库，而不是让用户反复点滑块试。
  */
-export const targetWordsTooLong = ({ level, targetWords, maxTargetWords }) =>
+export const targetWordsTooLong = ({ level, targetWords, maxTargetWords, finalModeUnlocked = false }) =>
   new ApiError(
     400,
     ERROR_CODES.INVALID_REQUEST,
     `${LEVEL_LABELS[level] ?? level}模式最高支持 ${maxTargetWords} 词（本次请求 ${targetWords} 词）。`
-      + '请缩短篇幅，或提高难度。',
+      + (finalModeUnlocked ? '请缩短篇幅。' : '请缩短篇幅，或提高难度。'),
     'targetWords',
-    { kind: 'target_words_cap', level, targetWords, maxTargetWords },
+    { kind: 'target_words_cap', level, targetWords, maxTargetWords, finalModeUnlocked },
   )
+
+/**
+ * 400：要写最终模式的长文，但个人词库还没攒够（md/30 §2.2、§7.4）。
+ *
+ * 和 `targetWordsTooLong` 分开报：同样是 400，用户能做的动作完全不同——
+ * 这个是「去背单词」，那个是「缩短篇幅」。合并成一个码，前端只能两句话都写。
+ *
+ * `metric: 'personal_words'` 强调口径：解锁看的是个人词库条数（learning + mastered），
+ * **不是** `knownWords`（那个还含 600 个基础词）。差 618 的两个数并列会让人以为算错了。
+ */
+export const finalModeLocked = ({ targetWords, available, unlockAt }) => {
+  const shortage = Math.max(0, unlockAt - available)
+
+  return new ApiError(
+    400,
+    ERROR_CODES.INVALID_REQUEST,
+    `写 ${targetWords} 词的长文属于「最终模式」，需要个人词库里有 ${unlockAt} 个单词才能解锁，`
+      + `当前有 ${available} 个（还差 ${shortage} 个）。请缩短篇幅，或继续添加单词。`,
+    'targetWords',
+    { kind: 'final_mode_locked', targetWords, metric: 'personal_words', unlockAt, available, shortage },
+  )
+}
 
 /**
  * 502：分段路径丢段过多，成文残缺（md/23 D2 / md/27 §3）。
@@ -155,22 +180,26 @@ export const articleTooIncomplete = ({ accepted, total, actualWords, minAcceptan
   )
 
 /**
- * 422：已知词汇量达不到该难度的下限（md/20 §2.1 的 B 门）。
+ * 422：已知词汇量写不了这么长的文章（md/30 §7.4，取代旧的 B 门 `knownWordsTooSmall`）。
+ *
+ * 门槛不再按难度写死，而是随篇幅走：`minKnownFor(N)`。
+ * `required` 就是这个数，前端拿它画进度条即可，不必自己折算。
  *
  * `available` 是**并集**后的已知词数（含基础词表），不是个人词库条数——
  * 用户看到「当前已有 1180 个」时会疑惑自己只背了 700 个，所以文案里写明口径。
  */
-export const knownWordsTooSmall = ({ level, required, available }) =>
+export const knownWordsBelowLength = ({ level, targetWords, required, available }) =>
   new ApiError(
     422,
     ERROR_CODES.VOCABULARY_TOO_SMALL,
-    `${LEVEL_LABELS[level] ?? level}模式需要认识约 ${required} 个单词（个人词库 + 基础词表），`
+    `写 ${targetWords} 词的文章需要认识约 ${required} 个单词（个人词库 + 基础词表），`
       + `当前已有 ${available} 个（还差 ${Math.max(0, required - available)} 个）。`
-      + '请添加更多单词，或降低难度。',
-    'level',
+      + '请缩短篇幅，或添加更多单词。',
+    'targetWords',
     {
       kind: 'known_words',
       level,
+      targetWords,
       required,
       available,
       shortage: Math.max(0, required - available),
