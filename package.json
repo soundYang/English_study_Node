@@ -15,7 +15,11 @@
     "build:dictionary": "node scripts/build-dictionary.mjs",
     "build:basic-words": "node scripts/build-basic-words.mjs",
     "seed:fixtures": "node scripts/seed-test-fixtures.mjs",
-    "batch:generate": "node scripts/batch-generate.mjs"
+    "batch:generate": "node scripts/batch-generate.mjs",
+    "fixtures:export": "node scripts/export-replay-fixtures.mjs",
+    "replay": "node scripts/replay-suite.mjs",
+    "replay:report": "node scripts/replay-suite.mjs --report",
+    "replay:update": "node scripts/replay-suite.mjs --update"
   },
   "dependencies": {
     "cors": "2.8.6",
