@@ -220,6 +220,26 @@ describe('validateArticle · 违规词分类', () => {
     )
   })
 
+  it('词本身没排名时退到词形：helpers → helper(9110) → rare，而不是 unknown_token', () => {
+    // 只看词本身会把所有规则复数都判成"生造词"
+    expect(categoriesOf('She had helpers there.', ['she', 'had', 'there'])).toEqual([
+      ['helpers', 'rare'],
+    ])
+  })
+
+  it('连字符词各段都放行 → wordform：切词没拆开，属于校验器的 bug', () => {
+    // 实测真实文章里 part(178) + time(52) 都在表内，part-time 却被判违规
+    expect(categoriesOf('It was a part-time job.', ['it', 'was', 'a', 'job', 'part', 'time'])).toEqual(
+      [['part-time', 'wordform']],
+    )
+  })
+
+  it('连字符词有一段不在表内 → 仍按排名判，不硬塞进 wordform', () => {
+    expect(categoriesOf('It was a part-time job.', ['it', 'was', 'a', 'job', 'time'])).toEqual([
+      ['part-time', 'rare'],
+    ])
+  })
+
   it('counts 与 violations 一一对应', () => {
     const result = validateArticle({
       article: 'He met Anna. Kindness and business matter.',

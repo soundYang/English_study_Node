@@ -220,6 +220,25 @@ function naiveStems(word) {
 }
 
 /**
+ * 查排名，词本身没有时退到词形候选。
+ *
+ * COCA 词元表里只有原形：`helpers` 查不到，`helper` 排 9110。
+ * 只看词本身会让所有规则复数、过去式都掉进 `unknown_token`（生造词），
+ * 那是错的——它们是低频词，不是模型编出来的词。
+ */
+function rankOf(word) {
+  const own = getWordRank(word)
+  if (own !== null) return own
+
+  for (const form of resolveBaseForms(word)) {
+    const rank = getWordRank(form)
+    if (rank !== null) return rank
+  }
+
+  return null
+}
+
+/**
  * 违规词分类（方案 §3.2.2）。按顺序判定，命中即停。
  *
  * 顺序不能改：先用 1、3 排掉「不是词本身的问题」，再用 4–6 判「是不是缺词」。
@@ -235,10 +254,21 @@ function classify({ word, allowed, meta }) {
   // 2. 专名：句中首字母大写。放行策略在 §4.1，这里只负责认出来
   if (meta.midSentenceCapitalized) return 'proper_noun'
 
-  // 3. 词形：朴素还原能命中允许词表，说明是词形表缺条目
+  // 3. 词形 / 切词：命中说明问题在还原规则，不在词表
+  //    3a. 朴素还原能命中允许词表
   if (naiveStems(word).some((stem) => allowed.has(stem))) return 'wordform'
 
-  const rank = getWordRank(word)
+  //    3b. 连字符词按段拆开后每段都放行（part-time、well-known），
+  //        说明是切词没拆开。**只改分类不改放行**：真拆词是策略改动，
+  //        会让这类词直接合规，属于 §4.3 的范围。
+  if (word.includes('-')) {
+    const parts = word.split('-')
+    if (parts.length > 1 && parts.every((part) => part && isAllowed(part, allowed))) {
+      return 'wordform'
+    }
+  }
+
+  const rank = rankOf(word)
 
   // 4. 常用词缺表：COCA 前 3000，加上它就能过
   if (rank !== null && rank <= COMMON_WORD_RANK) return 'missing_common'
