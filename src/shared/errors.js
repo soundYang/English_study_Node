@@ -60,6 +60,12 @@ export const ERROR_CODES = Object.freeze({
   TASK_NOT_FOUND: 'TASK_NOT_FOUND',
   TASK_IN_PROGRESS: 'TASK_IN_PROGRESS',
   TASK_INTERRUPTED: 'TASK_INTERRUPTED',
+  // ——— 鉴权（md/33 §6.3）：验证码两个码**必须分开** ———
+  // CAPTCHA_INVALID = 码错了（图还能用，但一次失败即作废，见 captcha.model.js）；
+  // CAPTCHA_EXPIRED = 过期或已被用过，前端必须自动换一张图。
+  // 合成一个码的话，前端分不清「提示输错」还是「换图」。
+  CAPTCHA_INVALID: 'CAPTCHA_INVALID',
+  CAPTCHA_EXPIRED: 'CAPTCHA_EXPIRED',
   INTERNAL_ERROR: 'INTERNAL_ERROR',
 })
 
@@ -289,3 +295,18 @@ export const basicWordAlreadyLearned = (word, status) =>
 
 export const basicWordNotRemoved = (word) =>
   conflict(ERROR_CODES.BASIC_WORD_NOT_REMOVED, `“${word}”没有被移除，无需恢复。`)
+
+/**
+ * 400：验证码输错了（md/33 §5.3）。
+ *
+ * 挂 `captchaCode` 字段，前端可以直接把提示写在输入框下面。
+ * 注意语义：**这次输错的同时，这张图已经被消耗掉了**（校验即删除），
+ * 所以前端无论如何都要换一张图——只是文案不同：这里说「不对」，
+ * CAPTCHA_EXPIRED 说「已过期」。
+ */
+export const captchaInvalid = () =>
+  new ApiError(400, ERROR_CODES.CAPTCHA_INVALID, '验证码不对，请重新输入', 'captchaCode')
+
+/** 400：验证码过期，或者已经被用过一次（含刚才失败的那次） */
+export const captchaExpired = () =>
+  new ApiError(400, ERROR_CODES.CAPTCHA_EXPIRED, '验证码已过期，请换一张', 'captchaCode')
