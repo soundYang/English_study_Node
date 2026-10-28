@@ -3,6 +3,7 @@ import { Router } from 'express'
 import { config } from '../../config/index.js'
 import { createIpLimiter } from '../../shared/middleware/rateLimit.js'
 import { changePassword, getProfile, updateProfile } from './profile.service.js'
+import { getProfileStats } from './profile.stats.js'
 
 /**
  * 个人中心路由（md/33 §6.1）。
@@ -28,6 +29,15 @@ router.get('/', (req, res) => {
 
 router.patch('/', async (req, res) => {
   res.json(await updateProfile({ user: req.auth.user, body: req.body ?? {} }))
+})
+
+/**
+ * 统计不挂限流：一次 Mongo 聚合，不花钱、不调模型。
+ * md/21 W9 的教训是只读接口被顺带塞进生成桶，这里不再犯。
+ */
+router.get('/stats', async (req, res) => {
+  // 统计的是业务数据，归属看 dataKey（不是 users._id）
+  res.json(await getProfileStats({ userId: req.auth.user.dataKey }))
 })
 
 router.post('/password', passwordLimiter, async (req, res) => {
