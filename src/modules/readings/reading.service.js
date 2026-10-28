@@ -199,6 +199,7 @@ function recordRound({ rounds, state, content, diag }) {
   last.unknownWords = state.vocabulary?.unknownWords ?? []
   // 没有 vocabulary 说明这一轮根本没跑词汇校验（结构不合法/篇幅超长），
   // 此时不写 counts，让它保持 undefined——写成 0 会被读成「查了，没问题」。
+  // 唯一的事后补写：篇幅额度用尽仍超长时，generateReading 会对最终正文补查一次（§6.8）。
   if (state.vocabulary) last.counts = state.vocabulary.counts
   last.feedbackType = state.feedback?.type ?? null
   diag.state = state
@@ -548,10 +549,34 @@ async function generateReadingInner({ userId, body, signal, diag }) {
 
   const data = state.result.data
   const actualWords = countWords(data.article)
-  const unknownWords = state.vocabulary?.unknownWords ?? []
 
-  // evaluate() 已经保证不超过额度，这里是防御：任何路径下都不该写出满篇生词
-  if (unknownWords.length > config.maxUnknownWords) {
+  // 篇幅额度用尽后仍然超长时，evaluate() 停在 word_count 分支就返回了，没跑词汇校验。
+  // 超长本身照旧放行（界面展示真实词数），但生词必须查出来：否则 unknownWords
+  // 恒为空，库里最"干净"的那批文章恰恰是没查过的（§6.8）。
+  // 这里只补诊断：不追加模型调用、不占额度、也不因此判 422。
+  const lateVocabulary = !state.vocabulary
+  if (lateVocabulary) {
+    state.vocabulary = validateArticle({
+      article: data.article,
+      allowedWords,
+      names: data.names,
+    })
+    // 补查的是最后一轮的原文，结果就落到这一轮上；中间那些被丢弃的超长轮次
+    // 保持 undefined——它们确实没查过，补写会把统计口径弄回去
+    const last = rounds.at(-1)
+    if (last) {
+      last.unknownWords = state.vocabulary.unknownWords
+      last.counts = state.vocabulary.counts
+    }
+    diag.state = state
+  }
+
+  const unknownWords = state.vocabulary.unknownWords
+
+  // evaluate() 已经保证不超过额度，这里是防御：任何路径下都不该写出满篇生词。
+  // 唯一的例外是上面补查的超长文章：它已经没有额度可用了，再拦下来等于白白烧掉
+  // 几次调用，只记日志，让「超长 + 生词超标」在日志和 aiMeta 里都看得见。
+  if (unknownWords.length > config.maxUnknownWords && !lateVocabulary) {
     logger.warn(
       {
         violations: state.vocabulary.violations.slice(0, 20),
@@ -566,6 +591,19 @@ async function generateReadingInner({ userId, body, signal, diag }) {
       422,
       ERROR_CODES.VOCABULARY_VALIDATION_FAILED,
       `文章使用了 ${unknownWords.length} 个不在词汇表内的单词：${unknownWords.slice(0, 5).join('、')}`,
+    )
+  }
+
+  if (lateVocabulary && unknownWords.length > config.maxUnknownWords) {
+    logger.warn(
+      {
+        violations: state.vocabulary.violations.slice(0, 20),
+        violationCount: unknownWords.length,
+        actualWords,
+        finishReason,
+        repairRounds,
+      },
+      'over-length article accepted with too many unknown words',
     )
   }
 
@@ -591,6 +629,8 @@ async function generateReadingInner({ userId, body, signal, diag }) {
       wordRange: range.label,
       deviation,
       unknownWordCount: newWords.length,
+      // true = 篇幅额度耗尽后补查的用词，这批文章的违规数以前是假的 0
+      lateVocabulary,
       finishReason,
       repairRounds,
       tokenUsage,

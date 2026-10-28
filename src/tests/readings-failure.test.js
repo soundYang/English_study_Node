@@ -25,6 +25,9 @@ const ARTICLE =
 /** 6 个必然不在词表里的词：超过 maxUnknownWords(5)，才会进入修正轮 */
 const OVER_LIMIT_ARTICLE = `${ARTICLE} Quizzical Zephyrish Brontide Crepuscule Farrago Panopticon.`
 
+/** 160 词：超过 easy/100 的篇幅上限（115），用来把重写额度耗光 */
+const LONG_ARTICLE = Array.from({ length: 4 }, () => ARTICLE).join(' ')
+
 /** 造一份合法的 AI 输出 */
 function makePayload({ questionCount = 3, article = ARTICLE } = {}) {
   return {
@@ -224,5 +227,33 @@ describe('生成失败留痕 · 只有生成流程内的失败才入库', () => 
     expect(doc.aiMeta.rounds[0].counts).toBeUndefined()
     expect(doc.aiMeta.rounds[1]).toMatchObject({ kind: 'repair', repairFor: 'word_count', feedbackType: null })
     expect(doc.aiMeta.rounds[1].counts).toMatchObject({ unknown_token: 0, missing_common: 0 })
+  })
+
+  it('篇幅额度用尽后仍超长：补查用词，照常放行但生词必须记下来', async () => {
+    await seedWords(29)
+    // 两次都超长且带 6 个生词：首轮触发重写，重写后额度耗尽 → 210 词版本被放行
+    chatJson.mockResolvedValue(
+      reply(makePayload({ article: `${LONG_ARTICLE} ${OVER_LIMIT_ARTICLE}` })),
+    )
+
+    const res = await generate(VALID_BODY)
+
+    expect(res.status).toBe(201)
+    // 篇幅额度只有 1 轮：生成 + 重写一次，第二次仍超长就停
+    expect(chatJson).toHaveBeenCalledTimes(2)
+
+    const doc = await Reading.findById(res.body.id).lean()
+    expect(doc.actualWords).toBeGreaterThan(115)
+    // §6.8：修复前这里恒为空——最「干净」的文章恰恰是没查过的
+    expect(doc.newWords).toHaveLength(6)
+    expect(doc.aiMeta.violationsCount).toBe(6)
+
+    const last = doc.aiMeta.rounds.at(-1)
+    expect(last.feedbackType).toBe('word_count')
+    expect(last.unknownWords).toHaveLength(6)
+    // 补查过的轮次必须写 counts，否则统计里这批文章还是「没查」
+    expect(Object.values(last.counts).reduce((sum, count) => sum + count, 0)).toBe(6)
+    // 首轮同样超长、同样被丢弃，但它没有被补查，仍然保持 undefined
+    expect(doc.aiMeta.rounds[0].counts).toBeUndefined()
   })
 })
