@@ -1,0 +1,98 @@
+
+[2026-10-28T08:32:40.335Z] base=http://127.0.0.1:3100 用例 8 条 × 3 次 = 24 次调用（真实付费）
+
+fixture rich（fixture-rich）：库里 900 词
+  # 1 run1  ok                     61词  5轮 252池 18251tok 7.8s  ✓
+  # 1 run2  ok                     98词  4轮 252池 16636tok 6.4s  ✓
+  # 1 run3  ok                     104词  3轮 252池 15189tok 6.3s  ✓
+  # 2 run1  ok                     153词  6轮 252池 22665tok 9.7s  ✓
+  # 2 run2  ok                     103词 10轮 252池 29960tok 9.3s  ✓
+  # 2 run3  ok                     169词  8轮 252池 26781tok 9.1s  ✓
+  # 3 run1  ok                     237词  8轮 252池 29324tok 11.6s  ✓
+  # 3 run2  ok                     292词  8轮 252池 29355tok 11.3s  ✓
+  # 3 run3  ok                     50词 13轮 252池 37861tok 11.6s  ✓
+  # 4 run1  ok                     193词  5轮 360池 30191tok 8.5s  ✓
+  # 4 run2  ok                     199词  3轮 360池 25051tok 8.2s  ✓
+  # 4 run3  ok                     201词  2轮 360池 22483tok 7.9s  ✓
+  # 5 run1  ok                     354词 13轮 360池 61385tok 14.9s  ✓
+  # 5 run2  AI_INVALID_RESPONSE     -词  8轮 360池 48947tok 14.6s  ✗
+  # 5 run3  ok                     401词 10轮 360池 53479tok 14.5s  ✓
+  # 6 run1  ok                     435词  8轮 360池 51705tok 15.4s  ✓
+  # 6 run2  ok                     472词  6轮 360池 46276tok 14.2s  ✓
+  # 6 run3  ok                     488词  8轮 360池 51820tok 13.9s  ✓
+  # 7 run1  ok                     384词  5轮 120池 36343tok 13.0s  ✓
+  # 7 run2  ok                     371词  6轮 120池 38706tok 12.4s  ✓
+  # 7 run3  AI_INVALID_RESPONSE     -词  4轮 120池 33639tok 11.1s  ✗
+  # 8 run1  ok                     145词  6轮  84池 20396tok 8.7s  ✓
+  # 8 run2  AI_INVALID_RESPONSE     -词  4轮  84池 17188tok 8.0s  ✗
+  # 8 run3  ok                     148词  6轮  84池 20443tok 10.0s  ✓
+
+结果已写入 samples/采样_rich.json
+
+汇总
+  共 24 次：成功 21｜失败 3｜判定不符 3｜失败未留痕 0
+  errorCode：{"AI_INVALID_RESPONSE":3}
+  候选池不一致的用例：无
+  # 1 easy   100词 all             成功 3/3 池 252 ✓
+  # 2 easy   200词 all             成功 3/3 池 252 ✓
+  # 3 easy   300词 all             成功 3/3 池 252 ✓
+  # 4 medium 200词 all             成功 3/3 池 360 ✓
+  # 5 medium 400词 all             成功 2/3 池 360 ✗
+  # 6 medium 450词 all             成功 3/3 池 360 ✓
+  # 7 medium 400词 today_new       成功 2/3 池 120 ✗
+  # 8 easy   200词 today_reviewed  成功 2/3 池 84 ✗
+  平均耗时 10763ms，平均 32670 tokens/次
+
+[2026-10-28T08:36:59.060Z] base=http://127.0.0.1:3102 用例 4 条 × 3 次 = 12 次调用（真实付费）
+
+fixture full（fixture-full）：库里 1800 词
+  # 9 run1  ok                     218词  2轮 800池 36170tok 8.3s  ✓
+  # 9 run2  ok                     232词  0轮 800池 27531tok 8.1s  ✓
+  # 9 run3  ok                     202词  0轮 800池 27563tok 7.5s  ✓
+  #10 run1  ok                     436词  5轮 800池 64734tok 13.5s  ✓
+  #10 run2  ok                     432词  3轮 800池 55704tok 13.3s  ✓
+  #10 run3  ok                     405词  2轮 800池 50885tok 11.4s  ✓
+  #11 run1  ok                     673词  8轮 800池 92730tok 17.7s  ✓
+  #11 run2  ok                     640词  6轮 800池 83775tok 17.7s  ✓
+  #11 run3  ok                     730词 10轮 800池 102275tok 20.6s  ✓
+  #12 run1  ok                     377词  3轮 420池 50194tok 12.6s  ✓
+  #12 run2  ok                     490词  6轮 420池 63098tok 14.6s  ✓
+  #12 run3  ok                     446词  6轮 420池 62830tok 14.0s  ✓
+
+结果已写入 samples/采样_full.json
+
+汇总
+  共 12 次：成功 12｜失败 0｜判定不符 0｜失败未留痕 0
+  errorCode：{}
+  候选池不一致的用例：无
+  # 9 hard   200词 all             成功 3/3 池 800 ✓
+  #10 hard   400词 all             成功 3/3 池 800 ✓
+  #11 hard   600词 all             成功 3/3 池 800 ✓
+  #12 hard   400词 today_reviewed  成功 3/3 池 420 ✓
+  平均耗时 13265ms，平均 59791 tokens/次
+
+[2026-10-28T08:39:38.686Z] base=http://127.0.0.1:3101 用例 3 条 × 3 次 = 9 次调用（真实付费）
+
+fixture thin（fixture-thin）：库里 120 词
+  #13 run1  VOCABULARY_TOO_SMALL    -词  0轮  42池     0tok 0.1s  ✓
+  #13 run2  VOCABULARY_TOO_SMALL    -词  0轮  42池     0tok 0.0s  ✓
+  #13 run3  VOCABULARY_TOO_SMALL    -词  0轮  42池     0tok 0.0s  ✓
+  #14 run1  VOCABULARY_TOO_SMALL    -词  0轮  60池     0tok 0.0s  ✓
+  #14 run2  VOCABULARY_TOO_SMALL    -词  0轮  60池     0tok 0.0s  ✓
+  #14 run3  VOCABULARY_TOO_SMALL    -词  0轮  60池     0tok 0.0s  ✓
+  #15 run1  VOCABULARY_TOO_SMALL    -词  0轮  84池     0tok 0.0s  ✓
+  #15 run2  VOCABULARY_TOO_SMALL    -词  0轮  84池     0tok 0.0s  ✓
+  #15 run3  VOCABULARY_TOO_SMALL    -词  0轮  84池     0tok 0.0s  ✓
+
+结果已写入 samples/采样_thin.json
+
+汇总
+  共 9 次：成功 0｜失败 9｜判定不符 0｜失败未留痕 0
+  errorCode：{"VOCABULARY_TOO_SMALL":9}
+  候选池不一致的用例：无
+  #13 easy   300词 all             成功 0/3 池 42 ✓
+  #14 medium 400词 all             成功 0/3 池 60 ✓
+  #15 hard   600词 all             成功 0/3 池 84 ✓
+  平均耗时 16ms，平均 0 tokens/次
+
+[exited with code 0]

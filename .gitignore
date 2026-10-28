@@ -7,4 +7,8 @@ coverage/
 *.bak
 
 # batch-generate.mjs 的采样产物：每次跑都变，属于运行结果不是源码
-samples/
+# 例外：整轮采样的归档要进仓库（复盘/回归用），按日期建目录
+samples/*
+!samples/2026-10-28/
+# 归档里的采样日志也要进仓库（上面的 *.log 仍忽略其它地方）
+!samples/2026-10-28/*.log
