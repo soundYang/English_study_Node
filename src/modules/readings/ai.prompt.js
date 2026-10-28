@@ -149,6 +149,183 @@ ${sections}
   ]
 }
 
+// ——————————————————————————————————————————————————————————————
+// 分段路径（md/21 W4 / md/20 §5）
+//
+// 规划、分段、收尾三次任务共用一个 system 消息，且**必须逐字节一致**：
+// DeepSeek 的前缀缓存按前缀命中，system 里一掺进「第几段」这种变量，
+// 后面每一次调用都会重新计费输入 token（成本翻 2–3 倍）。
+// ——————————————————————————————————————————————————————————————
+
+/**
+ * 分段路径的 system 消息：规则 + 三份词表，与具体段落无关。
+ * 调用方建一次，规划 / 每段 / 收尾全部原样复用。
+ */
+export function buildSegmentedSystem({
+  level,
+  targetWords,
+  basicWords = [],
+  focusWords = [],
+  targetWordList = [],
+  supportWords = [],
+}) {
+  const sections = renderWordSections({
+    focusWords: [...focusWords],
+    targetWordList: [...targetWordList],
+    supportWords: [...supportWords],
+    basicWords: [...basicWords],
+  })
+
+  return `你是英语阅读材料的编写者。整篇文章分三步完成：先规划段落，再逐段写作，最后补标题、翻译与题目。你会分多次收到任务，每次只完成当前步骤，并且只输出一个 json 对象。
+
+写作规则：
+1. 只能使用下面三份清单里的单词，以及它们的合法词形变化（复数、第三人称单数、规则过去式、现在分词、比较级、最高级）。
+2. 不得为了表达需要使用表外词汇。需要表达表外概念时，改写句子，而不是换词。
+3. 每一段必须语法正确，并与前后段连贯：人物、时间、地点不能互相矛盾。
+4. 难度（${level}）只能通过句式和情节复杂度提升，不能通过引入生词实现。
+5. 【目标词】清单里的单词必须全部出现在全文里：带 ★ 的重点词各出现 2–3 次，其余目标词各出现 1–2 次。
+6. 不要为了凑目标词写出不自然的句子。实在放不进去时，优先保证文章通顺可读。
+7. 分段写作时，每段控制在本段要求的词数附近；各段合起来要接近全篇目标（约 ${targetWords} 词）。
+8. 需要人名时最多使用 3 个，并在 names 字段里声明；除人名和星期、月份名称外，不得出现其他专有名词。
+9. 题目必须能根据文章内容回答，每题只有一个正确答案，四个选项互不重复。
+10. 中文翻译必须与英文正文逐段对应，不得增删内容。
+11. 只输出当前步骤要求的 json 对象，不要输出 Markdown 代码块标记或任何解释性文字。
+
+${sections}`
+}
+
+/**
+ * ① 规划：一次调用产出段落计划。
+ * 模型给不全时由代码补齐（plan.service.js），**不重试调用**。
+ */
+export function buildPlanMessages(system, { segmentCount, range }) {
+  return [
+    { role: 'system', content: system },
+    {
+      role: 'user',
+      content: `请把一篇约 ${range.target} 词（必须落在 ${range.min}–${range.max} 词）的英语短文拆成 ${segmentCount} 段。
+
+每段给出：
+- goal：这一段写什么，用中文一句话
+- mustUse：这一段必须用到的目标词，只能从【目标词】里选
+- maxWords：这一段大约多少个英文单词
+
+要求：所有段落的 mustUse 合起来必须覆盖【目标词】里的每一个词，同一个词只能出现一次；各段 maxWords 之和要接近 ${range.target}。
+
+只输出：
+{"segments":[{"id":1,"goal":"…","mustUse":["…"],"maxWords":50}]}`,
+    },
+  ]
+}
+
+/** ② 分段写作：只带本段目标与相邻段的方向，不带全篇正文 */
+export function buildSegmentMessages(
+  system,
+  { segment, index, total, outline = '', previousGoal = '', nextGoal = '' },
+) {
+  const mustUse = segment.mustUse.length
+    ? `本段必须出现的目标词（共 ${segment.mustUse.length} 个）：${segment.mustUse.join(', ')}`
+    : '本段没有指定必须出现的目标词。'
+  const context = [
+    previousGoal ? `上一段的方向：${previousGoal}` : '',
+    nextGoal ? `下一段的方向：${nextGoal}` : '',
+  ]
+    .filter(Boolean)
+    .join('\n')
+
+  return [
+    { role: 'system', content: system },
+    {
+      role: 'user',
+      content: `全文计划：
+${outline}
+
+第 ${index}/${total} 段。
+本段目标：${segment.goal}
+${mustUse}
+本段篇幅：约 ${segment.maxWords} 个英文单词。
+${context ? `${context}\n` : ''}
+只写这一段的英文正文，不要标题、翻译、题目。输出：
+{"text":"这一段英文"}`,
+    },
+  ]
+}
+
+/**
+ * ③ 段内重写：只重写这一段，且**允许删掉这个意思**。
+ * 这是整篇重写收敛不了的根本原因——旧提示词只允许换词，
+ * 模型找不到词表内的替代说法时只能再编一个表外词。
+ */
+export function buildSegmentRepairMessages(system, { segment, index, text, violations }) {
+  const words = violations.map(({ normalized }) => normalized).join(', ')
+  const snippets = violations
+    .slice(0, INLINE_VIOLATION_LIMIT)
+    .filter(({ sentence }) => sentence)
+    .map(({ normalized, sentence }) => `- "${normalized}"：${truncate(sentence)}`)
+    .join('\n')
+
+  // 解析失败（返回不是 JSON / 没有 text）时没有可展示的原文，
+  // 直接要它重写这一段，不要说「有 0 个生词」这种模型看不懂的话
+  const instruction = violations.length === 0
+    ? `你上一次没有返回可用的英文正文。请重新写第 ${index} 段：
+本段目标：${segment.goal}
+只能使用词表里的词，不要引入任何表外词。约 ${segment.maxWords} 个英文单词。输出：
+{"text":"这一段英文"}`
+    : `你刚写的第 ${index} 段里有 ${violations.length} 个不在词表内的单词：${words}
+${snippets ? `\n其中带原句的几条：\n${snippets}\n` : ''}
+请只重写包含这些词的句子：可以换说法，也可以删掉这个意思，但不能引入任何表外词。其他句子保持不变。
+本段仍需约 ${segment.maxWords} 个英文单词。输出：
+{"text":"重写后的整段"}`
+
+  return [
+    { role: 'system', content: system },
+    ...(text ? [{ role: 'assistant', content: text }] : []),
+    { role: 'user', content: instruction },
+  ]
+}
+
+/**
+ * ④ 降级：去掉没成功用上的目标词，用最简单的说法再写一次。
+ * 走到这里说明「既要目标词、又要零表外词」已经无解，先保住文章。
+ */
+export function buildSegmentSimplifyMessages(system, { segment, index }) {
+  const mustUse = segment.mustUse.length
+    ? `这一段还尽量用上这些词（用不上可以不用）：${segment.mustUse.join(', ')}`
+    : '这一段不必刻意用目标词。'
+
+  return [
+    { role: 'system', content: system },
+    {
+      role: 'user',
+      content: `请用最简单的说法写第 ${index} 段。
+本段目标：${segment.goal}
+${mustUse}
+只能使用【目标词】【补充可用词】【基础词】里的词，不要引入任何表外词。
+约 ${segment.maxWords} 个英文单词。只输出：
+{"text":"这一段英文"}`,
+    },
+  ]
+}
+
+/** ⑤ 收尾：正文已定，只补标题、翻译、题目 */
+export function buildFinishMessages(system, { article, questionCount, paragraphCount }) {
+  return [
+    { role: 'system', content: system },
+    {
+      role: 'user',
+      content: `下面是已经完成的英文正文（共 ${paragraphCount} 段）：
+"""
+${article}
+"""
+
+请只输出标题、中文翻译、题目与 names：
+{"title":"…","translation":"…","names":["…"],"questions":[{"id":1,"question":"…","options":["…","…","…","…"],"correctAnswer":0,"explanation":"…"}]}
+
+要求：翻译与正文逐段对应；题目共 ${questionCount} 道，id 从 1 开始连续，四个选项互不重复，答案必须能在正文中找到依据。`,
+    },
+  ]
+}
+
 /** 句子太长会把修正轮的 token 预算吃掉，截断即可定位问题 */
 function truncate(text, max = 160) {
   const value = String(text ?? '').trim()

@@ -15,12 +15,19 @@ import { parseOrThrow } from '../../shared/utils/validation.js'
 import { findEntry } from '../dictionary/dictionary.loader.js'
 import { wordRepository } from '../words/word.repository.js'
 import { ABBREVIATIONS, ABBREVIATION_WORDS } from './abbreviations.js'
-import { chatJson } from './ai.client.js'
-import { buildMessages, buildRepairMessages } from './ai.prompt.js'
+import {
+  buildMessages,
+  buildPlanMessages,
+  buildRepairMessages,
+  buildSegmentedSystem,
+} from './ai.prompt.js'
 import { parseAiContent, validateAiReading } from './ai.schema.js'
 import { ignoredFunctionWordRemovals } from './basic-words.js'
 import { calendarWords } from './calendar-words.js'
 import { limitOf, measureKnownVocabulary, unknownBudgetFor } from './level-limits.js'
+import { callModel, sumUsage } from './model-call.js'
+import { buildSegmentPlan, planSegmentCount } from './plan.service.js'
+import { generateSegmented } from './segmented.service.js'
 import { countWords, planAcceptedRange, planWordRange } from './word-count.js'
 import { generationFailureRepository as failureRepo } from './generation-failure.repository.js'
 import { toHistoryItem, toResultDto, toSafeDto } from './reading.dto.js'
@@ -42,13 +49,6 @@ import {
 } from './versions.js'
 
 /**
- * 调一次模型，并把这一轮的用量记进 rounds。
- *
- * 上限固定读 config.maxOutputTokens（默认 8192）。它是**上限不是计费项**：
- * 按实际 completion_tokens 计费，估小了反而会被截断成 AI_INVALID_RESPONSE，
- * 用户看到的是「生成失败」而不是「文章有点长」。
- */
-/**
  * 候选词里，哪几个真的出现在这篇正文中。
  *
  * 用集合交集而不是 candidates.filter(w => article.includes(w))：
@@ -63,48 +63,6 @@ function pickUsedWords(candidates, article) {
   const forms = collectWordForms(article)
 
   return [...forms].filter((word) => candidateSet.has(word))
-}
-
-async function callModel({ kind, messages, signal, rounds, repairFor = null }) {
-  const startedAt = Date.now()
-  const response = await chatJson({
-    messages,
-    signal,
-    maxTokens: config.maxOutputTokens,
-  })
-  const usage = response.usage ?? {}
-  const promptTokens = usage.prompt_tokens ?? 0
-  const completionTokens = usage.completion_tokens ?? 0
-
-  rounds.push({
-    kind,
-    promptTokens,
-    completionTokens,
-    // 上游一定给 total_tokens；兜底是为了打桩测试与个别代理不返回这个字段
-    totalTokens: usage.total_tokens ?? promptTokens + completionTokens,
-    // DeepSeek 会返回，命中前缀缓存的输入单价更低
-    cacheHitTokens: usage.prompt_cache_hit_tokens ?? 0,
-    cacheMissTokens: usage.prompt_cache_miss_tokens ?? 0,
-    finishReason: response.finishReason ?? null,
-    maxTokens: config.maxOutputTokens,
-    durationMs: Date.now() - startedAt,
-    // 这一轮是被什么问题催出来的；首轮没有上游原因
-    repairFor,
-  })
-
-  return response
-}
-
-/** 多轮累加。以前写成 `usage = repaired.usage ?? usage` 是覆盖，前几轮的费用会凭空消失 */
-function sumUsage(rounds) {
-  return rounds.reduce(
-    (acc, round) => ({
-      promptTokens: acc.promptTokens + round.promptTokens,
-      completionTokens: acc.completionTokens + round.completionTokens,
-      totalTokens: acc.totalTokens + round.totalTokens,
-    }),
-    { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
-  )
 }
 
 /**
@@ -546,82 +504,167 @@ async function generateReadingInner({ userId, body, signal, diag }) {
     'vocabulary pool selected',
   )
 
-  const messages = buildMessages({
-    level: params.level,
-    targetWords: params.targetWords,
-    questionCount: params.questionCount,
-    focusWords: plan.focusWords,
-    targetWordList: plan.targetWords,
-    supportWords: plan.supportWords,
-    basicWords: personalBasicWords,
-  })
+  // ——— 生成：两条路径共用后面的终检、落库与曝光回写 ———
+  //
+  //   segmented —— 规划 → 并发分段闭环 → 收尾（默认，md/21 W4）
+  //   whole     —— 一次性整篇生成 + 整篇修正（旧路径，A/B 与问题定位用）
+  //
+  // 分段路径不做整篇修正：全文由「每一段都已通过校验」的段落拼成，
+  // 再整篇重写等于把闭环的保证扔掉。
+  let content = ''
+  let state
+  let finishReason = null
+  let segmentStats = null
+  let segmentRepairCount = 0
 
-  const first = await callModel({ kind: 'generate', messages, signal, rounds })
-
-  let content = first.content
-  let finishReason = first.finishReason
-  let state = evaluate({ content, params, allowedWords, range, unknownBudget })
-  recordRound({ rounds, state, content, diag })
-
-  // 修正轮分两种额度：
-  //   content —— 结构 / 用词，默认 2 轮（发生过重写时 +1）
-  //   length  —— 篇幅重写，默认 1 轮
-  // 原来两者共用 maxRepairRounds，实测「先用词后压缩」时压缩只剩一次机会，
-  // 253 词只删到 239。分开计数后篇幅总有独立的一次机会。
-  // 最坏 1 生成 + 2 用词 + 1 重写 + 1 用词 = 5 次调用（只有重写带出大量生词时才会走到）。
-  // 每一轮都重新完整判断一次，避免旧实现里「上一轮的 feedback 没被更新」。
+  // 整篇路径的修正额度，分段路径保持 0
   let contentRounds = 0
   let lengthRounds = 0
 
-  while (state.feedback) {
-    const isLength = state.feedback.type === 'word_count'
-    // 重写是「重新编故事」，实测会带出十几个表外词。发生过重写时多给一轮
-    // 用词修正，避免「压短了但满篇生词 → 422」这种比超长更糟的结果。
-    const contentBudget = config.maxRepairRounds + (lengthRounds > 0 ? 1 : 0)
-    const budgetLeft = isLength
-      ? lengthRounds < config.maxLengthRounds
-      : contentRounds < contentBudget
-    if (!budgetLeft) break
-
-    if (isLength) lengthRounds += 1
-    else contentRounds += 1
-
-    const round = contentRounds + lengthRounds
-    logger.warn(
-      {
-        round,
-        type: state.feedback.type,
-        reason: state.feedback.reason,
-        violations: state.feedback.violations,
-        actualWords: state.feedback.actualWords,
-        ...describeContent(content),
-        finishReason,
-      },
-      'reading repair round',
-    )
-
-    // 结构合法时把它自己的输出放回上下文；结构不合法时不放，避免把半截 JSON
-    // 当成"自己的话"喂回去，反而诱导模型照抄。
-    const previous = state.result.ok ? content : ''
-    const repaired = await callModel({
-      kind: 'repair',
-      // 记下这一轮是被什么催出来的，和它自己又判出什么分开存
-      repairFor: state.feedback.type,
-      messages: buildRepairMessages(messages, state.feedback, previous),
-      signal,
-      rounds,
+  if (config.generationStrategy === 'segmented') {
+    const systemPrompt = buildSegmentedSystem({
+      level: params.level,
+      targetWords: params.targetWords,
+      basicWords: personalBasicWords,
+      focusWords: plan.focusWords,
+      targetWordList: plan.targetWords,
+      supportWords: plan.supportWords,
     })
 
-    content = repaired.content
-    finishReason = repaired.finishReason ?? finishReason
+    const segmentCount = planSegmentCount(params.targetWords)
+    const planResponse = await callModel({
+      kind: 'plan',
+      messages: buildPlanMessages(systemPrompt, { segmentCount, range }),
+      signal,
+      rounds,
+      temperature: config.segmentTemperature,
+    })
+
+    // 计划不合法由代码补齐（md/20 §5.3），不为此再调一次模型
+    const segments = buildSegmentPlan({
+      raw: parseAiContent(planResponse.content),
+      targetWords: params.targetWords,
+      targetWordList: [...plan.focusWords, ...plan.targetWords],
+      range,
+    })
+    diag.segments = segments.map(({ id, goal, maxWords, mustUse }) => ({
+      id,
+      goal,
+      maxWords,
+      mustUseCount: mustUse.length,
+    }))
+
+    const names = new Set()
+    const generated = await generateSegmented({
+      segments,
+      systemPrompt,
+      allowedWords,
+      names,
+      signal,
+      rounds,
+      questionCount: params.questionCount,
+      range,
+    })
+
+    segmentStats = generated.stats
+    segmentRepairCount = generated.repairCount
+    finishReason = generated.finishReason
+
+    // 分段里认出的专有名词不在收尾的 names 里（names 只存前 3 个），
+    // 但它们确实出现在正文里，必须参与全文校验，否则会被判成表外词
+    for (const name of generated.detectedNames) allowedWords.add(name)
+
+    const segmentedContent = JSON.stringify(generated.data)
+    content = segmentedContent
+    diag.content = segmentedContent
+    state = evaluate({ content, params, allowedWords, range, unknownBudget })
+
+    logger.info(
+      {
+        strategy: 'segmented',
+        segments: segmentStats.length,
+        accepted: segmentStats.filter((item) => item.accepted).length,
+        segmentRepairCount,
+        finishReason,
+      },
+      'segmented generation finished',
+    )
+  } else {
+    const messages = buildMessages({
+      level: params.level,
+      targetWords: params.targetWords,
+      questionCount: params.questionCount,
+      focusWords: plan.focusWords,
+      targetWordList: plan.targetWords,
+      supportWords: plan.supportWords,
+      basicWords: personalBasicWords,
+    })
+
+    const first = await callModel({ kind: 'generate', messages, signal, rounds })
+
+    content = first.content
+    finishReason = first.finishReason
     state = evaluate({ content, params, allowedWords, range, unknownBudget })
     recordRound({ rounds, state, content, diag })
 
-    // 模型主动认输时再修也没用，跳出去交给下面的统一处理
-    if (state.result.insufficient) break
+    // 修正轮分两种额度：
+    //   content —— 结构 / 用词，默认 2 轮（发生过重写时 +1）
+    //   length  —— 篇幅重写，默认 1 轮
+    // 原来两者共用 maxRepairRounds，实测「先用词后压缩」时压缩只剩一次机会，
+    // 253 词只删到 239。分开计数后篇幅总有独立的一次机会。
+    // 最坏 1 生成 + 2 用词 + 1 重写 + 1 用词 = 5 次调用（只有重写带出大量生词时才会走到）。
+    // 每一轮都重新完整判断一次，避免旧实现里「上一轮的 feedback 没被更新」。
+    while (state.feedback) {
+      const isLength = state.feedback.type === 'word_count'
+      // 重写是「重新编故事」，实测会带出十几个表外词。发生过重写时多给一轮
+      // 用词修正，避免「压短了但满篇生词 → 422」这种比超长更糟的结果。
+      const contentBudget = config.maxRepairRounds + (lengthRounds > 0 ? 1 : 0)
+      const budgetLeft = isLength
+        ? lengthRounds < config.maxLengthRounds
+        : contentRounds < contentBudget
+      if (!budgetLeft) break
+
+      if (isLength) lengthRounds += 1
+      else contentRounds += 1
+
+      const round = contentRounds + lengthRounds
+      logger.warn(
+        {
+          round,
+          type: state.feedback.type,
+          reason: state.feedback.reason,
+          violations: state.feedback.violations,
+          actualWords: state.feedback.actualWords,
+          ...describeContent(content),
+          finishReason,
+        },
+        'reading repair round',
+      )
+
+      // 结构合法时把它自己的输出放回上下文；结构不合法时不放，避免把半截 JSON
+      // 当成"自己的话"喂回去，反而诱导模型照抄。
+      const previous = state.result.ok ? content : ''
+      const repaired = await callModel({
+        kind: 'repair',
+        // 记下这一轮是被什么催出来的，和它自己又判出什么分开存
+        repairFor: state.feedback.type,
+        messages: buildRepairMessages(messages, state.feedback, previous),
+        signal,
+        rounds,
+      })
+
+      content = repaired.content
+      finishReason = repaired.finishReason ?? finishReason
+      state = evaluate({ content, params, allowedWords, range, unknownBudget })
+      recordRound({ rounds, state, content, diag })
+
+      // 模型主动认输时再修也没用，跳出去交给下面的统一处理
+      if (state.result.insufficient) break
+    }
   }
 
-  const repairRounds = contentRounds + lengthRounds
+  // 分段路径的「修正」是段内重写，与整篇修正分开计数但对外同口径
+  const repairRounds = contentRounds + lengthRounds + segmentRepairCount
   const tokenUsage = sumUsage(rounds)
   // 后面的三条 throw 都在预算耗尽之后，这两个数要让它们能看见
   diag.repairRounds = repairRounds
@@ -649,6 +692,13 @@ async function generateReadingInner({ userId, body, signal, diag }) {
 
   const data = state.result.data
   const actualWords = countWords(data.article)
+
+  // 目标词没进正文的记录：W4 只记录不重试（md/20 §5.3 降级链第 4 步），
+  // W5 的 coverageRate 会在此基础上做完整覆盖度指标。
+  const articleForms = collectWordForms(data.article)
+  const unusedTargetWords = [...plan.focusWords, ...plan.targetWords].filter(
+    (word) => !articleForms.has(word),
+  )
 
   // 篇幅额度用尽后仍然超长时，evaluate() 停在 word_count 分支就返回了，没跑词汇校验。
   // 超长本身照旧放行（界面展示真实词数），但生词必须查出来：否则 unknownWords
@@ -755,11 +805,16 @@ async function generateReadingInner({ userId, body, signal, diag }) {
       poolSize: selection.poolSize,
       requiredWords: plan.requiredWords,
       focusWords: plan.focusWords,
+      unused: unusedTargetWords,
     },
     names: data.names,
     status: 'generated',
     aiMeta: {
       model: config.deepseekModel,
+      // 哪条路径产出的：跨策略采样不能混在一起比（md/21 W4）
+      strategy: config.generationStrategy,
+      // 分段明细：哪一段重写了几次、是否被丢弃。整篇路径为空数组
+      segments: segmentStats ?? [],
       // 词表与代码的版本号：跨版本采样不能放在一起比。
       // 基础词表按档记——只记一个 hash 会掩盖「easy 没变、medium 变了」
       basicWordsVersion: basicWordsVersions[params.level],

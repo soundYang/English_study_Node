@@ -23,6 +23,15 @@ process.env.MAX_LENGTH_ROUNDS = '1'
 process.env.MAX_UNKNOWN_WORDS = ''
 process.env.MAX_OUTPUT_TOKENS = '8192'
 
+// 绝大多数用例测的是整篇路径的行为（修正轮、结构错误、失败样本），
+// 打桩也只认识「一次返回整篇文章」的形状。生产默认是 segmented，
+// 分段路径由 segmented.test.js 用 vi.mock 单独把策略调成 segmented。
+process.env.GENERATION_STRATEGY = 'whole'
+// 分段路径的参数也固定下来，避免开发机 .env 改写并发/重试次数
+process.env.SEGMENT_CONCURRENCY = '4'
+process.env.SEGMENT_MAX_ATTEMPTS = '2'
+process.env.SEGMENT_TEMPERATURE = '0.5'
+
 const { loadDictionary } = await import('../modules/dictionary/dictionary.loader.js')
 const { Reading } = await import('../modules/readings/reading.model.js')
 const { Word } = await import('../modules/words/word.model.js')

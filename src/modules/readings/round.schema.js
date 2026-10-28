@@ -31,7 +31,13 @@ const violationCountsSchema = new Schema(
  */
 export const roundSchema = new Schema(
   {
-    kind: { type: String, enum: ['generate', 'repair'], required: true },
+    // generate/repair = 整篇路径；plan/segment/finish = 分段路径（md/21 W4）。
+    // 分段路径的段内重写记 repair，便于沿用「按 repairFor 归因」的报表口径。
+    kind: {
+      type: String,
+      enum: ['generate', 'repair', 'plan', 'segment', 'finish'],
+      required: true,
+    },
     promptTokens: Number, // 输入 token
     completionTokens: Number, // 输出 token
     totalTokens: Number, // 输入 + 输出

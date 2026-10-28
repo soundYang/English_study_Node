@@ -44,6 +44,18 @@ function toNumber(key, fallback) {
   return value
 }
 
+/** 枚举型配置：写错时启动即炸，而不是等第一个请求走进未定义分支 */
+function readEnum(key, allowed, fallback) {
+  const raw = (process.env[key] || fallback).trim()
+
+  if (!allowed.includes(raw)) {
+    console.error(`[config] 环境变量 ${key} 只能是 ${allowed.join(' / ')}，当前值：${raw}`)
+    process.exit(1)
+  }
+
+  return raw
+}
+
 export const config = Object.freeze({
   // 服务
   port: toNumber('PORT', 3000),
@@ -66,7 +78,17 @@ export const config = Object.freeze({
   // 估小了会被截断成 AI_INVALID_RESPONSE，用户看到的是「生成失败」而不是「文章有点长」。
   maxOutputTokens: toNumber('MAX_OUTPUT_TOKENS', 8192),
 
-  // 生成策略
+  // 生成策略（md/20 §5.5）
+  //   segmented —— 规划 → 分段闭环 → 收尾（默认，md/21 W4）
+  //   whole     —— 一次性整篇生成 + 整篇修正（旧路径，保留用于 A/B 与问题定位）
+  generationStrategy: readEnum('GENERATION_STRATEGY', ['whole', 'segmented'], 'segmented'),
+  // 分段并发：4 是 md/20 §5.4 的成本/延迟平衡点；再高只会让上游限流
+  segmentConcurrency: toNumber('SEGMENT_CONCURRENCY', 4),
+  // 每段允许的**重写**次数（不含首轮，也不含最后那次「更简单的说法」）
+  segmentMaxAttempts: toNumber('SEGMENT_MAX_ATTEMPTS', 2),
+  // 分段路径的温度：约束性文本用 0.8 等于给自己制造违规（md/21 W4）
+  segmentTemperature: toNumber('SEGMENT_TEMPERATURE', 0.5),
+
   vocabularyThreshold: toNumber('VOCABULARY_THRESHOLD', 20),
   // P0 基线：修 1 轮后 4/5 次只剩 1 个违规词，再给一轮的命中率远高于成本。
   // 2 轮意味着最坏情况一次生成调 3 次模型（方案 §12）

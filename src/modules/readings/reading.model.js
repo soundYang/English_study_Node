@@ -55,6 +55,25 @@ const targetPlanSchema = new Schema(
     poolSize: { type: Number, default: 0 }, // 候选池实际大小
     requiredWords: { type: Number, default: 0 }, // 按篇幅算出的目标词数
     focusWords: { type: [String], default: [] }, // 重点词清单，要求复现 2–3 次
+    // 最终正文里完全没出现的目标词（W4 只记录；W5 据此算 coverageRate）
+    unused: { type: [String], default: [] },
+  },
+  { _id: false },
+)
+
+/**
+ * 分段明细（W4）。只保留排查需要的数字：
+ * 哪一段重写了几次、最后收没收、被丢掉的段里还有哪些生词。
+ */
+const segmentMetaSchema = new Schema(
+  {
+    id: Number,
+    goal: String, // 规划阶段给出的方向（中文）
+    maxWords: Number, // 计划篇幅
+    attempts: Number, // 一共调了几次模型（含首轮与降级）
+    actualWords: Number, // 最后一次尝试的实际词数
+    accepted: Boolean, // 是否进入正文
+    unknownWords: { type: [String], default: [] },
   },
   { _id: false },
 )
@@ -122,7 +141,11 @@ const readingSchema = new Schema(
       totalTokens: Number, // 输入 + 输出（累计），用户看到的就是这个数
       rounds: { type: [roundSchema], default: [] }, // 每轮明细，排查费用与截断
       maxTokens: Number, // 当次请求的输出上限
-      repairRounds: Number, // 触发了几轮修正
+      repairRounds: Number, // 触发了几轮修正（分段路径 = 段内重写次数之和）
+
+      // ——— W4：生成路径与分段明细 ———
+      strategy: String, // whole / segmented；老文档为 undefined
+      segments: { type: [segmentMetaSchema], default: [] }, // 整篇路径为空数组
 
       // ——— P1 扩展：P3 的覆盖度指标，也是 P6 回归对比的观察项 ———
       candidatePoolSize: Number, // 候选池大小

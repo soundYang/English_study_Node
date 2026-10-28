@@ -53,7 +53,7 @@ function getClient() {
  * 错误映射：超时 / 429 / 5xx / 连接失败一律转 502 AI_PROVIDER_ERROR，
  * message 用固定文案——**绝不把上游原始报错透给前端**（可能含 key 片段或内部信息）。
  */
-export async function chatJson({ messages, signal, maxTokens }) {
+export async function chatJson({ messages, signal, maxTokens, temperature = 0.8 }) {
   // 偶发超时重试一次：实测出现过 10 秒就 Request timed out、整次生成直接 502。
   // 只重试一次——连续两次拿不到响应说明上游确实不可用，把额度留给用户重试。
   for (let attempt = 1; ; attempt += 1) {
@@ -64,7 +64,8 @@ export async function chatJson({ messages, signal, maxTokens }) {
           messages,
           // DeepSeek 的 JSON 模式要求提示词里出现 "json" 字样，系统提示词已满足
           response_format: { type: 'json_object' },
-          temperature: 0.8,
+          // 整篇路径沿用 0.8；分段路径由调用方显式传 0.5（md/21 W4）
+          temperature,
           max_tokens: maxTokens,
         },
         { signal },
