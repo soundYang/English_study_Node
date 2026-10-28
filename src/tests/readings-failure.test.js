@@ -123,6 +123,11 @@ describe('生成失败留痕 · 只有生成流程内的失败才入库', () => 
     // 首轮没有上游原因，但它自己判出的是用词问题
     expect(failure.rounds[0]).toMatchObject({ kind: 'generate', repairFor: null, feedbackType: 'vocabulary' })
     expect(failure.rounds[0].unknownWords).toHaveLength(6)
+    // 分类要当场落库。6 个词都没排名，但只有句首的 Quizzical 算生造词，
+    // 后面 5 个是句中大写——按规则判成专名，这正是 counts 与 violations 一致的意思
+    expect(failure.rounds[0].counts).toMatchObject({ proper_noun: 5, unknown_token: 1 })
+    const counted = Object.values(failure.rounds[0].counts).reduce((a, b) => a + b, 0)
+    expect(counted).toBe(failure.rounds[0].unknownWords.length)
     // 后两轮是被用词问题催出来的
     expect(failure.rounds[1]).toMatchObject({ kind: 'repair', repairFor: 'vocabulary', feedbackType: 'vocabulary' })
     expect(failure.rounds[2].unknownWords).toHaveLength(6)
@@ -161,6 +166,15 @@ describe('生成失败留痕 · 只有生成流程内的失败才入库', () => 
     expect(doc.aiMeta.rounds[0]).toMatchObject({ kind: 'generate', repairFor: null, feedbackType: null })
     expect(doc.aiMeta.rounds[0].unknownWords).toEqual([])
     expect(doc.aiMeta.rounds[0].actualWords).toBe(40)
+    // 查过了、没有违规：六个分类全 0，而不是 undefined
+    expect(doc.aiMeta.rounds[0].counts).toEqual({
+      abbreviation: 0,
+      proper_noun: 0,
+      wordform: 0,
+      missing_common: 0,
+      rare: 0,
+      unknown_token: 0,
+    })
   })
 
   it('成功样本带生成快照：词表版本 / 代码版本 / 模型名', async () => {
@@ -206,6 +220,9 @@ describe('生成失败留痕 · 只有生成流程内的失败才入库', () => 
     expect(doc.aiMeta.rounds[0].feedbackType).toBe('word_count')
     // 篇幅超长时 evaluate() 直接返回，没跑词汇校验——空数组表示「没查」，不是「没问题」
     expect(doc.aiMeta.rounds[0].unknownWords).toEqual([])
+    // counts 同理：没查就是 undefined，不能是六个 0，否则统计里会多出一批"干净"的轮次
+    expect(doc.aiMeta.rounds[0].counts).toBeUndefined()
     expect(doc.aiMeta.rounds[1]).toMatchObject({ kind: 'repair', repairFor: 'word_count', feedbackType: null })
+    expect(doc.aiMeta.rounds[1].counts).toMatchObject({ unknown_token: 0, missing_common: 0 })
   })
 })

@@ -197,6 +197,9 @@ function recordRound({ rounds, state, content, diag }) {
 
   last.actualWords = state.actualWords ?? null
   last.unknownWords = state.vocabulary?.unknownWords ?? []
+  // 没有 vocabulary 说明这一轮根本没跑词汇校验（结构不合法/篇幅超长），
+  // 此时不写 counts，让它保持 undefined——写成 0 会被读成「查了，没问题」。
+  if (state.vocabulary) last.counts = state.vocabulary.counts
   last.feedbackType = state.feedback?.type ?? null
   diag.state = state
   diag.content = content

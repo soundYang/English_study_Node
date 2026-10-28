@@ -1,6 +1,22 @@
 import mongoose from 'mongoose'
 
+import { VIOLATION_CATEGORIES } from './vocabulary.service.js'
+
 const { Schema } = mongoose
+
+/**
+ * 一轮的违规词分类计数。
+ *
+ * 键从 VIOLATION_CATEGORIES 生成，不手抄一份：分类名一旦加一处漏一处，
+ * 「各分类占比」这类统计会静默少一列，而没人会发现。
+ *
+ * 只存计数不存 violations：原句只有当轮局部改写时有用，跑完就没用了，
+ * 而 rounds 会跟着 Reading 永久保存，没必要为它胖几 KB。
+ */
+const violationCountsSchema = new Schema(
+  Object.fromEntries(VIOLATION_CATEGORIES.map((category) => [category, Number])),
+  { _id: false },
+)
 
 /**
  * 一次模型调用的用量与诊断明细。
@@ -42,6 +58,11 @@ export const roundSchema = new Schema(
     // 本轮正文里不在词表内的词（去重、按出现顺序）。
     // 篇幅超长时 evaluate() 会跳过词汇校验，这一轮就是空数组，不是「没有违规」。
     unknownWords: { type: [String], default: [] },
+    // 本轮违规词按类别计数。undefined 与 unknownWords 的空数组同义：这一轮没查词汇。
+    // 分类必须在生成当时落库：missing_common 依赖当前基础词表，而扩表（§4.2）
+    // 之后回头分类旧样本，这类违规会凭空消失——正好抹掉扩表的依据。
+    // proper_noun 也一样依赖大小写，而存下来的词形是小写的，事后无法复原。
+    counts: { type: violationCountsSchema, default: undefined },
   },
   { _id: false },
 )
