@@ -71,6 +71,9 @@ export const config = Object.freeze({
   // P0 基线：修 1 轮后 4/5 次只剩 1 个违规词，再给一轮的命中率远高于成本。
   // 2 轮意味着最坏情况一次生成调 3 次模型（方案 §12）
   maxRepairRounds: toNumber('MAX_REPAIR_ROUNDS', 2),
+  // 篇幅压缩单独计数：实测一轮修完用词后只剩一次压缩机会，253 词只删到 239。
+  // 给篇幅独立的一次机会，最坏情况 1 + 2 + 1 = 4 次调用。
+  maxLengthRounds: toNumber('MAX_LENGTH_ROUNDS', 1),
   // 文章允许出现的「用户没学过」的词数。刻意不写进提示词：
   // 一旦告诉模型有这个额度，它会稳定用满 5 个；放行只是兜底，不是配额。
   maxUnknownWords: toNumber('MAX_UNKNOWN_WORDS', 5),

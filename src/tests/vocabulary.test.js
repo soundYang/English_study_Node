@@ -62,6 +62,13 @@ describe('validateArticle · 缩写与所有格', () => {
     expect(result.unknownWords).toEqual(['not'])
   })
 
+  it('cannot 是被连写的 can not，不当生词（实测必踩）', () => {
+    expect(check('I cannot go.', ['i', 'can', 'not', 'go']).valid).toBe(true)
+
+    // 展开后仍然逐项校验：缺 not 就报 not
+    expect(check('I cannot go.', ['i', 'can', 'go']).unknownWords).toEqual(['not'])
+  })
+
   it('弯引号与直引号等价', () => {
     expect(check('it’s fine', ['it', 'is', 'fine']).valid).toBe(true)
     expect(check("it's fine", ['it', 'is', 'fine']).valid).toBe(true)

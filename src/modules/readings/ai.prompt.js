@@ -190,11 +190,21 @@ export function buildRepairMessages(
 ) {
   // 压缩轮：实测每次「替换违规词」都会顺手加解释性从句（5726→5785 字符），
   // 所以这里必须把「只删不增」和字数区间同时说清楚。
+  //
+  // 只给区间不够：实测 253 词让模型「删到 200–230」它只删了 14 个词。
+  // 给出**具体删除量**和理想落点，模型才有可执行的动作。
+  const excess = range && actualWords ? Math.max(0, actualWords - range.max) : 0
+  const ideal = range
+    ? Math.min(range.max, Math.max(range.min, Math.round((range.min + range.max) / 2)))
+    : null
   const instruction =
     type === 'word_count'
       ? `你上一次的输出长度不符合约定：${reason}。\n\n`
+        + (excess > 0
+          ? `请至少删掉 ${excess} 个英文单词，把正文压缩到 ${range.min}–${range.max} 词之间（理想 ${ideal} 词左右）。\n`
+          : '')
         + '请只在原意上删减，不要新增情节、评论或解释，'
-        + (range
+        + (range && excess === 0
           ? `删减后必须落在 ${range.min}–${range.max} 个英文单词之间，`
           : '')
         + '并保证所有目标词仍然出现。重新输出完整的 json 对象。'

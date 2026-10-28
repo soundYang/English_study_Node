@@ -485,10 +485,35 @@ describe('POST /api/readings/generate · 篇幅与 token', () => {
     const instruction = chatJson.mock.calls[1][0].messages.at(-1).content
     expect(instruction).toContain('删减')
     expect(instruction).toContain('100–115')
+    // 160 词、上限 115 → 具体到「至少删掉 45 个」
+    expect(instruction).toContain('至少删掉 45 个英文单词')
 
     const doc = await Reading.findById(res.body.id).lean()
     expect(doc.aiMeta.repairRounds).toBe(1)
     // 压缩后的正文落库，不再是被截断的 160 词版本
+    expect(doc.actualWords).toBe(40)
+  })
+
+  it('篇幅压缩有独立额度：修完词还能再压一次', async () => {
+    await seedWords(29)
+    chatJson
+      .mockResolvedValueOnce(reply(makePayload({ article: OVER_LIMIT_ARTICLE }))) // 1: 生词超额度
+      .mockResolvedValueOnce(reply(makePayload({ article: LONG_ARTICLE }))) // 2: 词好了但太长
+      .mockResolvedValueOnce(reply(makePayload())) // 3: 压缩后达标
+
+    const res = await generate(VALID_BODY)
+
+    // 旧实现里三者共用 2 轮额度，第 3 次调用会被砍掉，直接带着 160 词返回
+    expect(res.status).toBe(201)
+    expect(chatJson).toHaveBeenCalledTimes(3)
+
+    const doc = await Reading.findById(res.body.id).lean()
+    expect(doc.aiMeta.repairRounds).toBe(2)
+    expect(doc.aiMeta.rounds.map((round) => round.kind)).toEqual([
+      'generate',
+      'repair',
+      'repair',
+    ])
     expect(doc.actualWords).toBe(40)
   })
 

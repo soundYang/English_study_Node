@@ -118,8 +118,9 @@ function insufficientVocabularyError() {
 /**
  * 把一轮产出判成「还能更好」或「可以收工」。
  *
- * 三种反馈共用 maxRepairRounds 那点额度，优先级：结构 → 用词 → 篇幅。
- * 用词优先于篇幅：生词多说明方向错了，先换词再谈长短，压缩轮才有意义。
+ * 优先级：结构 → 用词 → 篇幅。用词优先于篇幅：生词多说明方向错了，
+ * 先换词再谈长短，压缩轮才有意义。
+ * 篇幅走独立的 maxLengthRounds 额度，不会被前两种反馈吃光。
  *
  * @returns {{
  *   result: object,
@@ -331,14 +332,29 @@ export async function generateReading({ userId, body, signal }) {
   let finishReason = first.finishReason
   let state = evaluate({ content, params, allowedWords, range })
 
-  // 修正轮：结构 / 用词 / 篇幅共用 maxRepairRounds 那点额度（默认 2，总调用 ≤ 3）。
+  // 修正轮分两种额度：
+  //   content —— 结构 / 用词，默认 2 轮
+  //   length  —— 篇幅压缩，默认 1 轮
+  // 原来两者共用 maxRepairRounds，实测「先用词后压缩」时压缩只剩一次机会，
+  // 253 词只删到 239。分开计数后篇幅总有独立的一次机会，最坏 1+2+1=4 次调用。
   // 每一轮都重新完整判断一次，避免旧实现里「上一轮的 feedback 没被更新」。
-  let repairRounds = 0
-  while (state.feedback && repairRounds < config.maxRepairRounds) {
-    repairRounds += 1
+  let contentRounds = 0
+  let lengthRounds = 0
+
+  while (state.feedback) {
+    const isLength = state.feedback.type === 'word_count'
+    const budgetLeft = isLength
+      ? lengthRounds < config.maxLengthRounds
+      : contentRounds < config.maxRepairRounds
+    if (!budgetLeft) break
+
+    if (isLength) lengthRounds += 1
+    else contentRounds += 1
+
+    const round = contentRounds + lengthRounds
     logger.warn(
       {
-        round: repairRounds,
+        round,
         type: state.feedback.type,
         reason: state.feedback.reason,
         violations: state.feedback.violations,
@@ -367,6 +383,7 @@ export async function generateReading({ userId, body, signal }) {
     if (state.result.insufficient) break
   }
 
+  const repairRounds = contentRounds + lengthRounds
   const tokenUsage = sumUsage(rounds)
 
   if (state.result.insufficient) {

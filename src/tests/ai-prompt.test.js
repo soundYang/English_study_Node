@@ -107,8 +107,23 @@ describe('buildRepairMessages', () => {
     expect(content).toContain('删减')
     expect(content).toContain('不要新增')
     expect(content).toContain('300–345')
+    // 只给区间时模型只删了 14 个词，所以必须给出可执行的删除量
+    expect(content).toContain('至少删掉 84 个英文单词')
+    expect(content).toContain('理想 323 词左右')
     // 压缩轮不该再重复「表外词」那套话术
     expect(content).not.toContain('不在允许词表中')
+  })
+
+  it('word_count 但没带 actualWords 时退化为只给区间', () => {
+    const repaired = buildRepairMessages(base, {
+      type: 'word_count',
+      reason: '正文超过上限',
+      range: { min: 300, max: 345, target: 330 },
+    })
+    const content = repaired.at(-1).content
+
+    expect(content).toContain('删减后必须落在 300–345')
+    expect(content).not.toContain('至少删掉')
   })
 
   it('用词反馈会重申字数区间，防止越修越长', () => {

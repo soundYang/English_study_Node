@@ -17,6 +17,8 @@ const TOKEN_RE = /[A-Za-z]+(?:['’-][A-Za-z]+)*/g
 const CONTRACTIONS = Object.freeze({
   "aren't": 'are not',
   "can't": 'can not',
+  // cannot 是被连写吞掉空格的 can not，不是表外词；实测它稳定被判一次生词
+  cannot: 'can not',
   "couldn't": 'could not',
   "didn't": 'did not',
   "doesn't": 'does not',
