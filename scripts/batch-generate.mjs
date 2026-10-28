@@ -9,59 +9,63 @@
  *   node scripts/seed-test-fixtures.mjs --fixture all
  *   DEFAULT_USER_ID=fixture-rich PORT=3100 node src/server.js
  *   DEFAULT_USER_ID=fixture-thin PORT=3101 node src/server.js
+ *   DEFAULT_USER_ID=fixture-full PORT=3102 node src/server.js
+ *
+ * 采样时把限流关掉（`RATE_LIMIT_ENABLED=false`）：一次跑 20+ 个请求会撞上
+ * 每分钟 20 次的配额，429 会混进成功率的分母。限流本身已有单测覆盖。
  *
  * 用法：
  *   node scripts/batch-generate.mjs --fixture rich --base http://127.0.0.1:3100
- *   node scripts/batch-generate.mjs --fixture thin --base http://127.0.0.1:3101 --times 3
+ *   node scripts/batch-generate.mjs --fixture full --base http://127.0.0.1:3102 --times 3
  *   node scripts/batch-generate.mjs --case 7 --base http://127.0.0.1:3100   # 只跑一条
  *   node scripts/batch-generate.mjs --fixture rich --dry-run               # 只看矩阵，不调模型
  *
- * ⚠️ 每条 201 都是一次真实付费调用。600 词档单次约 ¥0.06，全套 45 次约 ¥2–3。
+ * 判定只认错误码；字数是否落在验收区间（±15%）单独用 `⚠️篇幅` 标出来，
+ * 避免 50 词 / 730 词这种 201 被当成完全通过（md/21 W11）。
+ *
+ * ⚠️ 每条 201 都是一次真实付费调用。15 条用例里 thin 的 3 条走不到模型，
+ * 实际付费是 12 条 × times；2026-10-28 实测全套 45 次共 ¥0.87。
  */
 import mongoose from 'mongoose'
 
 import { config } from '../src/config/index.js'
 import { GenerationFailure } from '../src/modules/readings/generation-failure.model.js'
+import { limitOf, measureKnownVocabulary } from '../src/modules/readings/level-limits.js'
 import { Reading } from '../src/modules/readings/reading.model.js'
 import { VIOLATION_CATEGORIES } from '../src/modules/readings/vocabulary.service.js'
-import { neededVocabulary } from '../src/modules/readings/vocabulary-pool.js'
+import { neededVocabulary, selectVocabularyPool } from '../src/modules/readings/vocabulary-pool.js'
 import { Word } from '../src/modules/words/word.model.js'
 
-const FIXTURE_USER = { rich: 'fixture-rich', thin: 'fixture-thin' }
+const FIXTURE_USER = {
+  rich: 'fixture-rich',
+  thin: 'fixture-thin',
+  full: 'fixture-full',
+}
 
 /**
- * 15 条用例（方案 §3.4.3）。
+ * 15 条用例（方案 §3.4.3，2026-10-28 按 md/21 W3 的门禁改写）。
  *
  * `expect` 不是「我们希望的」，而是**按当前公式算出来的必然结果**，
- * 所以它同时是门槛的回归断言。
+ * 所以它同时是门禁的回归断言。
  *
- * 与方案原文的差异（已记进 §17）：原文把 #10/#11 的难度写反了——
- * ratio 越大（hard 0.7）需要的词越少，所以 thin 120 词时 hard 能过、easy 会 422。
+ * 与旧矩阵的两处差异（记进 md/21 §9）：
+ *   1. 篇幅不能超过本档上限（easy 300 / medium 450 / hard 600），旧用例里
+ *      easy 600、medium 600 会被 400 拦在调模型之前；
+ *   2. hard 的 B 门要 3778 个已知词，`fixture-rich` 只有 720 个可用词，
+ *      永远过不了门——hard 用例改用 `fixture-full`（1800 词全部已学）。
+ *
+ * thin 的三条是**闸门用例**：期望就是在调模型之前被 422 拦下，不产生费用。
  */
 const CASES = [
-  { id: 1, fixture: 'rich', level: 'easy', targetWords: 200, vocabScope: ['all'], expect: 'ok' },
-  { id: 2, fixture: 'rich', level: 'medium', targetWords: 200, vocabScope: ['all'], expect: 'ok' },
-  { id: 3, fixture: 'rich', level: 'hard', targetWords: 200, vocabScope: ['all'], expect: 'ok' },
-  { id: 4, fixture: 'rich', level: 'easy', targetWords: 400, vocabScope: ['all'], expect: 'ok' },
+  // rich：easy / medium 两档的常规篇幅
+  { id: 1, fixture: 'rich', level: 'easy', targetWords: 100, vocabScope: ['all'], expect: 'ok' },
+  { id: 2, fixture: 'rich', level: 'easy', targetWords: 200, vocabScope: ['all'], expect: 'ok' },
+  { id: 3, fixture: 'rich', level: 'easy', targetWords: 300, vocabScope: ['all'], expect: 'ok' },
+  { id: 4, fixture: 'rich', level: 'medium', targetWords: 200, vocabScope: ['all'], expect: 'ok' },
   { id: 5, fixture: 'rich', level: 'medium', targetWords: 400, vocabScope: ['all'], expect: 'ok' },
-  { id: 6, fixture: 'rich', level: 'hard', targetWords: 400, vocabScope: ['all'], expect: 'ok' },
-  { id: 7, fixture: 'rich', level: 'easy', targetWords: 600, vocabScope: ['all'], expect: 'ok' },
-  { id: 8, fixture: 'rich', level: 'medium', targetWords: 600, vocabScope: ['all'], expect: 'ok' },
-  { id: 9, fixture: 'rich', level: 'hard', targetWords: 600, vocabScope: ['all'], expect: 'ok' },
-  // 门槛用例的期望是「过闸门」，不是「生成成功」：thin 只有 120 词，
-  // 过了闸门照样会因为词汇不够而 422，那是设计如此
-  { id: 10, fixture: 'thin', level: 'hard', targetWords: 600, vocabScope: ['all'], expect: 'gate_ok' },
+  { id: 6, fixture: 'rich', level: 'medium', targetWords: 450, vocabScope: ['all'], expect: 'ok' },
   {
-    id: 11,
-    fixture: 'thin',
-    level: 'easy',
-    targetWords: 600,
-    vocabScope: ['all'],
-    expect: 'VOCABULARY_TOO_SMALL',
-  },
-  { id: 12, fixture: 'thin', level: 'medium', targetWords: 400, vocabScope: ['all'], expect: 'gate_ok' },
-  {
-    id: 13,
+    id: 7,
     fixture: 'rich',
     level: 'medium',
     targetWords: 400,
@@ -69,14 +73,50 @@ const CASES = [
     expect: 'ok',
   },
   {
-    id: 14,
+    id: 8,
     fixture: 'rich',
+    level: 'easy',
+    targetWords: 200,
+    vocabScope: ['today_reviewed'],
+    expect: 'ok',
+  },
+  // full：hard 三档篇幅 + 复习词源
+  { id: 9, fixture: 'full', level: 'hard', targetWords: 200, vocabScope: ['all'], expect: 'ok' },
+  { id: 10, fixture: 'full', level: 'hard', targetWords: 400, vocabScope: ['all'], expect: 'ok' },
+  { id: 11, fixture: 'full', level: 'hard', targetWords: 600, vocabScope: ['all'], expect: 'ok' },
+  {
+    id: 12,
+    fixture: 'full',
     level: 'hard',
     targetWords: 400,
     vocabScope: ['today_reviewed'],
     expect: 'ok',
   },
-  { id: 15, fixture: 'rich', level: 'easy', targetWords: 100, vocabScope: ['all'], expect: 'ok' },
+  // thin：三档都过不了 B 门，验证拦在调模型之前
+  {
+    id: 13,
+    fixture: 'thin',
+    level: 'easy',
+    targetWords: 300,
+    vocabScope: ['all'],
+    expect: 'VOCABULARY_TOO_SMALL',
+  },
+  {
+    id: 14,
+    fixture: 'thin',
+    level: 'medium',
+    targetWords: 400,
+    vocabScope: ['all'],
+    expect: 'VOCABULARY_TOO_SMALL',
+  },
+  {
+    id: 15,
+    fixture: 'thin',
+    level: 'hard',
+    targetWords: 600,
+    vocabScope: ['all'],
+    expect: 'VOCABULARY_TOO_SMALL',
+  },
 ]
 
 const QUESTION_COUNT = 3
@@ -258,16 +298,24 @@ async function runCase(testCase, { base, times, userId, withArticle }) {
     const durationMs = Date.now() - startedAt
     const judged = judge(testCase, record)
 
+    // 判定只认错误码，字数是否落在验收区间（±15%）单独标记。
+    // 不标的话，50 词 / 730 词的样本会跟着 201 一起打 ✓（md/21 W11）。
+    const lengthOutside =
+      record.ok &&
+      Number.isFinite(record.wordCountDeviation) &&
+      (record.wordCountDeviation < 0.85 || record.wordCountDeviation > 1.15)
+
     if (!withArticle && 'article' in record) delete record.article
 
-    rounds.push({ run, durationMs, ...record, ...judged })
+    rounds.push({ run, durationMs, ...record, ...judged, lengthOutside })
     console.log(
       `  #${String(testCase.id).padStart(2)} run${run}  ${String(judged.actual).padEnd(22)}` +
         ` ${String(record.actualWords ?? '-').padStart(2)}词` +
         ` ${String(record.repairRounds ?? '-').padStart(2)}轮` +
         ` ${String(record.poolSize ?? '-').padStart(3)}池` +
         ` ${String(record.totalTokens ?? '-').padStart(5)}tok` +
-        ` ${(durationMs / 1000).toFixed(1)}s  ${judged.pass ? '✓' : '✗'}`,
+        ` ${(durationMs / 1000).toFixed(1)}s  ${judged.pass ? '✓' : '✗'}` +
+        `${lengthOutside ? ' ⚠️篇幅' : ''}`,
     )
   }
 
@@ -301,6 +349,7 @@ function summarize(allCases, times) {
       avgDurationMs: Math.round(sum(item.runs, 'durationMs') / item.runs.length),
       avgTotalTokens: Math.round(sum(item.runs, 'totalTokens') / item.runs.length),
       judgePassed: item.runs.every((run) => run.pass),
+      lengthOutside: item.runs.filter((run) => run.lengthOutside).length,
     }
   })
 
@@ -310,6 +359,7 @@ function summarize(allCases, times) {
     ok: runs.filter((run) => run.ok).length,
     failed: runs.filter((run) => !run.ok).length,
     judgeFailed: runs.filter((run) => !run.pass).length,
+    lengthOutside: runs.filter((run) => run.lengthOutside).length,
     failureMissing: runs.filter((run) => run.failureMissing).length,
     poolInconsistent: byCase.filter((item) => !item.poolConsistent).map((item) => item.caseId),
     codes: Object.fromEntries(
@@ -322,40 +372,73 @@ function summarize(allCases, times) {
   }
 }
 
+/**
+ * 按**线上同源**的函数判这条用例会走到哪一步：
+ * 档位上限（400）→ A 门（池子够不够）→ B 门（已知词够不够）。
+ * 只算 A 门会漏掉「池子够但难度没解锁」的大多数情况（W3 之后 B 门先拦）。
+ */
+function gateOf({ words, learnedWords, removedBasicWords, testCase }) {
+  const { level, targetWords, vocabScope } = testCase
+  const limit = limitOf(level)
+
+  if (targetWords > limit.maxTargetWords) {
+    return { code: 'INVALID_REQUEST', note: `档位上限 ${limit.maxTargetWords} 词` }
+  }
+
+  const selection = selectVocabularyPool({ words, level, scope: vocabScope, targetWords })
+  if (!selection.sufficient) {
+    return {
+      code: 'VOCABULARY_TOO_SMALL',
+      note: `A 门 available=${selection.available} needed=${selection.neededVocab}`,
+    }
+  }
+
+  const known = measureKnownVocabulary({ level, learnedWords, removedBasicWords })
+  if (!known.sufficient) {
+    return {
+      code: 'VOCABULARY_TOO_SMALL',
+      note: `B 门 known=${known.knownWords} required=${known.requiredKnown}`,
+    }
+  }
+
+  return { code: 'ok', note: `池子 ${selection.poolSize}，已知词 ${known.knownWords}` }
+}
+
 async function dryRun(cases, times, base) {
   console.log(`\n[dry-run] base=${base}  times=${times}  用例 ${cases.length} 条\n`)
 
   for (const fixture of new Set(cases.map((item) => item.fixture))) {
     const userId = FIXTURE_USER[fixture]
-    const count = await Word.countDocuments({ userId })
-    // 门槛只看能进池的词：new 状态不参与选池（word.repository.js）
-    const eligible = await Word.countDocuments({
-      userId,
-      status: { $in: ['learning', 'mastered'] },
-    })
-    console.log(`fixture ${fixture}（${userId}）：库里 ${count} 词，可入池 ${eligible} 个`)
+    const words = await Word.find({ userId }).lean()
+    const learnedWords = words
+      .filter((item) => item.status === 'learning' || item.status === 'mastered')
+      .map((item) => item.word)
+    const removedBasicWords = words
+      .filter((item) => item.status === 'new')
+      .map((item) => item.word)
 
-    if (count === 0) {
+    console.log(
+      `fixture ${fixture}（${userId}）：库里 ${words.length} 词，可入池 ${learnedWords.length} 个`,
+    )
+
+    if (words.length === 0) {
       console.log('  ⚠️ 该用户没有词，先跑 node scripts/seed-test-fixtures.mjs --fixture all')
     }
 
     for (const testCase of cases.filter((item) => item.fixture === fixture)) {
-      const needed = neededVocabulary({
-        targetWords: testCase.targetWords,
-        level: testCase.level,
-      })
-      const gate = eligible >= needed ? 'ok' : 'VOCABULARY_TOO_SMALL'
+      const gate = gateOf({ words, learnedWords, removedBasicWords, testCase })
 
       console.log(
         `  #${String(testCase.id).padStart(2)} ${testCase.level.padEnd(6)} ` +
-          `${testCase.targetWords}词 ${testCase.vocabScope.join('+').padEnd(15)}` +
-          ` 需要 ${String(needed).padStart(3)} 词 → ${gate.padEnd(22)}` +
-          ` 期望 ${testCase.expect}${gate === testCase.expect ? '' : '  ⚠️ 不符'}`,
+          `${String(testCase.targetWords).padStart(3)}词 ${testCase.vocabScope.join('+').padEnd(15)}` +
+          ` → ${gate.code.padEnd(22)} ${gate.note}` +
+          `  期望 ${testCase.expect}${gate.code === testCase.expect ? '' : '  ⚠️ 不符'}`,
       )
     }
+    console.log('')
   }
 
-  console.log('\n[dry-run] 未发起任何请求，未产生费用。')
+  console.log('[dry-run] 未发起任何请求，未产生费用。')
 }
 
 async function main() {
@@ -431,7 +514,8 @@ async function main() {
     console.log('\n汇总')
     console.log(
       `  共 ${summary.totalRuns} 次：成功 ${summary.ok}｜失败 ${summary.failed}｜` +
-        `判定不符 ${summary.judgeFailed}｜失败未留痕 ${summary.failureMissing}`,
+        `判定不符 ${summary.judgeFailed}｜篇幅越界 ${summary.lengthOutside}｜` +
+        `失败未留痕 ${summary.failureMissing}`,
     )
     console.log(`  errorCode：${JSON.stringify(summary.codes)}`)
     console.log(
@@ -442,7 +526,8 @@ async function main() {
       console.log(
         `  #${String(item.caseId).padStart(2)} ${item.level.padEnd(6)} ${String(item.targetWords).padStart(3)}词` +
           ` ${item.vocabScope.padEnd(15)} 成功 ${item.ok}/${item.runs}` +
-          ` 池 ${item.poolSizes.join('/') || '-'} ${item.judgePassed ? '✓' : '✗'}`,
+          ` 池 ${item.poolSizes.join('/') || '-'} ${item.judgePassed ? '✓' : '✗'}` +
+          `${item.lengthOutside ? ` ⚠️篇幅 ${item.lengthOutside} 次` : ''}`,
       )
     }
 

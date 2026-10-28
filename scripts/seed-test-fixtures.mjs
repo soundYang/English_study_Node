@@ -15,7 +15,7 @@
  * 默认同时清掉该用户的 Reading / GenerationFailure，否则上一轮的样本
  * 会和这一轮混在一起（想保留就加 --keep-readings）。
  *
- * ⚠️ 只动 fixture-rich / fixture-thin 两个用户，永远不碰 local-user。
+ * ⚠️ 只动 fixture-* 三个用户，永远不碰 local-user。
  */
 import mongoose from 'mongoose'
 
@@ -39,9 +39,13 @@ const FIXTURES = {
   // rich 要测状态混合，所以故意留 20% new；thin 要卡门槛，全部做成入池状态，
   // 否则 120 词里只有 96 个可用，hard 600 词（需 86）只剩 10 个余量
   rich: { userId: 'fixture-rich', count: 900, mixedStatus: true },
-  // 120 词用来卡门槛：600 词 easy 需要 ceil(60/0.35)=172 → 不足；
-  // hard 需要 ceil(60/0.7)=86 → 够用。两个方向都能测到
+  // 120 词已经过不了任何一档的 B 门（easy 也要 1000 个已知词），
+  // 只剩「验闸门」这一个用途：每条用例都应当在调模型之前被拦下
   thin: { userId: 'fixture-thin', count: 120, mixedStatus: false },
+  // hard 档采样专用（md/21 W3 之后）：B 门要 3778 个已知词 = hard 基础表 2578 +
+  // 日历 19 + 至少 1181 个个人词。rich 只有 720 个可用词，永远过不了门，
+  // 用它测 hard 等于在测闸门。1800 个全部算已学，留出余量
+  full: { userId: 'fixture-full', count: 1800, mixedStatus: false },
 }
 
 const DAY_MS = 86_400_000
@@ -185,7 +189,7 @@ async function main() {
   const names = fixtureArg === 'all' ? Object.keys(FIXTURES) : [fixtureArg]
 
   for (const name of names) {
-    if (!FIXTURES[name]) throw new Error(`未知 fixture：${name}（可选 rich / thin / all）`)
+    if (!FIXTURES[name]) throw new Error(`未知 fixture：${name}（可选 ${Object.keys(FIXTURES).join(' / ')} / all）`)
   }
 
   console.log(`锚点日期：${anchor.toString()}`)
@@ -205,6 +209,7 @@ async function main() {
   console.log('\n启动测试实例（3000 是用户自己的实例，不要动）：')
   console.log('  DEFAULT_USER_ID=fixture-rich PORT=3100 node src/server.js')
   console.log('  DEFAULT_USER_ID=fixture-thin PORT=3101 node src/server.js')
+  console.log('  DEFAULT_USER_ID=fixture-full PORT=3102 node src/server.js')
   console.log('\n注意：today_new / today_reviewed 依赖锚点日期，seed 与 batch 最好同一天跑。')
 }
 
