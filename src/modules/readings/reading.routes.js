@@ -1,5 +1,6 @@
 import { Router } from 'express'
 
+import { generateRateLimit } from '../../shared/middleware/rateLimit.js'
 import { parseOrThrow } from '../../shared/utils/validation.js'
 import { listHistoryQuerySchema } from './reading.schema.js'
 import {
@@ -12,7 +13,8 @@ import {
 
 const router = Router()
 
-router.post('/generate', async (req, res) => {
+// 限流只挂这一条（md/21 W9）：挂到 router 上会把 /capacity 一起限掉
+router.post('/generate', generateRateLimit, async (req, res) => {
   const controller = new AbortController()
 
   res.on('close', () => {

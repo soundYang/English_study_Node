@@ -25,6 +25,10 @@ process.env.MAX_EXPAND_ROUNDS = '0'
 // 里的 MAX_UNKNOWN_WORDS（那会变成全局覆盖，把三档压成同一个数，W3 的断言全失效）。
 process.env.MAX_UNKNOWN_WORDS = ''
 process.env.MAX_OUTPUT_TOKENS = '8192'
+// 限流整体关闭（md/21 W9）：一次 50 次预检的验收用例会把同文件后面的用例打成 429，
+// 失败位置还跟限流看不出关系。需要验证限流的用例自己改成 true 再动态 import。
+// 这里显式写 false 而不是留给 config 的默认值，是为了挡住开发机 .env 里的 RATE_LIMIT_ENABLED。
+process.env.RATE_LIMIT_ENABLED = 'false'
 
 // 绝大多数用例测的是整篇路径的行为（修正轮、结构错误、失败样本），
 // 打桩也只认识「一次返回整篇文章」的形状。生产默认是 segmented，

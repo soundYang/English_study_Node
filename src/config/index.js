@@ -44,6 +44,18 @@ function toNumber(key, fallback) {
   return value
 }
 
+/** 布尔型配置：只认 true/false（以及 1/0），写错时启动即炸 */
+function readBoolean(key, fallback) {
+  const raw = process.env[key]?.trim().toLowerCase()
+
+  if (!raw) return fallback
+  if (raw === 'true' || raw === '1') return true
+  if (raw === 'false' || raw === '0') return false
+
+  console.error(`[config] 环境变量 ${key} 只能是 true / false，当前值：${process.env[key]}`)
+  process.exit(1)
+}
+
 /** 枚举型配置：写错时启动即炸，而不是等第一个请求走进未定义分支 */
 function readEnum(key, allowed, fallback) {
   const raw = (process.env[key] || fallback).trim()
@@ -111,6 +123,10 @@ export const config = Object.freeze({
   basicWordsRank: toNumber('BASIC_WORDS_RANK', 3000),
 
   // 限流（次 / 分钟）
+  // 总开关：测试环境默认关闭。开着的话一个 50 次预检的验收用例会把后面的用例
+  // 一起打成 429，且失败位置看起来跟限流毫无关系。要验证限流本身的用例
+  // 在文件顶部把 RATE_LIMIT_ENABLED 设成 true 再动态 import 即可。
+  rateLimitEnabled: readBoolean('RATE_LIMIT_ENABLED', nodeEnv !== 'test'),
   rateLimitDictionary: toNumber('RATE_LIMIT_DICTIONARY', 60),
   rateLimitGenerate: toNumber('RATE_LIMIT_GENERATE', 20),
   rateLimitGlobal: toNumber('RATE_LIMIT_GLOBAL', 300),
