@@ -185,6 +185,12 @@ describe('validateArticle · 违规词分类', () => {
     expect(categoriesOf('Kindness is good.', ['is', 'good'])).toEqual([['kindness', 'rare']])
   })
 
+  it('既没有排名也没有词形命中 → unknown_token（rankOf 返回 null 的出口）', () => {
+    expect(categoriesOf('A zzzqx appeared.', ['a', 'appeared'])).toEqual([
+      ['zzzqx', 'unknown_token'],
+    ])
+  })
+
   it('句首大写不算专名：Quizzical 在句首仍是 unknown_token', () => {
     expect(categoriesOf('Quizzical is good.', ['is', 'good'])).toEqual([
       ['quizzical', 'unknown_token'],

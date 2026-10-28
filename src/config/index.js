@@ -126,7 +126,8 @@ export const config = Object.freeze({
   // 一起打成 429，且失败位置看起来跟限流毫无关系。要验证限流本身的用例
   // 在文件顶部把 RATE_LIMIT_ENABLED 设成 true 再动态 import 即可。
   rateLimitEnabled: readBoolean('RATE_LIMIT_ENABLED', nodeEnv !== 'test'),
-  rateLimitDictionary: toNumber('RATE_LIMIT_DICTIONARY', 60),
+  // 只有生成接口挂限流（W9）：词库检索是纯读内存、不花钱，全局限流会顺带限掉
+  // 前端每拖一次滑块就要调一次的 /capacity。dictionary / global 两个旋钮没有
+  // 任何中间件在读，已于 2026-10-28 删除——留着只会让人以为它们生效。
   rateLimitGenerate: toNumber('RATE_LIMIT_GENERATE', 20),
-  rateLimitGlobal: toNumber('RATE_LIMIT_GLOBAL', 300),
 })
