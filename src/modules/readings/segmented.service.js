@@ -312,16 +312,27 @@ export async function generateSegmented({
   level,
   acceptedMax,
   // 段级进度回调（md/31 §6）：每批跑完、每轮补段后各调一次，
-  // 参数是单段状态 { index, status, words }。不传则整条链路行为不变。
+  // 参数是单段状态 { index, status, words, text }。不传则整条链路行为不变。
   onSegment = null,
+  // 续跑（md/31 §11）：{ [1 起的段号]: 已收下的正文 }。
+  // 传了的段不再调模型，直接进正文——这正是「失败只补失败段」省下来的钱。
+  prewritten = null,
+  // 计划定型回调：把带 limitWords 的最终计划交出去（任务表靠它续跑）。
+  // 段级上限在下面才算出来，所以不能由调用方自己算一遍再传进来。
+  onPlan = null,
 }) {
-  const emitSegment = async (index, stats) => {
+  const emitSegment = async (index, stats, text) => {
     if (typeof onSegment !== 'function') return
 
     await onSegment({
       index: index + 1, // 对外 1 起，与提示词里的段号一致
       status: stats.accepted ? 'accepted' : 'dropped',
       words: stats.actualWords ?? 0,
+      attempts: stats.attempts ?? 0,
+      // 正文一起出去：任务表靠它做断点续跑，丢了就只能整篇重来
+      text: stats.accepted ? String(text ?? '') : '',
+      // 已认出的专有名词：续跑时下一段还要靠它们通过词表校验
+      names: [...names],
     })
   }
 
@@ -331,14 +342,25 @@ export async function generateSegmented({
   // 段级上限来自整篇预算（W11 缺口 2）：Σ 上限 = acceptedMax，
   // 于是「每段都合格」就等价于「整篇不超长」。不传时退回老的各自 1.15 倍口径，
   // 只为兼容离线脚本，生产调用方必须传。
-  const ceilings = planSegmentCeilings(
-    segments,
-    Number.isFinite(acceptedMax)
-      ? acceptedMax
-      : segments.reduce((sum, segment) => sum + segmentWordCeiling(segment.maxWords), 0),
-  )
-  const plan = segments.map((segment, index) => ({ ...segment, limitWords: ceilings[index] }))
+  //
+  // 续跑时段的 `limitWords` 已经在第一次跑的时候就分好并落库了：
+  // 重算一遍会因为「已有段」的 maxWords 相同而得到同一个结果，
+  // 但依赖「用户词库此刻的状态」去重算没有意义，直接用存下来的那份。
+  const reusePlan = segments.every((segment) => Number.isFinite(segment.limitWords))
+  const ceilings = reusePlan
+    ? segments.map((segment) => segment.limitWords)
+    : planSegmentCeilings(
+        segments,
+        Number.isFinite(acceptedMax)
+          ? acceptedMax
+          : segments.reduce((sum, segment) => sum + segmentWordCeiling(segment.maxWords), 0),
+      )
+  const plan = reusePlan
+    ? segments
+    : segments.map((segment, index) => ({ ...segment, limitWords: ceilings[index] }))
   const outline = plan.map(({ id, goal }) => `${id}. ${goal}`).join('\n')
+
+  if (typeof onPlan === 'function') await onPlan(plan)
 
   /** 写第 index 段。refill 时清空 mustUse：补段先保住正文，不再强求覆盖目标词。 */
   const writeSegment = (index, refill) =>
@@ -358,14 +380,47 @@ export async function generateSegmented({
     })
 
   const indexes = segments.map((_, index) => index)
-  const results = await mapWithConcurrency(indexes, config.segmentConcurrency, (index) =>
+  const results = new Array(indexes.length)
+  const pendingIndexes = []
+
+  // 续跑：已收下的段直接放进结果，先报一次进度，让前端一开跑就看到 done 不为 0
+  const stored = prewritten && typeof prewritten === 'object' ? prewritten : {}
+  for (const index of indexes) {
+    const text = stored[index + 1]
+
+    if (typeof text === 'string' && text.trim()) {
+      const stats = {
+        id: plan[index].id,
+        goal: plan[index].goal,
+        maxWords: plan[index].maxWords,
+        limitWords: plan[index].limitWords,
+        // 计 1 次：它当初确实调过一次模型，repairCount 按 attempts-1 汇总
+        attempts: 1,
+        actualWords: countWords(text),
+        overLength: false,
+        accepted: true,
+        unknownWords: [],
+        resumed: true,
+      }
+
+      results[index] = { accepted: true, text, stats }
+      await emitSegment(index, stats, text)
+    } else {
+      pendingIndexes.push(index)
+    }
+  }
+
+  const fresh = await mapWithConcurrency(pendingIndexes, config.segmentConcurrency, (index) =>
     writeSegment(index, false),
   )
+  for (const [position, index] of pendingIndexes.entries()) {
+    results[index] = fresh[position]
+  }
 
   // 首轮跑完就把每段的真实结果推出去：被丢弃的段也要报「dropped」，
   // 否则进度条会永远差最后几格，用户以为卡死了
-  for (const [index, result] of results.entries()) {
-    await emitSegment(index, result.stats)
+  for (const index of pendingIndexes) {
+    await emitSegment(index, results[index].stats, results[index].text)
   }
 
   // 补段（md/27 §3.2 M1）：丢一段不是「这段不重要」，而是整篇少 60 个词。
@@ -373,7 +428,8 @@ export async function generateSegmented({
   // 每段只给一次调用——它刚走完一整条重写链，再走一遍是重复烧钱。
   let refillAccepted = 0
   for (let round = 0; round < config.segmentRefillRounds; round += 1) {
-    const missing = indexes.filter((index) => !results[index].accepted)
+    // 只补这一轮真的写过的段：续跑带进来的段本来就是收下的状态
+    const missing = pendingIndexes.filter((index) => !results[index].accepted)
     if (missing.length === 0) break
 
     const retries = await mapWithConcurrency(missing, config.segmentConcurrency, (index) =>
@@ -399,7 +455,7 @@ export async function generateSegmented({
 
     // 补段改变了这几段的最终状态，重新推一次（同一格以最后一次为准）
     for (const index of missing) {
-      await emitSegment(index, results[index].stats)
+      await emitSegment(index, results[index].stats, results[index].text)
     }
   }
 

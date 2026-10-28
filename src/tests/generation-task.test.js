@@ -77,11 +77,24 @@ async function waitForFinish(taskId, { timeoutMs = 8000 } = {}) {
 
   while (Date.now() < deadline) {
     last = await getTask(taskId)
-    if (last.body?.status === 'succeeded' || last.body?.status === 'failed') return last
+    if (['succeeded', 'failed', 'cancelled'].includes(last.body?.status)) return last
     await new Promise((resolve) => setTimeout(resolve, 25))
   }
 
   return last
+}
+
+/** 等一个真实条件成立（不是等固定毫秒），超时返回 null 让断言失败 */
+async function waitFor(check, { timeoutMs = 8000, interval = 25 } = {}) {
+  const deadline = Date.now() + timeoutMs
+
+  while (Date.now() < deadline) {
+    const value = await check()
+    if (value) return value
+    await new Promise((resolve) => setTimeout(resolve, interval))
+  }
+
+  return null
 }
 
 /** 一个外部能控制的挂起下游：用来制造「任务还在跑」的窗口 */
@@ -269,5 +282,136 @@ describe('失败归因', () => {
     expect(done.body.error.code).toBe('INSUFFICIENT_VOCABULARY')
     // 原样重试只会再失败一次，得先去加词
     expect(done.body.retryable).toBe(false)
+  })
+})
+
+describe('POST /generate/tasks/:id/cancel · 取消', () => {
+  const cancel = (taskId) => request(app).post(`/api/readings/generate/tasks/${taskId}/cancel`)
+
+  it('取消进行中的任务 → cancelled，生成跑完也不能把状态改回去', async () => {
+    await seedWords()
+    const gate = deferredChat()
+
+    const { body } = await postTask(BODY)
+    // 等第一次模型调用真的发出去了再取消：这样后面的「生成跑完」一定会发生，
+    // 用例才测得到「迟到的写回不会覆盖 cancelled」这件事
+    expect(await waitFor(() => gate.size > 0)).toBe(true)
+
+    const res = await cancel(body.taskId)
+
+    expect(res.status).toBe(200)
+    expect(res.body.status).toBe('cancelled')
+    expect(res.body.stage).toBe('done')
+    expect(res.body.error).toBeNull()
+
+    gate.release()
+    // 打桩的 chatJson 不理会 signal，生成会一路跑到落库——正是要验证的迟到写回
+    expect(await waitFor(() => Reading.countDocuments({}))).toBe(1)
+
+    const after = await getTask(body.taskId)
+    expect(after.body.status).toBe('cancelled')
+    expect(after.body.readingId).toBeNull()
+  })
+
+  it('终态任务再点取消是无害的，返回真实终态', async () => {
+    await seedWords()
+    chatJson.mockResolvedValue(reply(makePayload()))
+
+    const { body } = await postTask(BODY)
+    const done = await waitForFinish(body.taskId)
+
+    const res = await cancel(body.taskId)
+
+    expect(res.status).toBe(200)
+    expect(res.body.status).toBe('succeeded')
+    expect(res.body.readingId).toBe(done.body.readingId)
+  })
+
+  it('任务不存在 / id 非法 → 404 TASK_NOT_FOUND', async () => {
+    const missing = await cancel('507f1f77bcf86cd799439011')
+    expect(missing.status).toBe(404)
+    expect(missing.body.error.code).toBe('TASK_NOT_FOUND')
+
+    const malformed = await cancel('not-an-object-id')
+    expect(malformed.status).toBe(404)
+    expect(malformed.body.error.code).toBe('TASK_NOT_FOUND')
+  })
+})
+
+describe('POST /generate/tasks/:id/retry · 重试', () => {
+  const retry = (taskId) => request(app).post(`/api/readings/generate/tasks/${taskId}/retry`)
+
+  it('失败后重试同一个任务，成功后产生文章且 retryCount 递增', async () => {
+    await seedWords()
+    chatJson.mockRejectedValue(
+      Object.assign(new Error('upstream down'), { code: 'AI_PROVIDER_ERROR' }),
+    )
+
+    const { body } = await postTask(BODY)
+    const failed = await waitForFinish(body.taskId)
+    expect(failed.body.status).toBe('failed')
+
+    chatJson.mockReset()
+    chatJson.mockResolvedValue(reply(makePayload()))
+
+    const res = await retry(body.taskId)
+
+    expect(res.status).toBe(202)
+    expect(res.body.taskId).toBe(body.taskId)
+    expect(res.body.reused).toBe(false)
+    expect(res.body.retryCount).toBe(1)
+
+    const done = await waitForFinish(body.taskId)
+
+    expect(done.body.status).toBe('succeeded')
+    expect(done.body.retryCount).toBe(1)
+    expect(done.body.readingId).toBeTruthy()
+    expect(await Reading.countDocuments({})).toBe(1)
+  })
+
+  it('已成功的任务再重试直接复用，不会重复生成', async () => {
+    await seedWords()
+    chatJson.mockResolvedValue(reply(makePayload()))
+
+    const { body } = await postTask(BODY)
+    await waitForFinish(body.taskId)
+    const before = chatJson.mock.calls.length
+
+    const res = await retry(body.taskId)
+
+    expect(res.status).toBe(202)
+    expect(res.body.reused).toBe(true)
+    expect(res.body.status).toBe('succeeded')
+    expect(chatJson.mock.calls.length).toBe(before)
+    expect(await Reading.countDocuments({})).toBe(1)
+  })
+
+  it('还在跑的任务重试只是复用，不会起第二条链路', async () => {
+    await seedWords()
+    const gate = deferredChat()
+
+    const { body } = await postTask(BODY)
+    // 等任务真的开跑再重试：否则 release 时还没有任何调用被挂起，生成会永远停在 queued
+    expect(await waitFor(() => gate.size > 0)).toBe(true)
+
+    const res = await retry(body.taskId)
+
+    expect(res.status).toBe(202)
+    expect(res.body.reused).toBe(true)
+    expect(['queued', 'running']).toContain(res.body.status)
+
+    gate.release()
+    await waitForFinish(body.taskId)
+    expect(await Reading.countDocuments({})).toBe(1)
+  })
+
+  it('任务不存在 / id 非法 → 404 TASK_NOT_FOUND', async () => {
+    const missing = await retry('507f1f77bcf86cd799439011')
+    expect(missing.status).toBe(404)
+    expect(missing.body.error.code).toBe('TASK_NOT_FOUND')
+
+    const malformed = await retry('not-an-object-id')
+    expect(malformed.status).toBe(404)
+    expect(malformed.body.error.code).toBe('TASK_NOT_FOUND')
   })
 })

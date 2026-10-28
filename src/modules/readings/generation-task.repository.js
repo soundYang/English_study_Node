@@ -46,6 +46,20 @@ export const generationTaskRepository = {
   },
 
   /**
+   * 重开一个终态任务（md/31 §11 段级续跑）。
+   *
+   * 条件更新：两个重试请求同时打进来，只有一个能把 failed/cancelled 改成 queued，
+   * 另一个拿到 null 就知道「已经有人在重试」，不会起第二条生成链路。
+   */
+  reopen(id, data) {
+    return GenerationTask.findOneAndUpdate(
+      { _id: id, status: { $in: ['failed', 'cancelled'] } },
+      { $set: data },
+      { new: true },
+    )
+  },
+
+  /**
    * 启动清理：进程重启后没有任何执行器会来推进这些任务，
    * 留着只会让前端永远转圈（md/31 §7）。
    */

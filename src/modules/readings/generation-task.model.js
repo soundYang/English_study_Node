@@ -38,7 +38,13 @@ const selectedWordSchema = new Schema(
   { _id: false },
 )
 
-/** 段级状态：只给进度用，不存正文（段级续跑属阶段二，见 md/31 §11） */
+/**
+ * 段级状态。
+ *
+ * `text` 是**已收下的正文**，不是进度装饰：续跑时这些段不再调模型，
+ * 直接拼回文章——这就是「失败只补失败段」省下来的钱（md/31 §11）。
+ * 一段几百词，十段也就几 KB，任务文档的 16 MB 上限离得很远。
+ */
 const segmentStateSchema = new Schema(
   {
     index: { type: Number, required: true }, // 1 起，与提示词里的段号一致
@@ -48,6 +54,38 @@ const segmentStateSchema = new Schema(
       default: 'pending',
     },
     words: { type: Number, default: 0 }, // 收下时这一段的实际词数
+    attempts: { type: Number, default: 0 }, // 这一段一共调了几次模型
+    text: { type: String, default: '' }, // 已收下的正文；dropped 时为空
+  },
+  { _id: false },
+)
+
+/**
+ * 续跑所需的生成计划：提示词 + 分段表 + 已认出的专有名词。
+ *
+ * 为什么这三样都要存：缺一样都得重跑规划，而重跑规划会拿到**不同的分段**，
+ * 已收下的段就和新段对不上号了。`limitWords` 尤其不能重算——
+ * 它是按整篇预算分下来的份额，Σ 必须等于 acceptedMax。
+ */
+const planSchema = new Schema(
+  {
+    systemPrompt: { type: String, default: '' },
+    segments: {
+      type: [
+        new Schema(
+          {
+            id: { type: Number, required: true },
+            goal: { type: String, default: '' },
+            maxWords: { type: Number, default: 0 },
+            limitWords: { type: Number, default: 0 },
+            mustUse: { type: [String], default: [] },
+          },
+          { _id: false },
+        ),
+      ],
+      default: [],
+    },
+    names: { type: [String], default: [] },
   },
   { _id: false },
 )
@@ -65,7 +103,8 @@ const generationTaskSchema = new Schema(
 
     status: {
       type: String,
-      enum: ['queued', 'running', 'succeeded', 'failed'],
+      // cancelled 只由取消接口写入；被中断（进程重启）走 failed + TASK_INTERRUPTED
+      enum: ['queued', 'running', 'succeeded', 'failed', 'cancelled'],
       default: 'queued',
     },
     // 阶段必须对应真实动作（md/31 §4）：不做定时器推进的假进度
@@ -91,6 +130,12 @@ const generationTaskSchema = new Schema(
 
     selectedWords: { type: [selectedWordSchema], default: [] },
     segments: { type: [segmentStateSchema], default: [] },
+    // 续跑的输入；第一次跑到这里之前是 null
+    plan: { type: planSchema, default: null },
+    // 已认出的专有名词（随段级回调整体刷新）：续跑时缺的段要靠它们通过词表校验
+    names: { type: [String], default: [] },
+    // 续跑次数：0 = 第一次跑。用来区分「这篇是重试出来的」和正常生成
+    retryCount: { type: Number, default: 0 },
 
     readingId: { type: Schema.Types.ObjectId, default: null },
     error: {

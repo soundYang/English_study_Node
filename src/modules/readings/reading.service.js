@@ -323,11 +323,11 @@ async function recordFailure(diag, error) {
  * 想统计「违规词长什么样、属于哪一类」时既没有分母也没法回查。
  * 薄壳保证任何业务异常都落一条 GenerationFailure，同时原错误原样抛给调用方。
  */
-export async function generateReading({ userId, body, signal, onProgress }) {
+export async function generateReading({ userId, body, signal, onProgress, resume }) {
   const diag = { userId, startedAt: Date.now(), rounds: [] }
 
   try {
-    return await generateReadingInner({ userId, body, signal, diag, onProgress })
+    return await generateReadingInner({ userId, body, signal, diag, onProgress, resume })
   } catch (error) {
     // 用户主动断开不是「生成失败」，记下来只会污染成功率的分母
     if (signal?.aborted || error?.name === 'AbortError') throw error
@@ -381,7 +381,7 @@ function pickWordDetail(word) {
  * 真正的生成流程。诊断信息走 diag 这个可变对象回传给外壳，
  * 用不到返回值——异常路径下根本没有返回值可用。
  */
-async function generateReadingInner({ userId, body, signal, diag, onProgress }) {
+async function generateReadingInner({ userId, body, signal, diag, onProgress, resume }) {
   const params = parseOrThrow(generateReadingSchema, body)
   diag.params = params
 
@@ -652,7 +652,9 @@ async function generateReadingInner({ userId, body, signal, diag, onProgress }) 
   let questionsRounds = 0
 
   if (config.generationStrategy === 'segmented') {
-    const systemPrompt = buildSegmentedSystem({
+    // 续跑时优先用上一次存下来的提示词：还没写的那几段必须和已经写好的段
+    // 看到同一套约束，否则拼出来的文章会有两种语气（md/31 §11）
+    const systemPrompt = resume?.systemPrompt || buildSegmentedSystem({
       level: params.level,
       targetWords: params.targetWords,
       basicWords: personalBasicWords,
@@ -662,22 +664,32 @@ async function generateReadingInner({ userId, body, signal, diag, onProgress }) 
       freeForm: finalMode,
     })
 
-    const segmentCount = planSegmentCount(params.targetWords)
-    const planResponse = await callModel({
-      kind: 'plan',
-      messages: buildPlanMessages(systemPrompt, { segmentCount, range }),
-      signal,
-      rounds,
-      temperature: config.segmentTemperature,
-    })
+    let segments
 
-    // 计划不合法由代码补齐（md/20 §5.3），不为此再调一次模型
-    const segments = buildSegmentPlan({
-      raw: parseAiContent(planResponse.content),
-      targetWords: params.targetWords,
-      targetWordList: [...plan.focusWords, ...plan.targetWords],
-      range,
-    })
+    if (Array.isArray(resume?.segments) && resume.segments.length > 0) {
+      // 计划已经落库，直接用：重跑一次规划会拿到不同的分段，
+      // 那样已收下的段和新的段对不上号，续跑就失去意义
+      segments = resume.segments
+      logger.info({ segments: segments.length, resumed: true }, 'segmented generation resumed')
+    } else {
+      const segmentCount = planSegmentCount(params.targetWords)
+      const planResponse = await callModel({
+        kind: 'plan',
+        messages: buildPlanMessages(systemPrompt, { segmentCount, range }),
+        signal,
+        rounds,
+        temperature: config.segmentTemperature,
+      })
+
+      // 计划不合法由代码补齐（md/20 §5.3），不为此再调一次模型
+      segments = buildSegmentPlan({
+        raw: parseAiContent(planResponse.content),
+        targetWords: params.targetWords,
+        targetWordList: [...plan.focusWords, ...plan.targetWords],
+        range,
+      })
+    }
+
     diag.segments = segments.map(({ id, goal, maxWords, mustUse }) => ({
       id,
       goal,
@@ -692,15 +704,23 @@ async function generateReadingInner({ userId, body, signal, diag, onProgress }) 
       progress: { done: 0, total: segments.length },
     })
 
-    const names = new Set()
+    // 续跑带上一次认出的专有名词：它们在已写好的段里已经出现过，
+    // 缺的那几段沿用同一个名字不该被判成表外词
+    const names = new Set(resume?.names ?? [])
     const generated = await generateSegmented({
       segments,
       systemPrompt,
       allowedWords,
       names,
       signal,
+      // 计划定型后立刻落库：续跑要靠它复现同一批段与同一个提示词
+      onPlan: (plannedSegments) => report({
+        plan: { systemPrompt, segments: plannedSegments, names: [...names] },
+      }),
       // 段级进度：每批跑完、每轮补段后各回调一次，参数是单段的状态
       onSegment: (segment) => report({ segment }),
+      // 已收下的正文：这些段不再调模型（重试只补失败段，md/31 §11）
+      prewritten: resume?.segmentTexts ?? null,
       rounds,
       questionCount: params.questionCount,
       range,

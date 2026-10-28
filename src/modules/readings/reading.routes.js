@@ -3,8 +3,10 @@ import { Router } from 'express'
 import { generateRateLimit } from '../../shared/middleware/rateLimit.js'
 import { parseOrThrow } from '../../shared/utils/validation.js'
 import {
+  cancelGenerationTask,
   createGenerationTask,
   getGenerationTask,
+  retryGenerationTask,
 } from './generation-task.service.js'
 import { listHistoryQuerySchema } from './reading.schema.js'
 import {
@@ -67,6 +69,32 @@ router.post('/generate/tasks', generateRateLimit, async (req, res) => {
 
 router.get('/generate/tasks/:taskId', async (req, res) => {
   res.json(await getGenerationTask({ userId: req.userId, id: req.params.taskId }))
+})
+
+/** 取消：只是不再继续付费，已收下的段留着，之后还能 retry 接着写 */
+router.post('/generate/tasks/:taskId/cancel', async (req, res) => {
+  res.json(await cancelGenerationTask({ userId: req.userId, id: req.params.taskId }))
+})
+
+/**
+ * 重试：重开同一个任务，只补失败的段（md/31 §11）。
+ *
+ * 挂限流：它同样会真金白银地调模型，不挂等于给了一个绕过限流的重试入口。
+ */
+router.post('/generate/tasks/:taskId/retry', generateRateLimit, async (req, res) => {
+  const { task, reused } = await retryGenerationTask({
+    userId: req.userId,
+    id: req.params.taskId,
+  })
+
+  res.status(202).json({
+    taskId: String(task._id),
+    status: task.status,
+    stage: task.stage,
+    reused,
+    retryCount: task.retryCount ?? 0,
+    params: task.params,
+  })
 })
 
 // /capacity 与 /history 必须排在 /:id 之前，否则会被当成 id 去查，直接 404
