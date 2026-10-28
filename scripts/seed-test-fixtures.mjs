@@ -98,6 +98,28 @@ const FIXTURES = {
     common: true,
     reserveEasyOnly: true,
   },
+
+  // ——— md/27 阶段二：阶梯采样的每个 V 点（V = 个人词数） ———
+  //
+  // 全部是真人形态（从最高频开始取 V 个）。采样实例必须带
+  // `SKIP_KNOWN_WORDS_GATE=true`，否则这些点一个都过不了 B 门。
+  // V=0 没有列进来：A 门要求候选池至少能凑齐目标词（hard 100 词也要 15 个），
+  // 0 个个人词在调模型之前就被拦下，属于「测不到」而不是「测出来不够」。
+  // 贴着 A 门边界的两点：hard/200 的 A 门要 29 个、hard/600 要 86 个。
+  // 这两个点是用来判断「表里的数字是能力下限，还是 A 门公式的下限」的。
+  'real-v29': { userId: 'fixture-real-v29', count: 29, mixedStatus: false, common: true, reserveEasyOnly: true },
+  'real-v86': { userId: 'fixture-real-v86', count: 86, mixedStatus: false, common: true, reserveEasyOnly: true },
+  // 其余篇幅的 A 门精确边界：hard 的 neededVocab = ceil(round(0.1N)/0.7)
+  //   300 → 43｜400 → 58｜500 → 72
+  'real-v43': { userId: 'fixture-real-v43', count: 43, mixedStatus: false, common: true, reserveEasyOnly: true },
+  'real-v58': { userId: 'fixture-real-v58', count: 58, mixedStatus: false, common: true, reserveEasyOnly: true },
+  'real-v72': { userId: 'fixture-real-v72', count: 72, mixedStatus: false, common: true, reserveEasyOnly: true },
+  'real-v50': { userId: 'fixture-real-v50', count: 50, mixedStatus: false, common: true, reserveEasyOnly: true },
+  'real-v100': { userId: 'fixture-real-v100', count: 100, mixedStatus: false, common: true, reserveEasyOnly: true },
+  'real-v200': { userId: 'fixture-real-v200', count: 200, mixedStatus: false, common: true, reserveEasyOnly: true },
+  'real-v400': { userId: 'fixture-real-v400', count: 400, mixedStatus: false, common: true, reserveEasyOnly: true },
+  'real-v600': { userId: 'fixture-real-v600', count: 600, mixedStatus: false, common: true, reserveEasyOnly: true },
+  'real-v800': { userId: 'fixture-real-v800', count: 800, mixedStatus: false, common: true, reserveEasyOnly: true },
 }
 
 const DAY_MS = 86_400_000

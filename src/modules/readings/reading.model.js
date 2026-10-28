@@ -216,6 +216,9 @@ const readingSchema = new Schema(
       // 失败样本里已经有这三项；成功样本没有的话，同一批次没法解释「为什么这篇能过」
       knownWords: Number, // 个人词库 ∪ 该档基础表 ∪ 日历词
       requiredKnown: Number, // 该难度的已知词下限
+      // true = 在跳过 B 门的采样实例上生成（md/27 阶段二容量采样）。
+      // 这类样本不能和线上样本一起算成功率：它们是刻意在门槛以下跑的
+      knownGateSkipped: Boolean,
       unknownBudget: Number, // 该难度的生词预算
     },
   },

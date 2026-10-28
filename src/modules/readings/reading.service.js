@@ -469,7 +469,10 @@ async function generateReadingInner({ userId, body, signal, diag }) {
   // 放在 A 门之后是有意的：A 门说「这次参数凑不齐目标词」，缩短篇幅或换词源就能过；
   // B 门说「这个难度你还没准备好」，只有加词或降难度能过。先报成本更低的解法。
   // 两道都在调模型之前——一次调用几秒、几千 token，注定失败就不该发出去。
-  if (!known.sufficient) {
+  // `SKIP_KNOWN_WORDS_GATE` 只给 md/27 阶段二采样用：要找到「写 N 词至少需要
+  // 多少已知词」，就必须能跑低于当前门槛的样本。跳过时数字照常记进 aiMeta，
+  // 样本里 `knownGateSkipped=true`，不会和线上样本混在一起。
+  if (!known.sufficient && !config.skipKnownWordsGate) {
     logger.warn(
       {
         level: params.level,
@@ -942,6 +945,9 @@ async function generateReadingInner({ userId, body, signal, diag }) {
       // W8：门禁数字随文章留下，报告里才能回答「这篇为什么能过」
       knownWords: known.knownWords,
       requiredKnown: known.requiredKnown,
+      // true = 这篇是在跳过 B 门的采样实例上跑出来的（md/27 阶段二）。
+      // 它与线上样本不可比，报表/回归必须能一眼区分开。
+      knownGateSkipped: config.skipKnownWordsGate,
       unknownBudget,
       irregularFormsVersion,
       codeVersion,
