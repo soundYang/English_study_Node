@@ -126,7 +126,12 @@ describe('validateArticle · 判定与统计', () => {
     const result = check('The dog quizzical. The cat slept.', ['the', 'dog', 'cat', 'slept'])
 
     expect(result.violations).toEqual([
-      { word: 'quizzical', sentence: 'The dog quizzical.' },
+      {
+        token: 'quizzical',
+        normalized: 'quizzical',
+        category: 'unknown_token',
+        sentence: 'The dog quizzical.',
+      },
     ])
   })
 
@@ -136,7 +141,110 @@ describe('validateArticle · 判定与统计', () => {
       unknownWords: [],
       checkedWordCount: 0,
       violations: [],
+      counts: {
+        abbreviation: 0,
+        proper_noun: 0,
+        wordform: 0,
+        missing_common: 0,
+        rare: 0,
+        unknown_token: 0,
+      },
+      detectedNames: [],
     })
+  })
+})
+
+describe('validateArticle · 违规词分类', () => {
+  /** 只取「词 → 分类」，句子和原 token 单独在下面的用例里验 */
+  const categoriesOf = (article, allowedWords, names = []) =>
+    validateArticle({ article, allowedWords, names }).violations.map(
+      ({ normalized, category }) => [normalized, category],
+    )
+
+  it('COCA 前 3000 的常用词 → missing_common（实测 800 词那批全都落在这里）', () => {
+    const article =
+      'The business was simple and serious, and the depth was similar to the volunteer.'
+
+    expect(categoriesOf(article, ['the', 'was', 'and', 'to'])).toEqual([
+      ['business', 'missing_common'],
+      ['simple', 'missing_common'],
+      ['serious', 'missing_common'],
+      ['depth', 'missing_common'],
+      ['similar', 'missing_common'],
+      ['volunteer', 'missing_common'],
+    ])
+  })
+
+  it('有排名但超过 3000 → rare，这类才是真的超纲', () => {
+    expect(categoriesOf('Kindness is good.', ['is', 'good'])).toEqual([['kindness', 'rare']])
+  })
+
+  it('句首大写不算专名：Quizzical 在句首仍是 unknown_token', () => {
+    expect(categoriesOf('Quizzical is good.', ['is', 'good'])).toEqual([
+      ['quizzical', 'unknown_token'],
+    ])
+  })
+
+  it('句中首字母大写 → proper_noun，并记进 detectedNames', () => {
+    const result = validateArticle({
+      article: 'He met Anna in the hall.',
+      allowedWords: ['he', 'met', 'in', 'the', 'hall'],
+    })
+
+    expect(result.violations).toEqual([
+      {
+        token: 'Anna',
+        normalized: 'anna',
+        category: 'proper_noun',
+        sentence: 'He met Anna in the hall.',
+      },
+    ])
+    expect(result.detectedNames).toEqual(['anna'])
+  })
+
+  it('点号缩写 → abbreviation，而不是把 U.S. 拆成 us 当生词', () => {
+    expect(categoriesOf('The U.S. is big and Dr. Smith came.', ['the', 'is', 'big', 'and', 'came']))
+      .toEqual([
+        ['us', 'abbreviation'],
+        ['dr', 'abbreviation'],
+        // Dr. 后面的句点会被当成断句，Smith 因此不判专名——
+        // 误判方向是「少认一个名字」，比反过来安全
+        ['smith', 'unknown_token'],
+      ])
+  })
+
+  it('规则还原漏掉的词形 → wordform（lying → lie 是现有实现的真实缺口）', () => {
+    // resolveBaseForms('lying') 只给 ly / lye，命中不了 lie
+    expect(categoriesOf('He was lying on the bed.', ['he', 'was', 'on', 'the', 'bed', 'lie'])).toEqual(
+      [['lying', 'wordform']],
+    )
+  })
+
+  it('counts 与 violations 一一对应', () => {
+    const result = validateArticle({
+      article: 'He met Anna. Kindness and business matter.',
+      allowedWords: ['he', 'met', 'and', 'matter'],
+    })
+
+    expect(Object.keys(result.counts).sort()).toEqual([
+      'abbreviation',
+      'missing_common',
+      'proper_noun',
+      'rare',
+      'unknown_token',
+      'wordform',
+    ])
+    expect(result.counts).toEqual({
+      abbreviation: 0,
+      proper_noun: 1,
+      wordform: 0,
+      missing_common: 1,
+      rare: 1,
+      unknown_token: 0,
+    })
+    expect(result.counts.proper_noun + result.counts.missing_common + result.counts.rare).toBe(
+      result.violations.length,
+    )
   })
 })
 

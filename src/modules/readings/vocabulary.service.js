@@ -1,4 +1,6 @@
 import { resolveBaseForms } from '../../shared/utils/word.js'
+import { getWordRank } from '../words/word-ranks.js'
+import { ABBREVIATION_WORDS } from './abbreviations.js'
 
 /**
  * 词汇校验：文章里的每个词都必须能落到「用户词 + 基础词」里。
@@ -111,6 +113,154 @@ function splitSentences(article) {
 }
 
 /**
+ * 断句标记：句末标点、换行，或引号/破折号收尾。
+ *
+ * 引号收尾也算断句，是为了让 `"Hello," she said` 里的 she 不因句首规则漏判——
+ * 代价是这种位置的句中大写会被当成句首，对分类来说比反过来的误判安全。
+ */
+const SENTENCE_BREAK_RE = /[.!?\n]|["“”'’—]\s*$/
+
+const EMPTY_META = Object.freeze({ midSentenceCapitalized: false, dottedAbbr: false })
+
+/**
+ * 「常用词」的判定线（COCA 排名）。
+ *
+ * 刻意不读 `config.basicWordsRank`：那个值决定基础词表怎么生成，本机 .env 里是 800，
+ * 换台机器就成了另一套分类，报告没法横向比。诊断口径必须和部署环境无关。
+ */
+const COMMON_WORD_RANK = 3000
+
+/**
+ * 扫一遍**归一之前的**原文，记下每个 token 的大小写语境。
+ *
+ * 必须在 DOTTED_ABBR_RE 把点抹掉之前扫：抹掉之后 `U.S.` 的句点消失，
+ * 断句判据全失效，后面每个词都会被当成句首词。
+ *
+ * 同一个 token 多次出现时按「任一次非句首大写」记——分类要回答的是
+ * 「它有没有可能是个专名」，出现过一次就够。
+ *
+ * @returns {Map<string, { midSentenceCapitalized: boolean, dottedAbbr: boolean }>}
+ */
+function scanMeta(article) {
+  const text = String(article ?? '').normalize('NFKC')
+  const meta = new Map()
+
+  // U.S. / e.g. 这类点号缩写的区间，区间里的字母不单独算词
+  const spans = [...text.matchAll(DOTTED_ABBR_RE)].map((match) => [
+    match.index,
+    match.index + match[0].length,
+  ])
+
+  let prevEnd = 0
+  let atStart = true
+
+  for (const match of text.matchAll(TOKEN_RE)) {
+    const raw = match[0]
+
+    if (SENTENCE_BREAK_RE.test(text.slice(prevEnd, match.index))) atStart = true
+
+    const span = spans.find(([start, end]) => match.index >= start && match.index < end)
+    const key = span
+      ? text.slice(span[0], span[1]).replace(/\./g, '').toLowerCase()
+      : raw.toLowerCase()
+
+    const entry = meta.get(key) ?? { midSentenceCapitalized: false, dottedAbbr: false }
+    if (span) entry.dottedAbbr = true
+    // 句首大写是语法，不是专名；只有非句首的大写才说明它可能是名字
+    else if (!atStart && /^[A-Z]/.test(raw)) entry.midSentenceCapitalized = true
+
+    meta.set(key, entry)
+    atStart = false
+    prevEnd = match.index + raw.length
+  }
+
+  return meta
+}
+
+/**
+ * 只按后缀还原的朴素词形，用来发现「规则还原漏了这一条」。
+ *
+ * 不能拿它替代 resolveBaseForms：它会把 business 还原成 busines 这种假词根。
+ * 它只在 `isAllowed` 已经失败之后用一次——朴素还原能命中允许词表，
+ * 说明漏的确实是词形，而不是词表里根本没这个词。
+ *
+ * 比 resolveBaseForms 多一条 `-ying → -ie`（lying → lie、dying → die），
+ * 那处是现有实现的真实缺口，也是这一类唯一稳定的触发点。
+ */
+function naiveStems(word) {
+  const stems = new Set()
+  const rules = [
+    [/ies$/, 'y'],
+    [/ied$/, 'y'],
+    [/ying$/, 'ie'],
+    [/es$/, ''],
+    [/s$/, ''],
+    [/ed$/, ''],
+    [/ed$/, 'e'],
+    [/ing$/, ''],
+    [/ing$/, 'e'],
+    [/er$/, ''],
+    [/est$/, ''],
+    [/ly$/, ''],
+  ]
+
+  for (const [pattern, replacement] of rules) {
+    if (pattern.test(word)) stems.add(word.replace(pattern, replacement))
+  }
+
+  // 双写辅音：running → runn → run、stopped → stopp → stop
+  for (const stem of [...stems]) {
+    if (/([b-df-hj-np-tv-z])\1$/.test(stem)) stems.add(stem.slice(0, -1))
+  }
+
+  stems.delete(word)
+
+  // 词根至少两个字母，否则 'as' 会还原出 'a' 这种无意义的命中
+  return [...stems].filter((stem) => stem.length >= 2)
+}
+
+/**
+ * 违规词分类（方案 §3.2.2）。按顺序判定，命中即停。
+ *
+ * 顺序不能改：先用 1、3 排掉「不是词本身的问题」，再用 4–6 判「是不是缺词」。
+ * 分类只在拿到正文的那一刻做才有意义——大小写和原句之后就拿不回来了。
+ *
+ * @param {{ word: string, allowed: Set<string>, meta: { midSentenceCapitalized: boolean, dottedAbbr: boolean } }} params
+ * @returns {'abbreviation'|'proper_noun'|'wordform'|'missing_common'|'rare'|'unknown_token'}
+ */
+function classify({ word, allowed, meta }) {
+  // 1. 缩写：校验器本来该放行却漏了，属于校验器的 bug
+  if (meta.dottedAbbr || ABBREVIATION_WORDS.includes(word)) return 'abbreviation'
+
+  // 2. 专名：句中首字母大写。放行策略在 §4.1，这里只负责认出来
+  if (meta.midSentenceCapitalized) return 'proper_noun'
+
+  // 3. 词形：朴素还原能命中允许词表，说明是词形表缺条目
+  if (naiveStems(word).some((stem) => allowed.has(stem))) return 'wordform'
+
+  const rank = getWordRank(word)
+
+  // 4. 常用词缺表：COCA 前 3000，加上它就能过
+  if (rank !== null && rank <= COMMON_WORD_RANK) return 'missing_common'
+
+  // 5. 真超纲：有排名但太靠后，是模型越界
+  if (rank !== null) return 'rare'
+
+  // 6. 无排名：生造词，或源表没收录的专名
+  return 'unknown_token'
+}
+
+/** 所有分类取值的全集，也是 counts 的键。新增分类时只改这一处 */
+export const VIOLATION_CATEGORIES = Object.freeze([
+  'abbreviation',
+  'proper_noun',
+  'wordform',
+  'missing_common',
+  'rare',
+  'unknown_token',
+])
+
+/**
  * 校验文章用词。
  *
  * @param {{ article: string, allowedWords: Set<string> | string[], names?: string[] }} params
@@ -118,11 +268,21 @@ function splitSentences(article) {
  *   valid: boolean,
  *   unknownWords: string[],
  *   checkedWordCount: number,
- *   violations: Array<{ word: string, sentence: string }>,
+ *   violations: Array<{
+ *     token: string,        // 原文形态，含大小写
+ *     normalized: string,   // 展开缩写、去所有格后参与校验的形式
+ *     category: string,
+ *     sentence: string,
+ *   }>,
+ *   counts: Record<string, number>,
+ *   detectedNames: string[],
  * }}
  *
  * unknownWords 去重后按出现顺序返回（错误信息只展示前 5 个）；
- * violations 与之一一对应，多带一句原文，供修正轮做局部改写。
+ * violations 与之一一对应，多带原句和分类，供修正轮局部改写、也供失败样本做统计。
+ *
+ * `unknownWords` 是给老调用方的兼容面，`violations[].category` 才是诊断用的。
+ * 分类永远不改变「哪些词算违规」——放行与否只看 isAllowed，改分类不影响生成行为。
  */
 export function validateArticle({ article, allowedWords, names = [] }) {
   const allowed = new Set(
@@ -133,11 +293,17 @@ export function validateArticle({ article, allowedWords, names = [] }) {
   )
 
   const sentences = splitSentences(article)
+  const meta = scanMeta(article)
   const unknownWords = []
   const violations = []
+  const detectedNames = []
+  const counts = Object.fromEntries(VIOLATION_CATEGORIES.map((category) => [category, 0]))
   let checkedWordCount = 0
 
   for (const rawToken of tokenize(article)) {
+    // 大小写语境按原 token 查：展开缩写之后就只剩小写碎片了
+    const tokenMeta = meta.get(rawToken.toLowerCase()) ?? EMPTY_META
+
     for (const word of expandToken(rawToken)) {
       checkedWordCount += 1
 
@@ -146,14 +312,23 @@ export function validateArticle({ article, allowedWords, names = [] }) {
       if (isAllowed(word, allowed)) continue
       if (unknownWords.includes(word)) continue
 
+      const category = classify({ word, allowed, meta: tokenMeta })
+
       unknownWords.push(word)
       violations.push({
-        word,
+        token: rawToken,
+        normalized: word,
+        category,
         sentence:
           sentences.find((sentence) =>
             sentence.toLowerCase().includes(rawToken.toLowerCase()),
           ) ?? '',
       })
+      counts[category] += 1
+
+      if (category === 'proper_noun' && !detectedNames.includes(word)) {
+        detectedNames.push(word)
+      }
     }
   }
 
@@ -162,5 +337,7 @@ export function validateArticle({ article, allowedWords, names = [] }) {
     unknownWords,
     checkedWordCount,
     violations,
+    counts,
+    detectedNames,
   }
 }

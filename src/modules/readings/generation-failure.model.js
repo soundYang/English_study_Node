@@ -5,14 +5,16 @@ import { roundSchema } from './round.schema.js'
 const { Schema } = mongoose
 
 /**
- * 违规词及所在原句。
+ * 违规词及所在原句，字段与 `validateArticle()` 的 `violations[]` 一一对应。
  *
- * 保留 `word` 这个名字是为了和 `vocabulary.service.js` 现有返回值一一对应；
- * 阶段一 §3.2 给违规词加分类后，这里会多出 `token` / `normalized` / `category`。
+ * `category` 故意不加 enum：分类表将来一定会加，而 schema 校验失败会让
+ * 这一条样本整个被丢掉——诊断数据宁可多存一个不认识的类别，也不能丢样本。
  */
 const violationSchema = new Schema(
   {
-    word: { type: String, required: true },
+    token: { type: String, required: true }, // 原文形态，含大小写
+    normalized: { type: String, required: true }, // 展开缩写、去所有格后的形式
+    category: String, // abbreviation / proper_noun / wordform / missing_common / rare / unknown_token
     sentence: { type: String, default: '' },
   },
   { _id: false },

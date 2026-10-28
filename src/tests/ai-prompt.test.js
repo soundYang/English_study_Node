@@ -17,6 +17,14 @@ const build = (extra = {}) =>
 /** 用户消息是第二条，系统提示词是第一条 */
 const userMessage = (messages) => messages[1].content
 
+/** 违规词条目，字段与 validateArticle() 的输出一致 */
+const violation = (word, sentence) => ({
+  token: word,
+  normalized: word,
+  category: 'unknown_token',
+  sentence,
+})
+
 describe('buildMessages · 三段式词表', () => {
   it('目标词数量是重点词与普通目标词之和', () => {
     expect(userMessage(build())).toContain('【目标词】共 4 个')
@@ -152,10 +160,9 @@ describe('buildRepairMessages', () => {
   })
 
   it('违规词全量列出，原句只给前 8 条', () => {
-    const violations = Array.from({ length: 12 }, (_, index) => ({
-      word: `bad${index}`,
-      sentence: `This sentence contains bad${index} in it.`,
-    }))
+    const violations = Array.from({ length: 12 }, (_, index) =>
+      violation(`bad${index}`, `This sentence contains bad${index} in it.`),
+    )
 
     const repaired = buildRepairMessages(base, { type: 'vocabulary', reason: '出现表外词', violations })
     const content = repaired.at(-1).content
@@ -168,10 +175,9 @@ describe('buildRepairMessages', () => {
   })
 
   it('违规超过 8 个时改成全文重写，而不是逐句替换', () => {
-    const violations = Array.from({ length: 12 }, (_, index) => ({
-      word: `bad${index}`,
-      sentence: `Sentence ${index}.`,
-    }))
+    const violations = Array.from({ length: 12 }, (_, index) =>
+      violation(`bad${index}`, `Sentence ${index}.`),
+    )
 
     const content = buildRepairMessages(base, {
       type: 'vocabulary',
@@ -187,10 +193,9 @@ describe('buildRepairMessages', () => {
   })
 
   it('违规不超过 8 个时仍走局部修正', () => {
-    const violations = Array.from({ length: 6 }, (_, index) => ({
-      word: `bad${index}`,
-      sentence: `Sentence ${index}.`,
-    }))
+    const violations = Array.from({ length: 6 }, (_, index) =>
+      violation(`bad${index}`, `Sentence ${index}.`),
+    )
 
     const content = buildRepairMessages(base, {
       type: 'vocabulary',

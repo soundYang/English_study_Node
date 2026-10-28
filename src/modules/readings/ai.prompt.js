@@ -167,11 +167,13 @@ const INLINE_VIOLATION_LIMIT = 8
 function renderViolations(violations) {
   if (!violations.length) return ''
 
-  const words = violations.map(({ word }) => word).join(', ')
+  // 展示用 normalized（展开缩写、去所有格后的形式），模型看到的就是这个词本身；
+  // token 带原句大小写，只在诊断里用
+  const words = violations.map(({ normalized }) => normalized).join(', ')
   const snippets = violations
     .slice(0, INLINE_VIOLATION_LIMIT)
     .filter(({ sentence }) => sentence)
-    .map(({ word, sentence }) => `- "${word}"：${truncate(sentence)}`)
+    .map(({ normalized, sentence }) => `- "${normalized}"：${truncate(sentence)}`)
 
   return `\n\n不在允许词表中的单词（共 ${violations.length} 个）：\n${words}`
     + (snippets.length ? `\n\n其中带原句的几条：\n${snippets.join('\n')}` : '')
@@ -187,7 +189,7 @@ function renderViolations(violations) {
  * @param {{
  *   type?: 'structure' | 'vocabulary' | 'word_count',
  *   reason: string,
- *   violations?: Array<{ word: string, sentence: string }>,
+ *   violations?: Array<{ token: string, normalized: string, category: string, sentence: string }>,
  *   range?: { min: number, max: number, target: number },
  * }} feedback
  * @param {string} [previousContent] 上一轮模型自己的输出。结构合法时带上，
