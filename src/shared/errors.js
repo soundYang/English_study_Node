@@ -37,6 +37,13 @@ export const ERROR_CODES = Object.freeze({
   WORD_NOT_FOUND: 'WORD_NOT_FOUND',
   READING_NOT_FOUND: 'READING_NOT_FOUND',
   WORD_EXISTS: 'WORD_EXISTS',
+  // ——— 基础词表（md/29）：只有 421 个实词可改，功能词 / 日历词 / 缩写只读 ———
+  FUNCTION_WORD_IMMUTABLE: 'FUNCTION_WORD_IMMUTABLE',
+  BASIC_WORD_READONLY: 'BASIC_WORD_READONLY',
+  BASIC_WORD_NOT_FOUND: 'BASIC_WORD_NOT_FOUND',
+  BASIC_WORD_ALREADY_REMOVED: 'BASIC_WORD_ALREADY_REMOVED',
+  BASIC_WORD_ALREADY_LEARNED: 'BASIC_WORD_ALREADY_LEARNED',
+  BASIC_WORD_NOT_REMOVED: 'BASIC_WORD_NOT_REMOVED',
   ALREADY_SUBMITTED: 'ALREADY_SUBMITTED',
   INSUFFICIENT_VOCABULARY: 'INSUFFICIENT_VOCABULARY',
   VOCABULARY_TOO_SMALL: 'VOCABULARY_TOO_SMALL',
@@ -169,3 +176,56 @@ export const knownWordsTooSmall = ({ level, required, available }) =>
       shortage: Math.max(0, required - available),
     },
   )
+
+/**
+ * 基础词表的三个只读原因（md/29）。
+ *
+ * 三种词在页面上都会被列出来，但只有 421 个实词能改：
+ *   · 功能词 —— 缺了 the / is / and 任何句子都写不出来，移除没有意义；
+ *   · 日历词 / 缩写 —— 系统维护的放行表，不是用户的词汇积累。
+ * 分成两个 code 是因为前端文案不同：一个是「这个词不能移除」，一个是「系统词表不可修改」。
+ */
+export const functionWordImmutable = (word) =>
+  new ApiError(
+    403,
+    ERROR_CODES.FUNCTION_WORD_IMMUTABLE,
+    `“${word}”是功能词，文章里必须用到，不能移除。`,
+    '',
+    { word, kind: 'function_word' },
+  )
+
+export const basicWordReadonly = (word, kind) =>
+  new ApiError(
+    403,
+    ERROR_CODES.BASIC_WORD_READONLY,
+    kind === 'abbreviation'
+      ? `“${word}”是系统收录的缩写，不可修改。`
+      : `“${word}”是星期或月份，由系统维护，不可修改。`,
+    '',
+    { word, kind },
+  )
+
+export const basicWordNotFound = (word) =>
+  notFound(ERROR_CODES.BASIC_WORD_NOT_FOUND, `“${word}”不在基础词表、日历词或缩写表里。`)
+
+export const basicWordAlreadyRemoved = (word) =>
+  conflict(ERROR_CODES.BASIC_WORD_ALREADY_REMOVED, `“${word}”已经标记为不认识了。`)
+
+/** 个人词库状态的中文名；提示语里不要直接露 new / mastered */
+const PERSONAL_STATUS_LABELS = Object.freeze({ new: '不认识', learning: '学习中', mastered: '已掌握' })
+
+/**
+ * 这个词已经在个人词库里（learning / mastered / 手动加的 new）。
+ *
+ * 不直接改状态是有意为之：`status` 上挂着复习时间与曝光次数，
+ * 用基础词页的操作覆盖它，等于把用户的学习进度抹掉。
+ */
+export const basicWordAlreadyLearned = (word, status) =>
+  conflict(
+    ERROR_CODES.BASIC_WORD_ALREADY_LEARNED,
+    `“${word}”已经在你的词库里（${PERSONAL_STATUS_LABELS[status] ?? status}），`
+      + '请到词汇页修改它的状态。',
+  )
+
+export const basicWordNotRemoved = (word) =>
+  conflict(ERROR_CODES.BASIC_WORD_NOT_REMOVED, `“${word}”没有被移除，无需恢复。`)

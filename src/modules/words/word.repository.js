@@ -58,6 +58,29 @@ export const wordRepository = {
     return Word.find({ userId, status: 'new' }).select('word').lean()
   },
 
+  /**
+   * 基础词页面用：一次取回这批词的个人记录。
+   *
+   * 走 `$in` 而不是 `find({ userId })` 全量拉：用户词库可能上万条，
+   * 而页面只关心词表里这 650 个。只选三个字段——列表不展示个人记录里的快照，
+   * 释义与音标一律以词库为准（见 basic-words.service 的 toItem）。
+   */
+  findByWords(userId, words) {
+    if (!words.length) return Promise.resolve([])
+
+    return Word.find({ userId, word: { $in: words } })
+      .select('word status source')
+      .lean()
+  },
+
+  findOneByWord(userId, word) {
+    return Word.findOne({ userId, word })
+  },
+
+  deleteByWord(userId, word) {
+    return Word.findOneAndDelete({ userId, word })
+  },
+
   existsByWord(userId, word, excludeId) {
     const filter = { userId, word }
     if (excludeId) filter._id = { $ne: excludeId }

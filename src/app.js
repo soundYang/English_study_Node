@@ -4,6 +4,7 @@ import helmet from 'helmet'
 import pinoHttp from 'pino-http'
 
 import { config } from './config/index.js'
+import basicWordRoutes from './modules/basic-words/basic-words.routes.js'
 import dictionaryRoutes from './modules/dictionary/dictionary.routes.js'
 import healthRoutes from './modules/health/health.routes.js'
 import readingRoutes from './modules/readings/reading.routes.js'
@@ -47,6 +48,7 @@ export function createApp() {
   // 路由挂载区（后续步骤往里加）
   app.use('/api', healthRoutes)
   app.use('/api/words', wordRoutes)
+  app.use('/api/basic-words', basicWordRoutes)
   app.use('/api/dictionary', dictionaryRoutes)
   app.use('/api/readings', readingRoutes)
 
