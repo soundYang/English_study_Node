@@ -287,6 +287,19 @@ describe('生成前预检 GET /capacity', () => {
     expect(rejected.body.error.details.available).toBe(res.body.available)
   })
 
+  it('每档候选池大小各自返回，顶层 available 只是 hard 口径', async () => {
+    await seedWords(45)
+
+    const res = await capacity({ targetWords: 600 })
+
+    // English_vue/md/13 B1：设置页在 easy 下不能拿 hard 的池子数字说话
+    for (const level of ['easy', 'medium', 'hard']) {
+      expect(Number.isInteger(res.body.levels[level].available)).toBe(true)
+    }
+    // 顶层字段为兼容保留，语义固定为「最后一档」= hard
+    expect(res.body.available).toBe(res.body.levels.hard.available)
+  })
+
   it('已知词门：预检的 knownShortage 与生成的 422 文案是同一个数', async () => {
     await seedWords(400)
 

@@ -937,6 +937,8 @@ export async function getCapacity({ userId, query }) {
   const range = planWordRange(targetWords)
 
   const levels = {}
+  // 兼容字段：循环结束后留下来的是最后一档（hard）的池子大小。
+  // 新代码一律读 levels[level].available——难度不同，池子本来就不是一个数
   let available = 0
 
   for (const level of LEVELS) {
@@ -951,6 +953,10 @@ export async function getCapacity({ userId, query }) {
       required: selection.neededVocab,
       sufficient: selection.sufficient,
       shortage: Math.max(0, selection.neededVocab - selection.available),
+      // 每档各自的候选池大小（English_vue/md/13 B1）：
+      // 顶层 available 是循环里最后一次赋值的 hard 口径，easy 的池子更小，
+      // 用 hard 的数字解释 easy 说「不够」，用户会觉得系统在骗人
+      available: selection.available,
       // B 已知词门：该难度要求认识多少词，只有加词 / 降难度可解
       knownWords: known.knownWords,
       requiredKnown: known.requiredKnown,

@@ -150,6 +150,22 @@ describe('GET /api/words', () => {
   })
 })
 
+describe('列表 DTO 的 cocaRank（English_vue/md/13 C1）', () => {
+  it('词库词带排名，手填词为 null 且键始终存在', async () => {
+    await seed([
+      { word: 'apple', cocaRank: 2201 },
+      { word: 'handwritten', cocaRank: null },
+    ])
+
+    const res = await get({ q: '', status: 'all', page: 1, pageSize: 10 })
+    const byWord = Object.fromEntries(res.body.items.map((item) => [item.word, item]))
+
+    expect(byWord.apple.cocaRank).toBe(2201)
+    // null 而不是 0：0 会被前端当成「排名第 0」，即最高频
+    expect(byWord.handwritten).toHaveProperty('cocaRank', null)
+  })
+})
+
 describe('POST /api/words', () => {
   it('手填词 201，phonetic 为 null、pos 为空串', async () => {
     const res = await post({

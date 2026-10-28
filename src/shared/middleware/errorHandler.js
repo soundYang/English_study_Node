@@ -18,6 +18,8 @@ export function errorHandler(err, req, res, _next) {
         // details 只在业务显式给了才出现：没给的错误，响应体与之前逐字节一致
         ...(err.details && { details: err.details }),
       },
+      // 与 pino-http 的 req.id 同源：用户报错时凭这个号去日志里定位（English_vue/md/13 C3）
+      requestId: req.id,
     })
   }
 
@@ -40,5 +42,7 @@ export function errorHandler(err, req, res, _next) {
   req.log?.error({ err }, 'unhandled error')
   res.status(500).json({
     error: { code: ERROR_CODES.INTERNAL_ERROR, message: '服务器内部错误' },
+    // 500 最需要这个号：用户只能提供「什么时候点的」，有 id 才能对上日志
+    requestId: req.id,
   })
 }

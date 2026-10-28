@@ -9,6 +9,10 @@ const SUMMARY_SENSE_COUNT = 2
 /**
  * 列表页摘要：取前两条义项用「；」拼接，超过 30 字截断并追加省略号。
  * 与前端 mock 的 buildSummary 逐字一致（mock/adapter.js:134-141）。
+ *
+ * **只给列表用**（`English_vue/md/13` 第 6 条）：
+ * 编辑表单请直接展示 `senses[]`。summary 是有损派生字段（截断 + 只取两条），
+ * 拿它填表单会把丢弃的部分写丢，用户改完保存就真的少了内容。
  */
 export function buildSummary(senses = []) {
   const text = (senses || [])
@@ -38,6 +42,9 @@ export function toWordDto(doc) {
     createdAt: doc.createdAt,
     source: doc.source,
     dictionaryId: doc.dictionaryId ?? null,
+    // COCA 排名：前端按它标「高频 / 中频 / 低频」（English_vue/md/13 C1）。
+    // 手填词为 null，不是 0——0 会被当成「排名第 0」，null 才是「没有这个数」
+    cocaRank: doc.cocaRank ?? null,
     // 手填词整体为 null；词库词的两项各自可能为 null
     phonetic: doc.phonetic
       ? { uk: doc.phonetic.uk ?? null, us: doc.phonetic.us ?? null }

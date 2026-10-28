@@ -68,8 +68,13 @@ export const wordNotFound = () =>
 export const readingNotFound = () =>
   notFound(ERROR_CODES.READING_NOT_FOUND, '练习不存在')
 
-/** 难度英文枚举 → 中文。不要把 easy/hard 直接塞进给用户看的提示语 */
-const LEVEL_LABELS = Object.freeze({ easy: '简单', medium: '中等', hard: '困难' })
+/**
+ * 难度英文枚举 → 中文。不要把 easy/hard 直接塞进给用户看的提示语。
+ *
+ * 用「进阶 / 挑战」而不是「中等 / 困难」，是为了和界面按钮的叫法一致
+ * （English_vue/md/13 第 5 条）：同一难度出现两个名字，读起来像两件事。
+ */
+const LEVEL_LABELS = Object.freeze({ easy: '简单', medium: '进阶', hard: '挑战' })
 
 /**
  * 422：候选池装不下这次篇幅所需的目标词，禁止生成（方案 §6.2）。

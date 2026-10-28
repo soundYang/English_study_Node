@@ -105,7 +105,7 @@ describe('vocabularyTooSmall', () => {
   it('提示语用中文难度名，并算出差额', () => {
     const { message } = vocabularyTooSmall(payload)
 
-    expect(message).toContain('困难模式')
+    expect(message).toContain('挑战模式')
     expect(message).toContain('还差 70 个')
     expect(message).not.toContain('hard')
   })
@@ -130,7 +130,8 @@ describe('B 门 — 已知词汇量不够', () => {
       available: 1758,
       shortage: 142,
     })
-    expect(error.message).toContain('中等模式需要认识约 1900 个单词')
+    // 与界面按钮同一套叫法（进阶 / 挑战），不是「中等 / 困难」
+    expect(error.message).toContain('进阶模式需要认识约 1900 个单词')
     expect(error.message).toContain('当前已有 1758 个（还差 142 个）')
     expect(error.message).not.toContain('medium')
   })
@@ -187,5 +188,33 @@ describe('errorHandler — details 透传', () => {
 
     expect(res.body.error).not.toHaveProperty('details')
     expect(res.body.error.field).toBe('level')
+  })
+
+  it('业务错误带回 requestId，与日志里的 req.id 同源', () => {
+    const res = fakeRes()
+
+    errorHandler(
+      new ApiError(422, ERROR_CODES.VOCABULARY_VALIDATION_FAILED, '生词太多'),
+      { id: 'req-abc' },
+      res,
+      () => {},
+    )
+
+    // 前端 ServerError 读的就是 response.data.requestId（English_vue/md/13 C3）
+    expect(res.body.requestId).toBe('req-abc')
+  })
+
+  it('500 也带回 requestId', () => {
+    const res = fakeRes()
+
+    errorHandler(
+      new Error('boom'),
+      { id: 'req-500', log: { error() {} } },
+      res,
+      () => {},
+    )
+
+    expect(res.statusCode).toBe(500)
+    expect(res.body.requestId).toBe('req-500')
   })
 })
