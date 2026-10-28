@@ -58,6 +58,10 @@ const generationFailureSchema = new Schema(
     totalTokens: { type: Number, default: 0 },
     durationMs: Number,
     model: String,
+
+    // ——— 生成快照（§3.3）：失败样本和成功样本必须记同一套版本，否则没法同框对比 ———
+    basicWordsVersion: String,
+    codeVersion: String,
   },
   { timestamps: true },
 )

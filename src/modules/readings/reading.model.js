@@ -133,6 +133,10 @@ const readingSchema = new Schema(
       wordCountDeviation: Number, // 实际篇幅 / targetWords，1 表示刚好
       violationsCount: Number, // 最终仍有几个违规词
       finishReason: String, // stop / length，用于判断是否被截断
+
+      // ——— 生成快照（§3.3）：没有版本号，跨版本的两组采样不可比 ———
+      basicWordsVersion: String, // data/basic-words.json 内容的短 hash
+      codeVersion: String, // git 提交号，读不到时为 'unknown'
     },
   },
   { timestamps: true },

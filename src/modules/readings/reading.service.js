@@ -32,6 +32,7 @@ import {
 import { buildTargetPlan } from './target-plan.js'
 import { validateArticle } from './vocabulary.service.js'
 import { selectVocabularyPool } from './vocabulary-pool.js'
+import { basicWordsVersion, codeVersion } from './versions.js'
 
 /**
  * 调一次模型，并把这一轮的用量记进 rounds。
@@ -267,7 +268,11 @@ async function recordFailure(diag, error) {
     repairRounds: diag.repairRounds ?? 0,
     totalTokens: diag.totalTokens ?? 0,
     durationMs: diag.durationMs,
+
+    // 快照要和成功样本记同一套，否则两类数据没法同框对比
     model: config.deepseekModel,
+    basicWordsVersion,
+    codeVersion,
   }
 
   try {
@@ -612,6 +617,9 @@ async function generateReadingInner({ userId, body, signal, diag }) {
     status: 'generated',
     aiMeta: {
       model: config.deepseekModel,
+      // 词表与代码的版本号：跨版本采样不能放在一起比
+      basicWordsVersion,
+      codeVersion,
       // 累计值，含所有修正轮——用户看到的「本次消耗 N tokens」就是它
       ...tokenUsage,
       rounds,

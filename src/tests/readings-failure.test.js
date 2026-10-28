@@ -163,6 +163,35 @@ describe('生成失败留痕 · 只有生成流程内的失败才入库', () => 
     expect(doc.aiMeta.rounds[0].actualWords).toBe(40)
   })
 
+  it('成功样本带生成快照：词表版本 / 代码版本 / 模型名', async () => {
+    await seedWords(29)
+    chatJson.mockResolvedValue(reply(makePayload()))
+
+    const res = await generate(VALID_BODY)
+
+    expect(res.status).toBe(201)
+
+    const doc = await Reading.findById(res.body.id).lean()
+    // 词表版本是 8 位短 hash；代码版本读不到时是 'unknown'，但不能是空串
+    expect(doc.aiMeta.basicWordsVersion).toMatch(/^[0-9a-f]{8}$/)
+    expect(typeof doc.aiMeta.codeVersion).toBe('string')
+    expect(doc.aiMeta.codeVersion).not.toBe('')
+    expect(doc.aiMeta.model).toBe(config.deepseekModel)
+  })
+
+  it('失败样本记同一套快照，两类数据才能同框对比', async () => {
+    await seedWords(45)
+
+    const res = await generate({ level: 'easy', targetWords: 600, questionCount: 3 })
+
+    expect(res.status).toBe(422)
+
+    const [failure] = await GenerationFailure.find().lean()
+    expect(failure.basicWordsVersion).toMatch(/^[0-9a-f]{8}$/)
+    expect(failure.codeVersion).not.toBe('')
+    expect(failure.model).toBe(config.deepseekModel)
+  })
+
   it('第一轮超长触发重写 → 重写轮记下 repairFor=word_count', async () => {
     await seedWords(29)
     chatJson
