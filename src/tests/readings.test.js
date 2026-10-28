@@ -278,31 +278,39 @@ describe('POST /api/readings/generate · 结构校验与修正轮', () => {
     expect(res.body.questions).toHaveLength(3)
   })
 
-  it('修正轮仍然不合法 → 502 AI_INVALID_RESPONSE，只调两次', async () => {
+  it('两轮修正后仍不合法 → 502 AI_INVALID_RESPONSE，最多调三次', async () => {
     await seedWords(29)
-    chatJson
-      .mockResolvedValueOnce(reply(makePayload({ questionCount: 2 })))
-      .mockResolvedValueOnce(reply(makePayload({ questionCount: 2 })))
+    chatJson.mockResolvedValue(reply(makePayload({ questionCount: 2 })))
 
     const res = await generate(VALID_BODY)
 
     expect(res.status).toBe(502)
     expect(res.body.error.code).toBe('AI_INVALID_RESPONSE')
-    expect(chatJson).toHaveBeenCalledTimes(2)
+    // 首次 + 两轮修正
+    expect(chatJson).toHaveBeenCalledTimes(3)
     expect(await Reading.countDocuments()).toBe(0)
   })
 
-  it('两轮都不是合法 JSON → 502 AI_INVALID_RESPONSE', async () => {
+  it('三轮都不是合法 JSON → 502 AI_INVALID_RESPONSE', async () => {
     await seedWords(29)
-    chatJson
-      .mockResolvedValueOnce({ content: 'not json' })
-      .mockResolvedValueOnce({ content: 'still not json' })
+    chatJson.mockResolvedValue({ content: 'not json' })
 
     const res = await generate(VALID_BODY)
 
     expect(res.status).toBe(502)
     expect(res.body.error.code).toBe('AI_INVALID_RESPONSE')
-    expect(chatJson).toHaveBeenCalledTimes(2)
+    expect(chatJson).toHaveBeenCalledTimes(3)
+  })
+
+  it('结构不合法时，修正请求不带上一轮的残缺输出', async () => {
+    await seedWords(29)
+    chatJson.mockResolvedValue({ content: 'not json' })
+
+    await generate(VALID_BODY)
+
+    // 把半截内容当 assistant 消息喂回去会诱导模型照抄
+    const repairMessages = chatJson.mock.calls[1][0].messages
+    expect(repairMessages.some((item) => item.role === 'assistant')).toBe(false)
   })
 
   it('模型带了 ```json 代码块标记也能解析', async () => {
@@ -335,7 +343,36 @@ describe('POST /api/readings/generate · 词汇校验', () => {
     expect(doc.aiMeta.repairRounds).toBe(1)
   })
 
-  it('修正后仍含表外词 → 422 VOCABULARY_VALIDATION_FAILED，不留脏数据', async () => {
+  it('第 1 轮仍违规、第 2 轮修好 → 201 且 repairRounds=2', async () => {
+    await seedWords(29)
+    chatJson
+      .mockResolvedValueOnce(reply(makePayload({ article: `${ARTICLE} Quizzical.` })))
+      .mockResolvedValueOnce(reply(makePayload({ article: `${ARTICLE} Zephyrish.` })))
+      .mockResolvedValueOnce(reply(makePayload()))
+
+    const res = await generate(VALID_BODY)
+
+    expect(res.status).toBe(201)
+    expect(chatJson).toHaveBeenCalledTimes(3)
+
+    const doc = await Reading.findById(res.body.id).lean()
+    expect(doc.aiMeta.repairRounds).toBe(2)
+  })
+
+  it('结构合法的修正轮会带上模型自己的上一轮输出', async () => {
+    await seedWords(29)
+    chatJson
+      .mockResolvedValueOnce(reply(makePayload({ article: `${ARTICLE} Quizzical.` })))
+      .mockResolvedValueOnce(reply(makePayload()))
+
+    await generate(VALID_BODY)
+
+    const repairMessages = chatJson.mock.calls[1][0].messages
+    const assistant = repairMessages.find((item) => item.role === 'assistant')
+    expect(assistant.content).toContain('Quizzical')
+  })
+
+  it('两轮修正后仍含表外词 → 422 VOCABULARY_VALIDATION_FAILED，不留脏数据', async () => {
     await seedWords(29)
     const dirty = reply(makePayload({ article: `${ARTICLE} Quizzical.` }))
     chatJson.mockResolvedValue(dirty)
@@ -345,7 +382,7 @@ describe('POST /api/readings/generate · 词汇校验', () => {
     expect(res.status).toBe(422)
     expect(res.body.error.code).toBe('VOCABULARY_VALIDATION_FAILED')
     expect(res.body.error.message).toContain('quizzical')
-    expect(chatJson).toHaveBeenCalledTimes(2)
+    expect(chatJson).toHaveBeenCalledTimes(3)
     expect(await Reading.countDocuments()).toBe(0)
   })
 
@@ -407,10 +444,13 @@ describe('POST /api/readings/generate · 候选池截断', () => {
 
     expect(res.status).toBe(201)
 
-    // easy 取 35%：ceil(820 × 0.35) = 287 个候选词
-    // + 600 个基础词 + 19 个日历词（may 与基础词表重复，去重后是 18 个）
+    // easy 取 35%：ceil(820 × 0.35) = 287 个候选词。
+    // 词表分三段渲染：目标词 10（其中重点词 4）+ 补充可用词 277 + 基础词 600
     const prompt = chatJson.mock.calls[0][0].messages[1].content
-    expect(prompt).toContain(`共 ${287 + 600 + 18} 个`)
+    expect(prompt).toContain('【目标词】共 10 个')
+    expect(prompt).toContain('【补充可用词】共 277 个')
+    expect(prompt).toContain('【基础词】共 600 个')
+    expect(prompt).toContain('★ ')
 
     const doc = await Reading.findById(res.body.id)
     expect(doc.vocabularySnapshot).toHaveLength(287)

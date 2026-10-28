@@ -12,6 +12,10 @@ import { afterAll, afterEach, beforeAll } from 'vitest'
 process.env.NODE_ENV = 'test'
 process.env.MONGODB_URI = process.env.MONGODB_URI ?? 'mongodb://127.0.0.1:27017/unused'
 
+// 配置会被 dotenv 从本地 .env 读进来，测试不能跟着开发机上的值跑：
+// 断言「修正两轮」的用例在 MAX_REPAIR_ROUNDS=1 的机器上会莫名其妙变红。
+process.env.MAX_REPAIR_ROUNDS = '2'
+
 const { loadDictionary } = await import('../modules/dictionary/dictionary.loader.js')
 const { Reading } = await import('../modules/readings/reading.model.js')
 const { Word } = await import('../modules/words/word.model.js')

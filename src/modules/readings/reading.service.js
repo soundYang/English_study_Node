@@ -27,7 +27,15 @@ import { buildTargetPlan } from './target-plan.js'
 import { validateArticle } from './vocabulary.service.js'
 import { selectVocabularyPool } from './vocabulary-pool.js'
 
-const MAX_TOKENS_CAP = 2600
+/**
+ * 输出 token 上限。
+ *
+ * 原来的 2600 是按 300 词上限定的；篇幅放开到 800 词后，英文正文约 1100 token、
+ * 中文翻译约 1200 token，加题目和 JSON 结构已超过 2600，必然被截断成
+ * AI_INVALID_RESPONSE。取 6000 留足余量（DeepSeek chat 上限 8192）。
+ * 这只是上限不是消耗：100 词的请求仍然按 estimateMaxTokens 算出来约 1200。
+ */
+const MAX_TOKENS_CAP = 6000
 /** article 实际词数允许偏离目标的范围，超出只记 warning 不判错 */
 const WORD_COUNT_TOLERANCE = { min: 0.7, max: 1.4 }
 
@@ -196,7 +204,10 @@ export async function generateReading({ userId, body, signal }) {
     level: params.level,
     targetWords: params.targetWords,
     questionCount: params.questionCount,
-    allowedWords,
+    focusWords: plan.focusWords,
+    targetWordList: plan.targetWords,
+    supportWords: plan.supportWords,
+    basicWords,
   })
 
   let { content, usage, finishReason } = await callModel({
@@ -225,16 +236,28 @@ export async function generateReading({ userId, body, signal }) {
     }
   }
 
+  // 修正轮循环：P0 基线显示修 1 轮后 4/5 次只剩 1 个违规词，再给一轮的
+  // 命中率远高于成本，因此 maxRepairRounds 默认 2（总调用 ≤ 3）。
   let repairRounds = 0
-  if (feedback && config.maxRepairRounds > 0) {
-    repairRounds = 1
+  while (feedback && repairRounds < config.maxRepairRounds) {
+    repairRounds += 1
     logger.warn(
-      { reason: feedback.reason, violations: feedback.violations, ...describeContent(content), finishReason },
+      {
+        round: repairRounds,
+        reason: feedback.reason,
+        violations: feedback.violations,
+        ...describeContent(content),
+        finishReason,
+      },
       'reading repair round',
     )
 
+    // 结构合法时把它自己的输出放回上下文；结构不合法时不放，避免把半截 JSON
+    // 当成"自己的话"喂回去，反而诱导模型照抄。
+    const previous = result.ok ? content : ''
+
     const repaired = await callModel({
-      messages: buildRepairMessages(messages, feedback),
+      messages: buildRepairMessages(messages, feedback, previous),
       targetWords: params.targetWords,
       signal,
     })
@@ -243,6 +266,19 @@ export async function generateReading({ userId, body, signal }) {
     usage = repaired.usage ?? usage
     finishReason = repaired.finishReason ?? finishReason
     result = inspect(content, params)
+
+    // 模型主动认输时再修也没用，跳出去交给下面的统一处理
+    if (result.insufficient) break
+
+    if (!result.ok) {
+      feedback = { reason: result.reason }
+      continue
+    }
+
+    const vocabulary = inspectVocabulary(result.data, allowedWords)
+    feedback = vocabulary.valid
+      ? null
+      : { reason: vocabulary.reason, violations: vocabulary.violations }
   }
 
   if (result.insufficient) {

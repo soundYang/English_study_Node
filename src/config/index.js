@@ -65,7 +65,9 @@ export const config = Object.freeze({
 
   // 生成策略
   vocabularyThreshold: toNumber('VOCABULARY_THRESHOLD', 20),
-  maxRepairRounds: toNumber('MAX_REPAIR_ROUNDS', 1),
+  // P0 基线：修 1 轮后 4/5 次只剩 1 个违规词，再给一轮的命中率远高于成本。
+  // 2 轮意味着最坏情况一次生成调 3 次模型（方案 §12）
+  maxRepairRounds: toNumber('MAX_REPAIR_ROUNDS', 2),
   basicWordsRank: toNumber('BASIC_WORDS_RANK', 3000),
 
   // 限流（次 / 分钟）
