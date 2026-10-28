@@ -1,4 +1,5 @@
 import { config } from '../../config/index.js'
+import { recordTokenUsage } from '../budget/budget.service.js'
 import { chatJson } from './ai.client.js'
 
 /**
@@ -38,13 +39,14 @@ export async function callModel({
   const usage = response.usage ?? {}
   const promptTokens = usage.prompt_tokens ?? 0
   const completionTokens = usage.completion_tokens ?? 0
+  // 上游一定给 total_tokens；兜底是为了打桩测试与个别代理不返回这个字段
+  const totalTokens = usage.total_tokens ?? promptTokens + completionTokens
 
   rounds.push({
     kind,
     promptTokens,
     completionTokens,
-    // 上游一定给 total_tokens；兜底是为了打桩测试与个别代理不返回这个字段
-    totalTokens: usage.total_tokens ?? promptTokens + completionTokens,
+    totalTokens,
     // DeepSeek 会返回，命中前缀缓存的输入单价更低
     cacheHitTokens: usage.prompt_cache_hit_tokens ?? 0,
     cacheMissTokens: usage.prompt_cache_miss_tokens ?? 0,
@@ -54,6 +56,11 @@ export async function callModel({
     // 这一轮是被什么问题催出来的；首轮没有上游原因
     repairFor,
   })
+
+  // 全局免费池按**每一次真实调用**累计（md/36）：失败的文章、被取消的任务、
+  // 补段重试花掉的钱都是账单上的钱。不 await：记账不该拖慢生成，
+  // 也不该在写库失败时把一次已经付过钱的调用再搞失败
+  void recordTokenUsage(totalTokens)
 
   return response
 }

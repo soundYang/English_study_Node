@@ -6,6 +6,7 @@ import { config } from '../../config/index.js'
 import { ERROR_CODES, taskInProgress, taskNotFound } from '../../shared/errors.js'
 import { logger } from '../../shared/logger.js'
 import { parseOrThrow } from '../../shared/utils/validation.js'
+import { assertBudgetAvailable } from '../budget/budget.service.js'
 import { releaseQuota, releaseReservation, reserveQuota } from '../quota/quota.service.js'
 import { generationTaskRepository as repo } from './generation-task.repository.js'
 import { createTaskSchema } from './reading.schema.js'
@@ -399,6 +400,10 @@ export async function createGenerationTask({ userId, body, identity = null }) {
     throw taskInProgress({ taskId: String(active._id) })
   }
 
+  // 免费池到顶就停（md/36）。放在幂等判断之后：已经建好的任务照样能复用 / 轮询，
+  // 放在预扣之前：被预算挡下的请求不该扣掉用户当天的额度
+  await assertBudgetAvailable()
+
   // 预扣必须排在三道幂等判断之后（md/35 §4.2）：双击的第二次点击、
   // 同参复用、409 都不扣；放在前面会让一次点击白掉两次额度
   const reservation = await reserveQuota({ identity: identity ?? {} })
@@ -518,6 +523,9 @@ export async function retryGenerationTask({ userId, id, identity = null }) {
   // 每用户同时只跑一个任务：别的任务还在跑时不能开第二条
   const active = await repo.findActive(userId)
   if (active) throw taskInProgress({ taskId: String(active._id) })
+
+  // 重试会真的再调模型，同样受全局预算约束（md/36）
+  await assertBudgetAvailable()
 
   const body = toPlainParams(task)
   // 计划只在分段路径落库；整篇路径没有续跑的依据，退回整篇重跑

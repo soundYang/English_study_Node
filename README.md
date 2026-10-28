@@ -9,6 +9,7 @@ Word Reading 的 API 服务：Express 5 + MongoDB + 本地 COCA 词库 + DeepSee
 用户与鉴权（个人中心）的口径见 [md/33_用户与鉴权_方案.md](md/33_用户与鉴权_方案.md)，
 登录/注册/个人中心接口怎么调见 [md/34_用户与鉴权_接口文档.md](md/34_用户与鉴权_接口文档.md)，
 每日生成额度与设备识别（防薅羊毛）的方案见 [md/35_每日额度与设备识别_方案.md](md/35_每日额度与设备识别_方案.md)，
+全局免费 token 预算（2 亿封顶）见 [md/36_全局免费额度预算_方案.md](md/36_全局免费额度预算_方案.md)，
 代码结构与不变量见 [md/24_后端代码说明.md](md/24_后端代码说明.md)，
 功能边界与已知限制见 [md/13_AI生成文章_功能与限制.md](md/13_AI生成文章_功能与限制.md)，
 现存缺陷台账见 [md/23_核心功能现存不足.md](md/23_核心功能现存不足.md)。
@@ -78,6 +79,8 @@ Mongo 断开时返回 **503** + `status: "degraded"`，这是唯一的健康判�
 | `DAILY_QUOTA_ENABLED` | false | 打开每日额度。**等前端上线 `X-Device-Id` 后再开**，否则只按网络指纹限 |
 | `DAILY_QUOTA_ACCOUNT` / `_DEVICE` / `_NETWORK` | 3 / 3 / 10 | 账号 / 设备 / 网络指纹的每日次数（md/35） |
 | `TRUST_PROXY` | false | 部署在 nginx / CDN 后面时必须配（`1` 或 `loopback`），否则 `req.ip` 全是反代地址 |
+| `TOKEN_BUDGET_ENABLED` | true | 全局免费池总开关；到顶后所有生成返回 503（md/36） |
+| `FREE_TOKEN_BUDGET` | 200000000 | 免费池总量（token）。到顶是**永久停服**，不是每日恢复 |
 
 `MAX_UNKNOWN_WORDS` 默认留空：生词预算按难度取（easy 0 / medium 3 / hard 5）。
 显式设置会把它变成**全局覆盖**，三档压成同一个数，只用于调试与回放对比。
@@ -155,6 +158,7 @@ src/
     dictionary/         COCA 词库加载与前缀检索
     readings/           生成编排、分段闭环、校验、判分、历史
     quota/              每日额度：账号 / 设备 / 网络指纹三档计数（md/35）
+    budget/             全局免费 token 池：每次模型调用累加，到顶即停（md/36）
   tests/                vitest（每个文件独立内存 Mongo）
 data/                   词库、三档基础词表、不规则词形、词频排名
 scripts/                构建、采样、回放、清理
@@ -173,6 +177,7 @@ md/                     设计、实施、限制与缺陷文档
 | 生成 502 `AI_INVALID_RESPONSE` | 模型输出结构或题目不合格，修正轮也没救回来 | 失败样本在 `GenerationFailure` 里，`finalArticle` 可复查 |
 | 生成 429 `RATE_LIMITED` | 同一 IP 超过 20 次/分 | 等窗口结束；批量脚本要设 `RATE_LIMIT_ENABLED=false` |
 | 生成 429 `QUOTA_EXCEEDED` | 当天额度用完（账号、设备或网络指纹任一档） | 等北京时间 0 点；`details.scope` 说明是哪一档，`Retry-After` 是到重置的秒数 |
+| 生成 503 `FREE_BUDGET_EXHAUSTED` | 全局免费池（`FREE_TOKEN_BUDGET`）用完了 | **不会自己恢复**：加预算（改 `.env` 或调计数器）后重启；`details` 里有上限与已用量 |
 | 生成 422 `VOCABULARY_TOO_SMALL` | 已知词不够写这么长（门槛随篇幅走，见 `capacity-table.js` 的 `minKnownFor`） | 缩篇幅或加词；这是预期拦截，不是故障 |
 | 任务变成 `failed` + `TASK_INTERRUPTED` | 执行实例失联（重启 / kill -9 / OOM），心跳过期后被回收 | 调 `POST /generate/tasks/:id/retry`：已收下的段会复用，只补失败的段（md/31 §11） |
 | 生成 400 `final_mode_locked` | hard 写 601–1000 词，但个人词库不足 3000 | 继续攒词；解锁后上限从 600 抬到 1000（md/30 §2.2） |

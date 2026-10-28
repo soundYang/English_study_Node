@@ -77,6 +77,10 @@ export const ERROR_CODES = Object.freeze({
   // 与 RATE_LIMITED 分开：那个是「等一分钟」，这个是「等明天 0 点」。
   // 合成一个码的话，前端只能把两句文案都写出来，用户不知道该等多久。
   QUOTA_EXCEEDED: 'QUOTA_EXCEEDED',
+  // ——— 全局免费池（md/36）———
+  // 与 QUOTA_EXCEEDED 分开：那个是「你个人今天用完了」，等 0 点就恢复；
+  // 这个是「全站免费额度到顶了」，等到明天也不会恢复，必须换自己的 API Key
+  FREE_BUDGET_EXHAUSTED: 'FREE_BUDGET_EXHAUSTED',
   INTERNAL_ERROR: 'INTERNAL_ERROR',
 })
 
@@ -371,4 +375,25 @@ export const quotaExceeded = ({ scope, limit, used, resetAt }) =>
     `今天的 ${limit} 次生成额度已用完，明天 00:00 重置`,
     '',
     { scope, limit, used, resetAt: resetAt.toISOString() },
+  )
+
+/**
+ * 503：全站免费 token 预算用完（md/36）。
+ *
+ * 和 `QUOTA_EXCEEDED` 的区别是**恢复方式**：这个等到明天也不会好，
+ * 用户唯一的出路是接入自己的 API Key。所以：
+ *   · 不用 429 —— 429 的语义是「过一会儿再来」；
+ *   · 不发 Retry-After —— 没有可等待的重置时间；
+ *   · 文案直接给出下一步，不要只说「服务暂不可用」。
+ *
+ * `usedTokens` 可能比 `limitTokens` 略高：并发请求会同时通过闸门，
+ * 这是可接受的超调，不是计费错误。
+ */
+export const freeBudgetExhausted = ({ limitTokens, usedTokens }) =>
+  new ApiError(
+    503,
+    ERROR_CODES.FREE_BUDGET_EXHAUSTED,
+    '免费生成额度已用完，请接入自己的 API Key 后继续使用',
+    '',
+    { limitTokens, usedTokens },
   )

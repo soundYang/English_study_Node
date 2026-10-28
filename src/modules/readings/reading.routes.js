@@ -2,6 +2,7 @@ import { Router } from 'express'
 
 import { generateRateLimit } from '../../shared/middleware/rateLimit.js'
 import { parseOrThrow } from '../../shared/utils/validation.js'
+import { assertBudgetAvailable } from '../budget/budget.service.js'
 import {
   quotaIdentityFromRequest,
   releaseReservation,
@@ -33,6 +34,9 @@ router.post('/generate', generateRateLimit, async (req, res) => {
     // 否则每次成功生成都会把一次已经完成的调用 abort 掉（日志里一堆假告警）
     if (!res.writableEnded) controller.abort()
   })
+
+  // 免费池到顶就停（md/36）。放在预扣之前：被预算挡下不该扣当天的额度
+  await assertBudgetAvailable()
 
   // 同步路径没有任务文档可挂，额度用一个局部变量记住，失败时原路退回（md/35 §8.3）
   const reservation = await reserveQuota({ identity: quotaIdentityFromRequest(req) })

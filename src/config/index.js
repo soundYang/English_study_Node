@@ -209,4 +209,12 @@ export const config = Object.freeze({
   // 网络指纹是兜底：清 localStorage、换无痕窗口都还能被它兜住。
   // 共享出口（宿舍 / 公司）会按人头叠加，调小时注意误伤
   dailyQuotaNetwork: toNumber('DAILY_QUOTA_NETWORK', 10),
+
+  // ——— 全局免费 token 预算（md/36）———
+  // 与每日额度是两层限制：上面管「一个人一天几次」，这里管「全站还能花多少」。
+  // 计数发生在每一次模型调用（含失败 / 重试 / 取消），不是每篇成功文章。
+  tokenBudgetEnabled: readBoolean('TOKEN_BUDGET_ENABLED', true),
+  // 免费池总量。2 亿 token ≈ 按 2026-10-28 实测均值（约 4.2 万 token / 篇）
+  // 约 4700 篇。到顶后所有生成返回 503 FREE_BUDGET_EXHAUSTED
+  freeTokenBudget: toNumber('FREE_TOKEN_BUDGET', 200_000_000),
 })

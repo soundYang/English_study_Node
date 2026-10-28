@@ -37,6 +37,9 @@ process.env.AUTH_ENFORCED = 'false'
 // 开着会让「连着建 4 个不同任务」的老用例莫名其妙 429。
 // 要验证额度的用例在文件顶部自己改成 true 再动态 import（同 auth-enforced.test.js）。
 process.env.DAILY_QUOTA_ENABLED = 'false'
+// 全局免费池（md/36）同样默认关闭：否则每个打桩的模型调用都要写一次计数器，
+// 整个套件会多出成千上万次与断言无关的写库。要验证预算的用例自己开。
+process.env.TOKEN_BUDGET_ENABLED = 'false'
 
 // 绝大多数用例测的是整篇路径的行为（修正轮、结构错误、失败样本），
 // 打桩也只认识「一次返回整篇文章」的形状。生产默认是 segmented，
