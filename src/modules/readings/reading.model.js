@@ -178,6 +178,12 @@ const readingSchema = new Schema(
       basicWordsVersion: String, // 本次使用那一档 data/basic-words.*.json 的短 hash
       basicWordsLevel: String, // easy / medium / hard；配 hash 才有意义
       codeVersion: String, // git 提交号，读不到时为 'unknown'
+
+      // ——— W8：把门禁数字也留一份 ———
+      // 失败样本里已经有这三项；成功样本没有的话，同一批次没法解释「为什么这篇能过」
+      knownWords: Number, // 个人词库 ∪ 该档基础表 ∪ 日历词
+      requiredKnown: Number, // 该难度的已知词下限
+      unknownBudget: Number, // 该难度的生词预算
     },
   },
   { timestamps: true },

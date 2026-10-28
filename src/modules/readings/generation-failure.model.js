@@ -58,11 +58,17 @@ const generationFailureSchema = new Schema(
     totalTokens: { type: Number, default: 0 },
     durationMs: Number,
     model: String,
+    // W8：whole / segmented。不分策略，两批样本的成功率会被混成一个数
+    strategy: String,
 
     // ——— 生成快照（§3.3）：失败样本和成功样本必须记同一套版本，否则没法同框对比 ———
     basicWordsVersion: String,
     // 分档之后必须记用的是哪一档：同一个 hash 只有配合档位才有意义
     basicWordsLevel: String,
+    // W3 的门禁数字（W8 补齐）：失败样本多数死在 A/B 门，没有这三个数无法归因
+    knownWords: Number,
+    requiredKnown: Number,
+    unknownBudget: Number,
     codeVersion: String,
   },
   { timestamps: true },

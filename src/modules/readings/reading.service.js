@@ -265,8 +265,13 @@ async function recordFailure(diag, error) {
 
     // 快照要和成功样本记同一套，否则两类数据没法同框对比
     model: config.deepseekModel,
+    strategy: config.generationStrategy,
     basicWordsVersion: diag.basicWords?.version ?? basicWordsVersions.hard,
     basicWordsLevel: diag.basicWords?.level ?? null,
+    // W3 的门禁数字：失败样本多数正是死在这三道门上，不记就没法归因
+    knownWords: diag.known?.knownWords,
+    requiredKnown: diag.known?.requiredKnown,
+    unknownBudget: diag.known?.unknownBudget,
     codeVersion,
   }
 
@@ -839,6 +844,10 @@ async function generateReadingInner({ userId, body, signal, diag }) {
       // 基础词表按档记——只记一个 hash 会掩盖「easy 没变、medium 变了」
       basicWordsVersion: basicWordsVersions[params.level],
       basicWordsLevel: params.level,
+      // W8：门禁数字随文章留下，报告里才能回答「这篇为什么能过」
+      knownWords: known.knownWords,
+      requiredKnown: known.requiredKnown,
+      unknownBudget,
       irregularFormsVersion,
       codeVersion,
       // 累计值，含所有修正轮——用户看到的「本次消耗 N tokens」就是它
