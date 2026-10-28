@@ -137,6 +137,21 @@ const generationTaskSchema = new Schema(
     // 续跑次数：0 = 第一次跑。用来区分「这篇是重试出来的」和正常生成
     retryCount: { type: Number, default: 0 },
 
+    /**
+     * 租约（md/31 §11 多实例）。
+     *
+     * owner        —— 正在执行这个任务的实例 id；null = 没有实例持有
+     * heartbeatAt  —— 持有者的心跳时间。巡检只回收心跳过期的任务
+     * cancelRequested —— 跨实例取消：取消请求可能落在别的实例上，
+     *                    持有者在心跳与进度写回时读这个标记，读到就停手
+     *
+     * 没有这三样时，启动清理只能把全表的 queued/running 一律标失败——
+     * 多实例下那等于「谁重启谁误杀别人」。
+     */
+    owner: { type: String, default: null },
+    heartbeatAt: { type: Date, default: null },
+    cancelRequested: { type: Boolean, default: false },
+
     readingId: { type: Schema.Types.ObjectId, default: null },
     error: {
       code: String,
@@ -157,6 +172,8 @@ const generationTaskSchema = new Schema(
 generationTaskSchema.index({ userId: 1, clientToken: 1 })
 // 并发闸门：找「这个用户还有没有在跑的」
 generationTaskSchema.index({ userId: 1, status: 1 })
+// 巡检：扫「running 且心跳过期」的任务
+generationTaskSchema.index({ status: 1, heartbeatAt: 1 })
 // TTL：任务只是状态机，24 小时后没人需要它了
 generationTaskSchema.index({ createdAt: 1 }, { expireAfterSeconds: 60 * 60 * 24 })
 

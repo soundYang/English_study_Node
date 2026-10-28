@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto'
+
 import mongoose from 'mongoose'
 
 import { config } from '../../config/index.js'
@@ -21,6 +23,14 @@ import { generateReading } from './reading.service.js'
  * 这些失败改参数才有用，原样重试只会再失败一次。
  * 其余（上游错误、结构非法、残篇、内部异常）都可以直接重新提交。
  */
+/**
+ * 本进程的实例 id（md/31 §11 多实例）。
+ *
+ * 只用来回答「这个任务是不是我持有的」，不做持久身份——重启换一个 id 正好：
+ * 旧 id 的任务心跳会自然过期，被巡检回收，不需要额外的「实例下线」通知。
+ */
+export const INSTANCE_ID = randomUUID()
+
 const NON_RETRYABLE = new Set([
   ERROR_CODES.INSUFFICIENT_VOCABULARY,
   ERROR_CODES.VOCABULARY_TOO_SMALL,
@@ -95,7 +105,7 @@ export function toTaskDto(task) {
  * 每次都算一遍完整数组再整体写回，就不需要 Mongo 的数组过滤器与下标定位。
  * 单进程单任务，闭包与库里的值不会分叉；真分叉了也只是进度显示错，不影响文章。
  */
-function makeProgressHandler(taskId) {
+function makeProgressHandler(taskId, { onCancelled = null } = {}) {
   const segments = new Map()
   let total = 0
   let names = []
@@ -154,7 +164,13 @@ function makeProgressHandler(taskId) {
     update.progress = { done, total }
     if (list.length > 0) update.segments = list
 
-    await repo.updateIfActive(taskId, update)
+    const updated = await repo.updateIfActive(taskId, update)
+
+    // 写回拿到的就是最新文档，不用额外查一次：
+    //   null              —— 任务已经是终态（取消 / 被巡检回收 / 已经跑完）
+    //   cancelRequested   —— 取消请求落在了别的实例上，这里靠写回看到它
+    // 两种情况都意味着「不该再为它花钱了」
+    if (!updated || updated.cancelRequested) onCancelled?.()
   }
 }
 
@@ -220,36 +236,64 @@ async function finishTask(taskId, data) {
 }
 
 /**
+ * 一次心跳（md/31 §11）。
+ *
+ * 心跳失败（写库报错）不能把任务判死——下一次心跳还会再来；
+ * 只有「查不到」才说明租约没了：被取消、被巡检回收、或者 owner 被清空。
+ */
+async function heartbeatOnce(taskId, controller) {
+  try {
+    const task = await repo.heartbeat(taskId, INSTANCE_ID, new Date())
+
+    if (!task) {
+      logger.warn({ taskId }, 'generation task lease lost')
+      controller.abort()
+      return
+    }
+
+    // 别的实例上点了取消：库里已经写了 cancelled，这边只负责停手
+    if (task.cancelRequested) controller.abort()
+  } catch (error) {
+    logger.warn({ err: error, taskId }, 'generation task heartbeat failed')
+  }
+}
+
+/**
  * 真正跑一次生成。异常一律转成任务状态，不往外抛——
  * 这个函数在 setImmediate 里跑，没人 await 它。
  */
 async function runTask({ taskId, userId, body, resume = null }) {
   const startedAt = new Date()
-  const onProgress = makeProgressHandler(taskId)
-  // 任务没有客户端连接可断：这个 signal 只服务于取消接口
+  // 任务没有客户端连接可断：这个 signal 只服务于取消与丢租
   const controller = new AbortController()
 
   activeControllers.set(String(taskId), controller)
 
-  try {
-    const started = await repo.updateIfActive(taskId, {
-      status: 'running',
-      stage: 'planning',
-      startedAt,
-    })
+  let heartbeat = null
 
-    // 排队期间就已经是终态了（取消、启动清理、或者重试请求已经把它改走）：
-    // 这条链路没有存在的意义，为一个没人要的任务调模型是真金白银
-    if (!started) {
-      logger.info({ taskId }, 'generation task no longer active, skipped')
+  try {
+    // 抢占而不是无条件改成 running：多实例下同一任务只有一个实例能跑。
+    // 排队期间被取消 / 已被别的实例认领时 claim 返回 null，直接退出
+    const claimed = await repo.claim(taskId, { owner: INSTANCE_ID, now: startedAt })
+
+    if (!claimed) {
+      logger.info({ taskId }, 'generation task not claimable, skipped')
       return
     }
 
-    // 取消接口可能在 updateIfActive 之前就 abort 了（controller 已注册）
+    // 取消接口可能在 claim 之前就 abort 了（controller 已注册）
     if (controller.signal.aborted) {
       logger.info({ taskId }, 'generation task cancelled before start')
       return
     }
+
+    heartbeat = setInterval(() => {
+      void heartbeatOnce(taskId, controller)
+    }, config.taskHeartbeatMs)
+    // 不拖着进程不退出：这个定时器是后台维护，不是业务
+    heartbeat.unref?.()
+
+    const onProgress = makeProgressHandler(taskId, { onCancelled: () => controller.abort() })
 
     const dto = await generateReading({
       userId,
@@ -267,6 +311,9 @@ async function runTask({ taskId, userId, body, resume = null }) {
       readingId: dto.id,
       finishedAt,
       durationMs: finishedAt - startedAt,
+      // 交还租约：任务已经结束，没有实例持有它
+      owner: null,
+      heartbeatAt: null,
     })
 
     logger.info({ taskId, readingId: dto.id, durationMs: finishedAt - startedAt }, 'generation task succeeded')
@@ -285,6 +332,8 @@ async function runTask({ taskId, userId, body, resume = null }) {
       stage: 'done',
       finishedAt,
       durationMs: finishedAt - startedAt,
+      owner: null,
+      heartbeatAt: null,
       error: {
         code,
         message: error?.message ?? '生成失败，请重试',
@@ -294,6 +343,7 @@ async function runTask({ taskId, userId, body, resume = null }) {
 
     logger.warn({ taskId, code, durationMs: finishedAt - startedAt }, 'generation task failed')
   } finally {
+    if (heartbeat) clearInterval(heartbeat)
     activeControllers.delete(String(taskId))
   }
 }
@@ -382,6 +432,11 @@ export async function cancelGenerationTask({ userId, id }) {
   const updated = await repo.finish(task._id, {
     status: 'cancelled',
     stage: 'done',
+    // 取消可能落在别的实例上：持有者靠这个标记（以及 owner 被清空后的丢租）
+    // 在下一个心跳 / 下一次进度写回时停手。清掉 owner 同时让心跳立刻查不到
+    cancelRequested: true,
+    owner: null,
+    heartbeatAt: null,
     error: null,
     readingId: null,
     finishedAt,
@@ -428,6 +483,10 @@ export async function retryGenerationTask({ userId, id }) {
     startedAt: null,
     finishedAt: null,
     durationMs: null,
+    // 租约随状态一起重置：上一次的取消标记不能带进这次尝试
+    cancelRequested: false,
+    owner: null,
+    heartbeatAt: null,
     retryCount: (task.retryCount ?? 0) + 1,
     // TTL 建在 createdAt 上，这里一并重置：否则一个快过期的任务重试到一半
     // 会被 TTL 删掉，轮询直接 404，而模型调用已经花出去了
@@ -449,20 +508,56 @@ export async function retryGenerationTask({ userId, id }) {
 }
 
 /**
- * 启动清理（md/31 §7）。
+ * 回收失联任务（md/31 §11）。
  *
- * 任务执行器在进程内，重启后没有任何东西会来推进残留的 queued / running。
- * 不清理的话前端会一直轮询到一个永远不变的进度，比直接报错还糟。
+ * 任务执行器在进程内，实例没了就没有任何东西会来推进这些任务。
+ * 判据是**心跳过期**而不是「谁在启动」：
+ *
+ * - 单实例时，效果和原来的「启动时全表标失败」完全一样（旧文档没有心跳，直接被收）
+ * - 多实例时，别的实例正在跑的任务心跳是新的，重启不会误杀它们
+ *
+ * 启动时先跑一次（收掉上一个进程留下的），之后由 startTaskSweeper 周期跑。
  */
-export async function failInterruptedTasks() {
-  const result = await repo.failInterrupted({
+export async function reclaimInterruptedTasks() {
+  const staleBefore = new Date(Date.now() - config.taskStaleMs)
+  const error = {
     code: ERROR_CODES.TASK_INTERRUPTED,
-    message: '服务重启导致任务中断，请重新生成',
+    message: '执行实例已失联，任务中断，请重试',
     details: null,
-  })
+  }
 
-  const count = result?.modifiedCount ?? 0
-  if (count > 0) logger.warn({ count }, 'generation tasks marked interrupted on startup')
+  const [running, queued] = await Promise.all([
+    repo.reclaimStaleRunning({ staleBefore, error }),
+    repo.reclaimStaleQueued({ staleBefore, error }),
+  ])
+
+  const reclaimedRunning = running?.modifiedCount ?? 0
+  const reclaimedQueued = queued?.modifiedCount ?? 0
+  const count = reclaimedRunning + reclaimedQueued
+
+  if (count > 0) {
+    logger.warn({ reclaimedRunning, reclaimedQueued }, 'stale generation tasks reclaimed')
+  }
 
   return count
+}
+
+/**
+ * 周期巡检（md/31 §11）：实例被 kill -9、容器 OOM 时不会走任何清理逻辑，
+ * 它持有的任务只能靠别人在心跳过期后回收。
+ *
+ * 每个实例都跑同一个巡检：回收是条件更新，谁先扫到谁改，不会重复处理。
+ * 返回停止函数，进程退出时调用（测试里不启动，否则会拖着 vitest 不结束）。
+ */
+export function startTaskSweeper({ intervalMs = 60_000 } = {}) {
+  const timer = setInterval(() => {
+    reclaimInterruptedTasks().catch((error) => {
+      logger.error({ err: error }, 'generation task sweeper failed')
+    })
+  }, intervalMs)
+
+  // 不因为一个后台维护定时器拖住进程退出
+  timer.unref?.()
+
+  return () => clearInterval(timer)
 }

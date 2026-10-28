@@ -24,6 +24,40 @@ export const generationTaskRepository = {
   },
 
   /**
+   * 抢占任务（md/31 §11 多实例）。
+   *
+   * 只认 `queued`：两个实例同时拿到同一个任务时，原子条件更新保证只有
+   * 一个能把它改成 running。抢不到的那个直接退出，不会重复烧钱。
+   */
+  claim(id, { owner, now }) {
+    return GenerationTask.findOneAndUpdate(
+      { _id: id, status: 'queued' },
+      {
+        $set: {
+          status: 'running',
+          stage: 'planning',
+          startedAt: now,
+          owner,
+          heartbeatAt: now,
+        },
+      },
+      { new: true },
+    )
+  },
+
+  /**
+   * 心跳续租。返回 null = **已经不再持有这个任务**（被取消、被巡检回收、
+   * owner 被清空）。调用方看到 null 就该停手——这是租约的全部含义。
+   */
+  heartbeat(id, owner, now) {
+    return GenerationTask.findOneAndUpdate(
+      { _id: id, owner, status: 'running' },
+      { $set: { heartbeatAt: now } },
+      { new: true },
+    )
+  },
+
+  /**
    * 只更新进行中的任务。
    * 用条件更新而不是先查再改：任务被启动清理标成 failed 之后，
    * 迟到的进度回调不该把状态改回去。
@@ -60,18 +94,45 @@ export const generationTaskRepository = {
   },
 
   /**
-   * 启动清理：进程重启后没有任何执行器会来推进这些任务，
-   * 留着只会让前端永远转圈（md/31 §7）。
+   * 回收**心跳过期**的 running 任务（md/31 §11）。
+   *
+   * 为什么不能像单进程时代那样全表 updateMany：多实例下，别的实例正在跑的
+   * 任务心跳是新的，一重启就把它们一起标成失败，等于谁重启谁误杀别人。
+   * `heartbeatAt: null` 也要收：那是加租约之前留下的旧文档，确实没有实例在续租。
    */
-  failInterrupted(reason) {
+  reclaimStaleRunning({ staleBefore, error }) {
     return GenerationTask.updateMany(
-      { status: { $in: ['queued', 'running'] } },
+      {
+        status: 'running',
+        $or: [{ heartbeatAt: { $lt: staleBefore } }, { heartbeatAt: null }],
+      },
       {
         $set: {
           status: 'failed',
           stage: 'done',
           finishedAt: new Date(),
-          error: reason,
+          owner: null,
+          error,
+        },
+      },
+    )
+  },
+
+  /**
+   * 回收「一直没被认领」的 queued 任务：创建它的实例在 setImmediate 之前就没了。
+   *
+   * 用 `updatedAt` 而不是 `createdAt`：重试会重置 createdAt，而重试后的
+   * 任务也应该在这么久没被认领时被回收。
+   */
+  reclaimStaleQueued({ staleBefore, error }) {
+    return GenerationTask.updateMany(
+      { status: 'queued', updatedAt: { $lt: staleBefore } },
+      {
+        $set: {
+          status: 'failed',
+          stage: 'done',
+          finishedAt: new Date(),
+          error,
         },
       },
     )

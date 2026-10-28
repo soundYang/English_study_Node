@@ -142,6 +142,12 @@ export const config = Object.freeze({
   // 默认 false；生产环境打开等于取消准入。
   skipKnownWordsGate: readBoolean('SKIP_KNOWN_WORDS_GATE', false),
 
+  // 任务租约（md/31 §11 多实例）
+  // 执行实例每 taskHeartbeatMs 续一次租；心跳超过 taskStaleMs 没更新才算失联。
+  // 阈值至少要是心跳的 3 倍：一次慢查询或 GC 抖动不该把自己的任务判死。
+  taskHeartbeatMs: toNumber('TASK_HEARTBEAT_MS', 15_000),
+  taskStaleMs: toNumber('TASK_STALE_MS', 60_000),
+
   // 限流（次 / 分钟）
   // 总开关：测试环境默认关闭。开着的话一个 50 次预检的验收用例会把后面的用例
   // 一起打成 429，且失败位置看起来跟限流毫无关系。要验证限流本身的用例
