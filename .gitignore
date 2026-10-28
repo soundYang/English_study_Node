@@ -5,3 +5,6 @@ coverage/
 
 # 文档改动前的临时备份
 *.bak
+
+# batch-generate.mjs 的采样产物：每次跑都变，属于运行结果不是源码
+samples/

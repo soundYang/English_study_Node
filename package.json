@@ -13,7 +13,9 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "build:dictionary": "node scripts/build-dictionary.mjs",
-    "build:basic-words": "node scripts/build-basic-words.mjs"
+    "build:basic-words": "node scripts/build-basic-words.mjs",
+    "seed:fixtures": "node scripts/seed-test-fixtures.mjs",
+    "batch:generate": "node scripts/batch-generate.mjs"
   },
   "dependencies": {
     "cors": "2.8.6",
