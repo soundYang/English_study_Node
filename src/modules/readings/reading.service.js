@@ -17,6 +17,7 @@ import { wordRepository } from '../words/word.repository.js'
 import { ABBREVIATIONS, ABBREVIATION_WORDS } from './abbreviations.js'
 import {
   buildExpandMessages,
+  buildFinishMessages,
   buildMessages,
   buildPlanMessages,
   buildRepairMessages,
@@ -556,6 +557,8 @@ async function generateReadingInner({ userId, body, signal, diag }) {
   let contentRounds = 0
   let lengthRounds = 0
   let expandRounds = 0
+  // 分段路径的题目修正轮（md/21 W11 缺口 1）：独立计数，只允许 1 次
+  let questionsRounds = 0
 
   if (config.generationStrategy === 'segmented') {
     const systemPrompt = buildSegmentedSystem({
@@ -616,6 +619,50 @@ async function generateReadingInner({ userId, body, signal, diag }) {
     content = segmentedContent
     diag.content = segmentedContent
     state = evaluate({ content, params, allowedWords, range, unknownBudget })
+
+    // 分段路径没有整篇修正循环，但题目是收尾单独产出的（md/21 W11 缺口 1）：
+    // 正文、标题、翻译、names 都已经过段级与全文校验，题目不合格时只重出题目，
+    // 与整篇路径的 `questions` 轮同口径。只给 1 次，再不合格交给下面的终检报 502。
+    if (state.feedback?.type === 'questions') {
+      logger.warn(
+        { round: questionsRounds + 1, type: 'questions', reason: state.feedback.reason },
+        'reading repair round',
+      )
+
+      const repairMessages = buildRepairMessages(
+        buildFinishMessages(systemPrompt, {
+          article: generated.data.article,
+          questionCount: params.questionCount,
+          paragraphCount: segmentStats.filter((item) => item.accepted).length,
+          level: params.level,
+        }),
+        state.feedback,
+        content,
+        params.level,
+      )
+
+      const repaired = await callModel({
+        kind: 'repair',
+        repairFor: 'questions',
+        messages: repairMessages,
+        signal,
+        rounds,
+      })
+
+      // 收尾的 JSON 里没有 article（正文是分段拼出来的），不能直接拿它当整篇校验。
+      // 只取题目，其余字段用已经通过校验的原值；解析失败则保留原始输出，
+      // 让 evaluate() 按结构不合法处理（与 whole 的 questions 轮同一个出口）。
+      const repairedQuestions = parseAiContent(repaired.content)?.questions
+      content =
+        Array.isArray(repairedQuestions) && repairedQuestions.length
+          ? JSON.stringify({ ...generated.data, questions: repairedQuestions })
+          : repaired.content
+      finishReason = repaired.finishReason ?? finishReason
+      diag.content = content
+      questionsRounds += 1
+      state = evaluate({ content, params, allowedWords, range, unknownBudget })
+      recordRound({ rounds, state, content, diag })
+    }
 
     logger.info(
       {
@@ -712,7 +759,8 @@ async function generateReadingInner({ userId, body, signal, diag }) {
   }
 
   // 分段路径的「修正」是段内重写，与整篇修正分开计数但对外同口径
-  const repairRounds = contentRounds + lengthRounds + expandRounds + segmentRepairCount
+  const repairRounds =
+    contentRounds + lengthRounds + expandRounds + questionsRounds + segmentRepairCount
   const tokenUsage = sumUsage(rounds)
   // 后面的三条 throw 都在预算耗尽之后，这两个数要让它们能看见
   diag.repairRounds = repairRounds

@@ -66,6 +66,20 @@ const FINISH = {
   })),
 }
 
+/** 第 2 题是 detail，但正确答案（big / book）与 evidence（good / friends）没有共同实词 */
+const FINISH_BAD_QUESTION = {
+  ...FINISH,
+  questions: FINISH.questions.map((question) =>
+    question.id === 2
+      ? {
+          ...question,
+          options: ['A big book', 'A small boy', 'A house', 'A good day'],
+          correctAnswer: 0,
+        }
+      : question,
+  ),
+}
+
 const json = (payload) => ({
   content: JSON.stringify(payload),
   usage: { prompt_tokens: 10, completion_tokens: 20, total_tokens: 30 },
@@ -90,6 +104,7 @@ function classify(messages) {
   const last = messages.at(-1).content
 
   if (last.startsWith('请把一篇约')) return { type: 'plan' }
+  if (last.includes('你上一次的题目不符合要求')) return { type: 'questions' }
   if (last.includes('下面是已经完成的英文正文')) return { type: 'finish' }
   if (last.includes('请用最简单的说法写')) {
     return { type: 'simplify', index: Number(last.match(/第 (\d+) 段/)?.[1]) }
@@ -183,6 +198,78 @@ describe('分段路径 · 正常闭环', () => {
     expect(doc.aiMeta.segments.filter((item) => item.id !== 1).every((item) => item.attempts === 1)).toBe(true)
     expect(doc.aiMeta.repairRounds).toBe(1)
     expect(doc.aiMeta.rounds.map((round) => round.kind)).toContain('repair')
+  })
+})
+
+describe('分段路径 · 题目修正（W11 缺口 1）', () => {
+  it('收尾题目不合格 → 只重出题目一次，正文与标题不动', async () => {
+    await seedWords(400)
+
+    let finishCalls = 0
+    chatJson.mockImplementation(async ({ messages }) => {
+      const step = classify(messages)
+      if (step.type === 'plan') return json(PLAN)
+      if (step.type === 'finish') {
+        finishCalls += 1
+        return json(finishCalls === 1 ? FINISH_BAD_QUESTION : FINISH)
+      }
+      if (step.type === 'questions') return json(FINISH)
+
+      return json({ text: SHORT })
+    })
+
+    const res = await generate({ level: 'easy', targetWords: 100, questionCount: 3 })
+
+    expect(res.status).toBe(201)
+
+    const doc = await Reading.findById(res.body.id).lean()
+
+    expect(doc.aiMeta.rounds.map((round) => round.kind)).toEqual([
+      'plan',
+      'segment',
+      'segment',
+      'segment',
+      'finish',
+      'repair',
+    ])
+    expect(doc.aiMeta.rounds.at(-1).repairFor).toBe('questions')
+    expect(doc.aiMeta.repairRounds).toBe(1)
+    // 正文来自分段拼装，修复轮只换题目
+    expect(doc.article).toContain(SHORT)
+    expect(doc.title).toBe('A Good Day')
+    expect(doc.questions.find((item) => item.id === 2).options[0]).toBe('good friends')
+  })
+
+  it('重出题目仍不合格 → 502，失败样本留下 questions 轮', async () => {
+    await seedWords(400)
+
+    chatJson.mockImplementation(async ({ messages }) => {
+      const step = classify(messages)
+      if (step.type === 'plan') return json(PLAN)
+      if (step.type === 'finish' || step.type === 'questions') return json(FINISH_BAD_QUESTION)
+
+      return json({ text: SHORT })
+    })
+
+    const res = await generate({ level: 'easy', targetWords: 100, questionCount: 3 })
+
+    expect(res.status).toBe(502)
+    expect(res.body.error.code).toBe('AI_INVALID_RESPONSE')
+
+    const [failure] = await GenerationFailure.find().lean()
+
+    expect(failure.errorCode).toBe('AI_INVALID_RESPONSE')
+    expect(failure.rounds.map((round) => round.kind)).toEqual([
+      'plan',
+      'segment',
+      'segment',
+      'segment',
+      'finish',
+      'repair',
+    ])
+    expect(failure.rounds.at(-1).repairFor).toBe('questions')
+    expect(failure.rounds.at(-1).feedbackType).toBe('questions')
+    expect(failure.repairRounds).toBe(1)
   })
 })
 
