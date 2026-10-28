@@ -76,12 +76,15 @@ export function getBasicWords() {
 }
 
 /**
- * 兼容出口：脚本与离线回放默认拿 hard 全量。
+ * 历史口径的 hard 全量表（2578 词）。**只给重建旧样本的脚本用**。
  *
- * 生成链路不要用它——必须按请求的 level 取（`getBasicWords`），
- * 否则 easy 文章会拿 hard 的 2578 词当白名单，难度形同虚设。
+ * 名字刻意写得难看：它曾经叫 `basicWords`，被当成「基础词」的默认值，
+ * 结果两处脚本各按不同口径算 allowedWords，算出来的生词数根本没有可比性。
+ * 现在生成链路一律走 `getBasicWords()`（三档同一份 600），
+ * 需要按难度取表的地方用 `basicWordsByLevel[level]`；
+ * 只有在「还原历史 fixture / 补算修复前样本」时，才允许用这张旧表。
  */
-export const basicWords = basicWordsByLevel.hard
+export const legacyHardBasicWords = basicWordsByLevel.hard
 
 /**
  * 179 个功能词（md/04 §二）。

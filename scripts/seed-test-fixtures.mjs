@@ -20,7 +20,7 @@
 import mongoose from 'mongoose'
 
 import { config } from '../src/config/index.js'
-import { basicWords, getBasicWords } from '../src/modules/readings/basic-words.js'
+import { getBasicWords, legacyHardBasicWords } from '../src/modules/readings/basic-words.js'
 import { calendarWords } from '../src/modules/readings/calendar-words.js'
 import { GenerationFailure } from '../src/modules/readings/generation-failure.model.js'
 import { Reading } from '../src/modules/readings/reading.model.js'
@@ -181,8 +181,12 @@ function resolveAnchor() {
 function pickWords(count, { rankMax = RANK_MAX, common = false, reserveEasyOnly = false } = {}) {
   // 日历词也要排除：它们会同时出现在 knownWords 的并集里，个人词撞上一个，
   // B 门就会少算 1 个——gate-* 是卡着门槛造的，差 1 个就进不去
+  //
+  // 默认分支用 `legacyHardBasicWords`（hard 2578）而不是现行的 easy 600：
+  // 这是历史缺口，为了**让旧 fixture 的词表逐字不变**。换成 600 会让所有
+  // gate-* / form-* / rich-* 的取词结果改变，历史样本再也对不上。
   const reserved = new Set([
-    ...(reserveEasyOnly ? getBasicWords() : basicWords),
+    ...(reserveEasyOnly ? getBasicWords() : legacyHardBasicWords),
     ...calendarWords,
   ])
   const pool = [...wordRanks.entries()]

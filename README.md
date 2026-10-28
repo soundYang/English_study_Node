@@ -124,7 +124,7 @@ node scripts/build-word-ranks.mjs        # 生成 data/word-ranks.json
 | `npm run batch:generate` | 批量请求生成接口做采样，**会真实调用模型** | 写库 + 花钱 |
 | `node scripts/summarize-runs.mjs` | 只读汇总：成功率、P95、token、费用 | 只读 |
 | `npm run replay` | 用离线夹具回放词表校验，验证「改校验器没引入回归」 | 只读 |
-| `npm run calibrate` | 用回放样本校准门禁数字 | 只读 |
+| `npm run calibrate` | 诊断历史成功正文的表外词分布；门槛数字已作废，现行值看 `capacity-table.js` | 只读 |
 
 **费用提示**：所有价格按 token 计，DeepSeek 牌价会变，代码里只有默认值。
 `summarize-runs.mjs` 支持 `PRICE_CACHE_HIT` / `PRICE_CACHE_MISS` / `PRICE_OUTPUT`

@@ -22,7 +22,7 @@ import mongoose from 'mongoose'
 
 import { config } from '../src/config/index.js'
 import { ABBREVIATION_WORDS } from '../src/modules/readings/abbreviations.js'
-import { basicWords } from '../src/modules/readings/basic-words.js'
+import { basicWordsByLevel } from '../src/modules/readings/basic-words.js'
 import { calendarWords } from '../src/modules/readings/calendar-words.js'
 import { unknownBudgetFor } from '../src/modules/readings/level-limits.js'
 import { Reading } from '../src/modules/readings/reading.model.js'
@@ -37,15 +37,20 @@ function argValue(name, fallback = null) {
 const since = argValue('since') ? new Date(`${argValue('since')}T00:00:00`) : null
 const userArg = argValue('user')
 
-/** 和 generateReading 同口径：用户的已学词 + 基础词表 + 日历词 + 缩写 */
-async function allowedWordsFor(userId) {
+/**
+ * 用户侧的白名单：已学词 + 日历词 + 缩写。
+ *
+ * 基础词表不在这里拼——它按文章的难度取（见主循环）。
+ * 这批样本生成于「三档各用一份基础表」的年代，用 hard 2578 去算 easy 文章，
+ * 会把 easy 表外的词当成已认识，违规数被系统性低估。
+ */
+async function userWordsOf(userId) {
   const words = await Word.find({ userId, status: { $in: ['learning', 'mastered'] } })
     .select('word')
     .lean()
 
   return new Set([
     ...words.map((item) => item.word),
-    ...basicWords,
     ...calendarWords,
     ...ABBREVIATION_WORDS,
   ])
@@ -82,12 +87,15 @@ async function main() {
 
     for (const doc of targets) {
       if (!allowedCache.has(doc.userId)) {
-        allowedCache.set(doc.userId, await allowedWordsFor(doc.userId))
+        allowedCache.set(doc.userId, await userWordsOf(doc.userId))
       }
 
       const result = validateArticle({
         article: doc.article,
-        allowedWords: allowedCache.get(doc.userId),
+        allowedWords: new Set([
+          ...allowedCache.get(doc.userId),
+          ...(basicWordsByLevel[doc.level] ?? basicWordsByLevel.hard),
+        ]),
         names: doc.names ?? [],
       })
 
