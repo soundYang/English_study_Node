@@ -1,0 +1,394 @@
+{
+  "startedAt": "2026-10-28T08:56:00.441Z",
+  "base": "http://127.0.0.1:3100",
+  "times": 1,
+  "model": "deepseek-chat",
+  "codeVersion": "573b0c6",
+  "basicWordsVersion": "953faf74",
+  "summary": {
+    "totalRuns": 1,
+    "expectedRuns": 1,
+    "ok": 1,
+    "failed": 0,
+    "judgeFailed": 0,
+    "lengthOutside": 0,
+    "failureMissing": 0,
+    "poolInconsistent": [],
+    "codes": {},
+    "byCase": [
+      {
+        "caseId": 5,
+        "level": "medium",
+        "targetWords": 400,
+        "vocabScope": "all",
+        "expected": "ok",
+        "runs": 1,
+        "ok": 1,
+        "failed": 0,
+        "errorCodes": [],
+        "poolConsistent": true,
+        "poolSizes": [
+          360
+        ],
+        "avgDurationMs": 18967,
+        "avgTotalTokens": 51375,
+        "judgePassed": true,
+        "lengthOutside": 0
+      }
+    ]
+  },
+  "cases": [
+    {
+      "caseId": 5,
+      "id": 5,
+      "fixture": "rich",
+      "level": "medium",
+      "targetWords": 400,
+      "vocabScope": [
+        "all"
+      ],
+      "expect": "ok",
+      "fixtureUserId": "fixture-rich",
+      "runs": [
+        {
+          "run": 1,
+          "durationMs": 18967,
+          "readingId": "6ae1b8a0ccdd97c8f099b8f3",
+          "ok": true,
+          "status": 201,
+          "errorCode": null,
+          "actualWords": 425,
+          "wordCountDeviation": 1.063,
+          "repairRounds": 8,
+          "violationsCount": 0,
+          "poolSize": 360,
+          "requiredWords": 40,
+          "focusWords": 14,
+          "totalTokens": 51375,
+          "promptTokens": 47803,
+          "completionTokens": 3572,
+          "model": "deepseek-chat",
+          "basicWordsVersion": "953faf74",
+          "codeVersion": "573b0c6",
+          "rounds": [
+            {
+              "kind": "plan",
+              "repairFor": null,
+              "feedbackType": null,
+              "actualWords": null,
+              "unknownCount": 0,
+              "counts": null,
+              "cacheHitTokens": 2432,
+              "totalTokens": 3098,
+              "durationMs": 3271,
+              "finishReason": "stop"
+            },
+            {
+              "kind": "segment",
+              "repairFor": null,
+              "feedbackType": "vocabulary",
+              "actualWords": 62,
+              "unknownCount": 2,
+              "counts": {
+                "abbreviation": 0,
+                "proper_noun": 0,
+                "wordform": 0,
+                "missing_common": 1,
+                "rare": 1,
+                "unknown_token": 0
+              },
+              "cacheHitTokens": 2432,
+              "totalTokens": 2816,
+              "durationMs": 1269,
+              "finishReason": "stop"
+            },
+            {
+              "kind": "segment",
+              "repairFor": null,
+              "feedbackType": "vocabulary",
+              "actualWords": 51,
+              "unknownCount": 1,
+              "counts": {
+                "abbreviation": 0,
+                "proper_noun": 0,
+                "wordform": 0,
+                "missing_common": 1,
+                "rare": 0,
+                "unknown_token": 0
+              },
+              "cacheHitTokens": 2432,
+              "totalTokens": 2776,
+              "durationMs": 1350,
+              "finishReason": "stop"
+            },
+            {
+              "kind": "segment",
+              "repairFor": null,
+              "feedbackType": "vocabulary",
+              "actualWords": 66,
+              "unknownCount": 2,
+              "counts": {
+                "abbreviation": 0,
+                "proper_noun": 0,
+                "wordform": 0,
+                "missing_common": 1,
+                "rare": 1,
+                "unknown_token": 0
+              },
+              "cacheHitTokens": 2432,
+              "totalTokens": 2817,
+              "durationMs": 1361,
+              "finishReason": "stop"
+            },
+            {
+              "kind": "segment",
+              "repairFor": null,
+              "feedbackType": "vocabulary",
+              "actualWords": 69,
+              "unknownCount": 3,
+              "counts": {
+                "abbreviation": 0,
+                "proper_noun": 0,
+                "wordform": 0,
+                "missing_common": 1,
+                "rare": 2,
+                "unknown_token": 0
+              },
+              "cacheHitTokens": 2432,
+              "totalTokens": 2824,
+              "durationMs": 1412,
+              "finishReason": "stop"
+            },
+            {
+              "kind": "repair",
+              "repairFor": "vocabulary",
+              "feedbackType": null,
+              "actualWords": 62,
+              "unknownCount": 0,
+              "counts": {
+                "abbreviation": 0,
+                "proper_noun": 0,
+                "wordform": 0,
+                "missing_common": 0,
+                "rare": 0,
+                "unknown_token": 0
+              },
+              "cacheHitTokens": 2432,
+              "totalTokens": 2732,
+              "durationMs": 803,
+              "finishReason": "stop"
+            },
+            {
+              "kind": "repair",
+              "repairFor": "vocabulary",
+              "feedbackType": null,
+              "actualWords": 53,
+              "unknownCount": 0,
+              "counts": {
+                "abbreviation": 0,
+                "proper_noun": 0,
+                "wordform": 0,
+                "missing_common": 0,
+                "rare": 0,
+                "unknown_token": 0
+              },
+              "cacheHitTokens": 2432,
+              "totalTokens": 2679,
+              "durationMs": 972,
+              "finishReason": "stop"
+            },
+            {
+              "kind": "repair",
+              "repairFor": "vocabulary",
+              "feedbackType": null,
+              "actualWords": 78,
+              "unknownCount": 0,
+              "counts": {
+                "abbreviation": 0,
+                "proper_noun": 0,
+                "wordform": 0,
+                "missing_common": 0,
+                "rare": 0,
+                "unknown_token": 0
+              },
+              "cacheHitTokens": 2432,
+              "totalTokens": 2764,
+              "durationMs": 1136,
+              "finishReason": "stop"
+            },
+            {
+              "kind": "repair",
+              "repairFor": "vocabulary",
+              "feedbackType": null,
+              "actualWords": 68,
+              "unknownCount": 0,
+              "counts": {
+                "abbreviation": 0,
+                "proper_noun": 0,
+                "wordform": 0,
+                "missing_common": 0,
+                "rare": 0,
+                "unknown_token": 0
+              },
+              "cacheHitTokens": 2432,
+              "totalTokens": 2737,
+              "durationMs": 1225,
+              "finishReason": "stop"
+            },
+            {
+              "kind": "segment",
+              "repairFor": null,
+              "feedbackType": "vocabulary",
+              "actualWords": 54,
+              "unknownCount": 2,
+              "counts": {
+                "abbreviation": 0,
+                "proper_noun": 0,
+                "wordform": 0,
+                "missing_common": 2,
+                "rare": 0,
+                "unknown_token": 0
+              },
+              "cacheHitTokens": 2432,
+              "totalTokens": 2802,
+              "durationMs": 1259,
+              "finishReason": "stop"
+            },
+            {
+              "kind": "segment",
+              "repairFor": null,
+              "feedbackType": "vocabulary",
+              "actualWords": 38,
+              "unknownCount": 2,
+              "counts": {
+                "abbreviation": 0,
+                "proper_noun": 0,
+                "wordform": 0,
+                "missing_common": 2,
+                "rare": 0,
+                "unknown_token": 0
+              },
+              "cacheHitTokens": 2432,
+              "totalTokens": 2766,
+              "durationMs": 943,
+              "finishReason": "stop"
+            },
+            {
+              "kind": "repair",
+              "repairFor": "vocabulary",
+              "feedbackType": null,
+              "actualWords": 54,
+              "unknownCount": 0,
+              "counts": {
+                "abbreviation": 0,
+                "proper_noun": 0,
+                "wordform": 0,
+                "missing_common": 0,
+                "rare": 0,
+                "unknown_token": 0
+              },
+              "cacheHitTokens": 2432,
+              "totalTokens": 2704,
+              "durationMs": 915,
+              "finishReason": "stop"
+            },
+            {
+              "kind": "repair",
+              "repairFor": "vocabulary",
+              "feedbackType": null,
+              "actualWords": 38,
+              "unknownCount": 0,
+              "counts": {
+                "abbreviation": 0,
+                "proper_noun": 0,
+                "wordform": 0,
+                "missing_common": 0,
+                "rare": 0,
+                "unknown_token": 0
+              },
+              "cacheHitTokens": 2432,
+              "totalTokens": 2680,
+              "durationMs": 780,
+              "finishReason": "stop"
+            },
+            {
+              "kind": "segment",
+              "repairFor": null,
+              "feedbackType": "vocabulary",
+              "actualWords": 72,
+              "unknownCount": 2,
+              "counts": {
+                "abbreviation": 0,
+                "proper_noun": 0,
+                "wordform": 0,
+                "missing_common": 2,
+                "rare": 0,
+                "unknown_token": 0
+              },
+              "cacheHitTokens": 2432,
+              "totalTokens": 2824,
+              "durationMs": 2016,
+              "finishReason": "stop"
+            },
+            {
+              "kind": "repair",
+              "repairFor": "vocabulary",
+              "feedbackType": null,
+              "actualWords": 72,
+              "unknownCount": 0,
+              "counts": {
+                "abbreviation": 0,
+                "proper_noun": 0,
+                "wordform": 0,
+                "missing_common": 0,
+                "rare": 0,
+                "unknown_token": 0
+              },
+              "cacheHitTokens": 2432,
+              "totalTokens": 2756,
+              "durationMs": 1009,
+              "finishReason": "stop"
+            },
+            {
+              "kind": "finish",
+              "repairFor": null,
+              "feedbackType": null,
+              "actualWords": null,
+              "unknownCount": 0,
+              "counts": null,
+              "cacheHitTokens": 2432,
+              "totalTokens": 3939,
+              "durationMs": 5085,
+              "finishReason": "stop"
+            },
+            {
+              "kind": "repair",
+              "repairFor": "questions",
+              "feedbackType": null,
+              "actualWords": 425,
+              "unknownCount": 0,
+              "counts": {
+                "abbreviation": 0,
+                "proper_noun": 0,
+                "wordform": 0,
+                "missing_common": 0,
+                "rare": 0,
+                "unknown_token": 0
+              },
+              "cacheHitTokens": 2944,
+              "totalTokens": 5661,
+              "durationMs": 5150,
+              "finishReason": "stop"
+            }
+          ],
+          "expected": "ok",
+          "actual": "ok",
+          "neededVocab": 80,
+          "pass": true,
+          "detail": null,
+          "lengthOutside": false
+        }
+      ]
+    }
+  ]
+}
