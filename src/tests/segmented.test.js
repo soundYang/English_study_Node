@@ -109,7 +109,11 @@ function classify(messages) {
   if (last.includes('请用最简单的说法写')) {
     return { type: 'simplify', index: Number(last.match(/第 (\d+) 段/)?.[1]) }
   }
-  if (last.includes('不在词表内') || last.includes('没有返回可用')) {
+  if (
+    last.includes('不在词表内')
+    || last.includes('没有返回可用')
+    || last.includes('超过本段上限')
+  ) {
     return { type: 'repair', index: Number(last.match(/第 (\d+) 段/)?.[1]) }
   }
 
@@ -198,6 +202,60 @@ describe('分段路径 · 正常闭环', () => {
     expect(doc.aiMeta.segments.filter((item) => item.id !== 1).every((item) => item.attempts === 1)).toBe(true)
     expect(doc.aiMeta.repairRounds).toBe(1)
     expect(doc.aiMeta.rounds.map((round) => round.kind)).toContain('repair')
+  })
+
+  it('单段写超 maxWords×1.15 → 只重写这一段，不重写整篇（md/30 §6-2）', async () => {
+    await seedWords(400)
+    mockHappyPath({
+      1: (step, count) => (step.type === 'segment' && count === 1 ? LONG : SHORT),
+    })
+
+    const res = await generate({ level: 'easy', targetWords: 100, questionCount: 3 })
+
+    expect(res.status).toBe(201)
+
+    const doc = await Reading.findById(res.body.id).lean()
+    const first = doc.aiMeta.segments.find((item) => item.id === 1)
+    const others = doc.aiMeta.segments.filter((item) => item.id !== 1)
+
+    // maxWords 37 → 上限 ceil(37 × 1.15) = 43；LONG 是 62 词，必须被压回来
+    expect(first.maxWords).toBe(37)
+    expect(first.limitWords).toBe(43)
+    expect(first.attempts).toBe(2)
+    expect(first.accepted).toBe(true)
+    expect(first.actualWords).toBeLessThanOrEqual(43)
+    expect(first.overLength).toBeFalsy()
+
+    // 只重写第 1 段：其余段仍是一次过，整篇没有走整篇重写
+    expect(others.every((item) => item.attempts === 1)).toBe(true)
+    expect(doc.aiMeta.repairRounds).toBe(1)
+
+    // 重写提示词要说清楚「差多少」，否则模型只会再写一遍同样的长度
+    const prompts = chatJson.mock.calls.map(([args]) => args.messages.at(-1).content)
+    const lengthPrompt = prompts.find((content) => content.includes('超过本段上限'))
+
+    expect(lengthPrompt).toContain('有 61 个英文单词')
+    expect(lengthPrompt).toContain('上限 43 个词')
+  })
+
+  it('词表干净但怎么都压不下来 → 收下这一段并标 overLength，不丢段', async () => {
+    await seedWords(400)
+    mockHappyPath({ 1: () => LONG })
+
+    const res = await generate({ level: 'easy', targetWords: 100, questionCount: 3 })
+
+    // 3 段 × 62 词 = 186，超了 100 词的验收上界，但段都在、词表干净，
+    // 整篇照样收下（篇幅超长只记 lengthStatus，不判失败）
+    expect(res.status).toBe(201)
+
+    const doc = await Reading.findById(res.body.id).lean()
+    const first = doc.aiMeta.segments.find((item) => item.id === 1)
+
+    // 首轮 + 2 次段内重写 + 1 次降级，全部超长，但词表干净
+    expect(first.accepted).toBe(true)
+    expect(first.overLength).toBe(true)
+    expect(first.attempts).toBe(4)
+    expect(first.actualWords).toBe(61)
   })
 })
 

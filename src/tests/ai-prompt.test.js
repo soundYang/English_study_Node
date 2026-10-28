@@ -81,10 +81,10 @@ describe('buildMessages · 三段式词表', () => {
     const system = build()[0].content
     const prompt = userMessage(build())
 
-    // targetWords 300 → 目标 330、上限 345
-    expect(system).toContain('300–345 个英文单词')
+    // targetWords 300 → 目标 330、提示词上限 330（重写上界才是 345，md/30 §6-1）
+    expect(system).toContain('300–330 个英文单词')
     expect(system).not.toContain('5%')
-    expect(prompt).toContain('300–345 词')
+    expect(prompt).toContain('300–330 词')
   })
 
   it('首轮就给出句子预算（模型数不清词，但数得清句子）', () => {
@@ -92,8 +92,8 @@ describe('buildMessages · 三段式词表', () => {
     const prompt = userMessage(build())
 
     // W7：hard 每句基准 19 词 → 330 ÷ 19 ≈ 17 句；每句词数由目标值反推
-    expect(system).toContain('共 16–18 个句子，每句 19–20 个英文单词')
-    expect(prompt).toContain('约 17 句，每句 19–20 词')
+    expect(system).toContain('共 16–18 个句子，每句 19 个英文单词')
+    expect(prompt).toContain('约 17 句，每句 19 词')
   })
 
   it('每句基准词数按难度取：easy 句子更短、句数更多', () => {

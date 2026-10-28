@@ -17,8 +17,9 @@ export const HISTORY_LEVEL_FILTERS = ['all', ...LEVELS]
  * targetWords 的取值规则。生成与预检共用同一份，
  * 否则会出现「预检说能生成、点下去 400」。
  *
- * 上限 800（md/26）：契约层放开到 800，**各档实际上限仍由
- * `LEVEL_LIMITS.maxTargetWords` 决定**（easy 300 / medium 450 / hard 600）。
+ * 上限 1000（md/26 → md/30）：契约层放开到 1000，**各档实际上限仍由
+ * `LEVEL_LIMITS.maxTargetWords` 决定**（easy 300 / medium 450 / hard 600，
+ * hard 在个人词库 ≥ 3000 时进入「最终模式」，上限 1000——见 md/30 §2）。
  * 两层分开的理由：契约管「这个数字合不合法」，档位管「这个难度写不写得动」。
  *
  * 历史上 600 一直是契约层硬上限，因为 800 词实测写不出来——正文需要约 2000 个
@@ -31,7 +32,7 @@ const targetWordsRules = z
   .number({ error: 'targetWords 必须是数字' })
   .int('targetWords 必须是整数')
   .min(100, 'targetWords 最小为 100')
-  .max(800, 'targetWords 最大为 800')
+  .max(1000, 'targetWords 最大为 1000')
   .refine((value) => value % 10 === 0, 'targetWords 必须是 10 的倍数')
 
 export const generateReadingSchema = z.object({

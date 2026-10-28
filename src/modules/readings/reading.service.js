@@ -143,7 +143,12 @@ function evaluate({ content, params, allowedWords, range, unknownBudget }) {
 
   // 篇幅优先于用词：实测用词修正会稳定把文章改长（231→234、277→279），
   // 先修词等于把超长的问题放大。先重写成目标篇幅，篇幅短了带出的高级词也少。
-  if (actualWords > range.max) {
+  //
+  // 判的是**验收上界**（1.15N），不是提示词上界（1.1N，md/30 §6-1）。
+  // 两者相等时，模型照提示词写到上限就触发整篇重写——白烧一轮，
+  // 而重写又会带出新一批表外词。提示词收紧 5% 之后这里保持原样，
+  // 模型的「应写区间」和「被判超长的线」之间才有缓冲。
+  if (actualWords > acceptedRange.max) {
     return {
       result,
       actualWords,
@@ -151,7 +156,7 @@ function evaluate({ content, params, allowedWords, range, unknownBudget }) {
         type: 'word_count',
         actualWords,
         range,
-        reason: `正文有 ${actualWords} 个英文单词，超过上限 ${range.max}`,
+        reason: `正文有 ${actualWords} 个英文单词，超过上限 ${acceptedRange.max}`,
       },
     }
   }

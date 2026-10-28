@@ -113,8 +113,13 @@ const segmentMetaSchema = new Schema(
     id: Number,
     goal: String, // 规划阶段给出的方向（中文）
     maxWords: Number, // 计划篇幅
+    // 段级硬上限 = maxWords × 1.15（md/30 §6-2）。和 actualWords 一起落库，
+    // 才能回答「这一段是因为超长被重写的，还是因为生词」。
+    limitWords: Number,
     attempts: Number, // 一共调了几次模型（含首轮与降级）
     actualWords: Number, // 最后一次尝试的实际词数
+    // 收下时仍然超长：词表干净但压不下来，宁可留段也不丢（丢一段少 60 词）
+    overLength: Boolean,
     accepted: Boolean, // 是否进入正文
     // 这段是否走过补段（md/27 §3.2 M1）：首轮被丢、第二轮又写了一次。
     // 用它算补段命中率，才知道 M1 到底救回了多少篇幅。

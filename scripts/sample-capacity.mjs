@@ -145,6 +145,11 @@ async function inspectFixture(fixture, { level, targetWords }) {
     total: words.length,
     eligible: eligible.length,
     needed,
+    // 全局下限：个人词库不足 VOCABULARY_THRESHOLD（默认 20）时，
+    // 生成入口在 A 门之前就 422。它和 A 门是两道不同的门，
+    // 小 V 点（如 100 词的 A 门边界 15）会被它拦下，dry-run 必须看得见。
+    belowVocabularyFloor: eligible.length < config.vocabularyThreshold,
+    vocabularyThreshold: config.vocabularyThreshold,
     // A 门不过就永远走不到模型。这条要单独标出来，
     // 否则报告里会和「模型写不出来」混为一谈
     aGateBlocked: eligible.length < needed,
@@ -161,8 +166,10 @@ async function main() {
   const dryRun = hasFlag('dry-run')
   const out = argValue('out', `samples/capacity_N${targetWords}.json`)
 
-  if (!Number.isInteger(targetWords) || targetWords < 50 || targetWords > 800) {
-    throw new Error(`--n 必须在 50–800 之间，收到 ${targetWords}`)
+  // 上限 1000 = 最终模式的封顶（md/30 §2.1）。超过 800 的点必须同时带
+  // `MAX_TARGET_WORDS=1000`，否则会被档位上限拦成 400 target_words_cap。
+  if (!Number.isInteger(targetWords) || targetWords < 50 || targetWords > 1000) {
+    throw new Error(`--n 必须在 50–1000 之间，收到 ${targetWords}`)
   }
   if (!Number.isInteger(times) || times < 1) throw new Error('--times 必须是正整数')
 
@@ -186,11 +193,13 @@ async function main() {
       plan.push(await inspectFixture(fixture, { level, targetWords }))
     }
 
-    console.log('前置检查（A 门：候选池能不能凑齐目标词）')
+    console.log('前置检查（两道门：全局词库下限 → A 门能不能凑齐目标词）')
     for (const item of plan) {
-      const status = item.aGateBlocked
-        ? `A 门拦下（${item.eligible} < ${item.needed}）`
-        : `可跑，池 ${item.eligible}，目标词 ${item.requiredWords}`
+      const status = item.belowVocabularyFloor
+        ? `全局下限拦下（${item.eligible} < ${item.vocabularyThreshold}）`
+        : item.aGateBlocked
+          ? `A 门拦下（${item.eligible} < ${item.needed}）`
+          : `可跑，池 ${item.eligible}，目标词 ${item.requiredWords}`
       console.log(`  ${item.fixture.padEnd(11)} ${String(item.eligible).padStart(5)} 词 → ${status}`)
     }
 
@@ -202,8 +211,14 @@ async function main() {
     const results = []
 
     for (const item of plan) {
-      if (item.aGateBlocked) {
-        results.push({ ...item, runs: [], note: 'A 门拦下，未调模型' })
+      if (item.belowVocabularyFloor || item.aGateBlocked) {
+        results.push({
+          ...item,
+          runs: [],
+          note: item.belowVocabularyFloor
+            ? `全局词库下限拦下（${item.eligible} < ${item.vocabularyThreshold}），未调模型`
+            : 'A 门拦下，未调模型',
+        })
         continue
       }
 

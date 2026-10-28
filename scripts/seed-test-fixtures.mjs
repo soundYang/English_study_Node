@@ -107,6 +107,11 @@ const FIXTURES = {
   // 0 个个人词在调模型之前就被拦下，属于「测不到」而不是「测出来不够」。
   // 贴着 A 门边界的两点：hard/200 的 A 门要 29 个、hard/600 要 86 个。
   // 这两个点是用来判断「表里的数字是能力下限，还是 A 门公式的下限」的。
+  // md/30 §8.1：100 词的 A 门边界 = ceil(round(0.1×100)/0.7) = 15，
+  // 但全局下限 VOCABULARY_THRESHOLD = 20 更高——15 词的样本在调模型之前就被
+  // 422 INSUFFICIENT_VOCABULARY 拦下（实测 3/3 全拦）。真正的 100 词地板是 20。
+  'real-v15': { userId: 'fixture-real-v15', count: 15, mixedStatus: false, common: true, reserveEasyOnly: true },
+  'real-v20': { userId: 'fixture-real-v20', count: 20, mixedStatus: false, common: true, reserveEasyOnly: true },
   'real-v29': { userId: 'fixture-real-v29', count: 29, mixedStatus: false, common: true, reserveEasyOnly: true },
   'real-v86': { userId: 'fixture-real-v86', count: 86, mixedStatus: false, common: true, reserveEasyOnly: true },
   // 其余篇幅的 A 门精确边界：hard 的 neededVocab = ceil(round(0.1N)/0.7)
@@ -120,6 +125,10 @@ const FIXTURES = {
   'real-v400': { userId: 'fixture-real-v400', count: 400, mixedStatus: false, common: true, reserveEasyOnly: true },
   'real-v600': { userId: 'fixture-real-v600', count: 600, mixedStatus: false, common: true, reserveEasyOnly: true },
   'real-v800': { userId: 'fixture-real-v800', count: 800, mixedStatus: false, common: true, reserveEasyOnly: true },
+  // 最终模式解锁线（md/30 §2.2）：个人词库正好 3000 个 learning/mastered。
+  // 它在 hard 的 A 门上有大量余量（1000 词只需 143 个个人词），
+  // 所以跑出来只反映「刚解锁能不能写 1000 词」，不会和 A 门混在一起。
+  'real-v3000': { userId: 'fixture-real-v3000', count: 3000, mixedStatus: false, common: true, reserveEasyOnly: true },
 }
 
 const DAY_MS = 86_400_000

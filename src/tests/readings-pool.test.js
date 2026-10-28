@@ -241,7 +241,7 @@ describe('生成前预检 GET /capacity', () => {
     expect(res.body).toMatchObject({
       targetWords: 200,
       available: 400,
-      wordRange: { min: 200, target: 220, max: 230, label: '200–230 词' },
+      wordRange: { min: 200, target: 220, max: 220, label: '200–220 词' },
       acceptedRange: { min: 170, target: 220, max: 230, label: '170–230 词' },
       levels: {
         easy: {

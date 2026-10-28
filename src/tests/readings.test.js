@@ -586,7 +586,7 @@ describe('POST /api/readings/generate · 篇幅与 token', () => {
     // 100 词请求 + easy（每句 12 词）→ 约 9 句；每句词数由目标值 110 反推
     expect(instruction).toContain('共 8–10 个英文句子')
     expect(instruction).toContain('每句 12 个英文单词')
-    expect(instruction).toContain('必须落在 100–115 词之间')
+    expect(instruction).toContain('必须落在 100–110 词之间')
     // 带锚定只会让模型做减法，所以重写轮不塞上一篇正文
     expect(messages.some((message) => message.role === 'assistant')).toBe(false)
 

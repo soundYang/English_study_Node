@@ -10,6 +10,7 @@ import {
   planExpandBudget,
   planSentenceBudget,
   planWordRange,
+  segmentWordCeiling,
   wordsPerSentenceFor,
 } from './word-count.js'
 
@@ -270,7 +271,7 @@ ${outline}
 第 ${index}/${total} 段。
 本段目标：${segment.goal}
 ${mustUse}
-本段篇幅：约 ${segment.maxWords} 个英文单词。
+本段篇幅：约 ${segment.maxWords} 个英文单词，不要超过 ${segmentWordCeiling(segment.maxWords)} 个。
 ${context ? `${context}\n` : ''}
 只写这一段的英文正文，不要标题、翻译、题目。输出：
 {"text":"这一段英文"}`,
@@ -283,7 +284,10 @@ ${context ? `${context}\n` : ''}
  * 这是整篇重写收敛不了的根本原因——旧提示词只允许换词，
  * 模型找不到词表内的替代说法时只能再编一个表外词。
  */
-export function buildSegmentRepairMessages(system, { segment, index, text, violations }) {
+export function buildSegmentRepairMessages(
+  system,
+  { segment, index, text, violations, overWords = null },
+) {
   const words = violations.map(({ normalized }) => normalized).join(', ')
   const snippets = violations
     .slice(0, INLINE_VIOLATION_LIMIT)
@@ -291,17 +295,32 @@ export function buildSegmentRepairMessages(system, { segment, index, text, viola
     .map(({ normalized, sentence }) => `- "${normalized}"：${truncate(sentence)}`)
     .join('\n')
 
+  // 段级篇幅终检（md/30 §6-2）：只有超长时，没有生词可列，给一条压缩指令
+  if (violations.length === 0 && overWords) {
+    return [
+      { role: 'system', content: system },
+      ...(text ? [{ role: 'assistant', content: text }] : []),
+      {
+        role: 'user',
+        content: `你刚写的第 ${index} 段有 ${overWords.actual} 个英文单词，超过本段上限 ${overWords.limit} 个词。
+请压缩这一段：删掉次要的细节和重复的表达，保留主线，不要新编内容，也不要引入任何表外词。
+本段上限 ${overWords.limit} 个英文单词。输出：
+{"text":"压缩后的整段"}`,
+      },
+    ]
+  }
+
   // 解析失败（返回不是 JSON / 没有 text）时没有可展示的原文，
   // 直接要它重写这一段，不要说「有 0 个生词」这种模型看不懂的话
   const instruction = violations.length === 0
     ? `你上一次没有返回可用的英文正文。请重新写第 ${index} 段：
 本段目标：${segment.goal}
-只能使用词表里的词，不要引入任何表外词。约 ${segment.maxWords} 个英文单词。输出：
+只能使用词表里的词，不要引入任何表外词。约 ${segment.maxWords} 个英文单词，不要超过 ${segmentWordCeiling(segment.maxWords)} 个。输出：
 {"text":"这一段英文"}`
     : `你刚写的第 ${index} 段里有 ${violations.length} 个不在词表内的单词：${words}
 ${snippets ? `\n其中带原句的几条：\n${snippets}\n` : ''}
 请只重写包含这些词的句子：可以换说法，也可以删掉这个意思，但不能引入任何表外词。其他句子保持不变。
-本段仍需约 ${segment.maxWords} 个英文单词。输出：
+${overWords ? `另外这一段现在有 ${overWords.actual} 个英文单词，超过本段上限 ${overWords.limit} 个，重写时请一并压到 ${overWords.limit} 个以内。\n` : ''}本段仍需约 ${segment.maxWords} 个英文单词。输出：
 {"text":"重写后的整段"}`
 
   return [
@@ -328,7 +347,7 @@ export function buildSegmentSimplifyMessages(system, { segment, index }) {
 本段目标：${segment.goal}
 ${mustUse}
 只能使用【目标词】【补充可用词】【基础词】里的词，不要引入任何表外词。
-约 ${segment.maxWords} 个英文单词。只输出：
+约 ${segment.maxWords} 个英文单词，不要超过 ${segmentWordCeiling(segment.maxWords)} 个。只输出：
 {"text":"这一段英文"}`,
     },
   ]

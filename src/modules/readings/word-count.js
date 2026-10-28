@@ -7,15 +7,26 @@
  */
 
 /**
- * 目标篇幅 = targetWords × TARGET_RATIO；上限 = × MAX_RATIO，超过触发重写。
+ * 目标篇幅 = targetWords × TARGET_RATIO；
+ * 提示词上界 = × WRITE_RATIO；重写/验收上界 = × MAX_RATIO。
+ *
+ * WRITE_RATIO 和 MAX_RATIO 故意差 5%（md/30 §6-1）：原来两者都是 1.15，
+ * 等于「模型严格照提示词写到上限就触发整篇重写」，实测 200 词跑出 243/244、
+ * 600 词跑出 691/788，每一次都是一整轮浪费。现在提示词只要 200–220，
+ * 超出 230 才重写，模型有了 5% 的操作余量。
+ *
+ * 为什么**不**把提示词直接降到 0.95N–1.05N：md/27 §4.6 的 25 次样本显示，
+ * 模型的中位产出≈提示词目标的 0.93 倍（200 词 / 目标 220 → 均值 205）。
+ * 1.1 倍目标正是这个欠写的补偿项，降到 1.0 会把均值压到 0.93N，
+ * 贴着 0.85N 的验收下限走，反而制造偏短样本。
  *
  * ACCEPT_RATIO 是**验收下界**，不是提示词要求：
- * 提示词仍要求 200–230，但模型写短了（实测 178/179/192/197）不值得再花一次调用
- * 去扩写——扩写比重写更容易失控。200 词的请求允许低到 170（-15%），
- * 与最初「目标 215 左右、控制在 ±15%」的产品口径一致。
+ * 模型写短了（实测 178/179/192/197）不值得再花一次调用去扩写——扩写比重写更容易失控。
+ * 200 词的请求允许低到 170（-15%），与「目标 215 左右、控制在 ±15%」的产品口径一致。
  */
 export const WORD_COUNT = Object.freeze({
   TARGET_RATIO: 1.1,
+  WRITE_RATIO: 1.1,
   MAX_RATIO: 1.15,
   ACCEPT_RATIO: 0.85,
 })
@@ -26,13 +37,15 @@ export function countWords(article) {
 }
 
 /**
- * 200 词的请求 → { min: 200, target: 220, max: 230, label: '200–230 词' }
+ * 200 词的请求 → { min: 200, target: 220, max: 220, label: '200–220 词' }
+ *
+ * `max` 是**提示词里写的上限**，不是重写上界（那是 `planAcceptedRange().max`）。
  *
  * @param {number} targetWords
  * @returns {{ min: number, target: number, max: number, label: string }}
  */
 export function planWordRange(targetWords) {
-  const max = Math.round(targetWords * WORD_COUNT.MAX_RATIO)
+  const max = Math.round(targetWords * WORD_COUNT.WRITE_RATIO)
 
   return {
     min: targetWords,
@@ -127,6 +140,25 @@ export function classifyLength(actualWords, acceptedRange) {
   if (actualWords > acceptedRange.max) return 'long'
   if (actualWords < acceptedRange.min) return 'short'
   return 'ok'
+}
+
+/**
+ * 单段篇幅硬上限（md/30 §6-2）。
+ *
+ * 段级 `maxWords` 原来只是提示词里的一个数，写超了没人管：10 段各超 10 词，
+ * 1000 词的请求就多出 100 词（+10%），已经吃掉大半个容差窗口。
+ * 这里给每段一个和整篇同口径的 ±15% 上限，超了**只重写这一段**。
+ *
+ * @param {number} maxWords 计划里给这一段的目标词数
+ * @returns {number} 这一段的硬上限（含）
+ */
+export function segmentWordCeiling(maxWords) {
+  const words = Number(maxWords)
+  if (!Number.isFinite(words) || words <= 0) return 0
+
+  // 0.15 在二进制里不精确，50 × 1.15 = 57.499999999999996，四舍五入会少 1 词。
+  // 减一个极小量再向上取整，等价于「按 1.15 精确四舍五入」。
+  return Math.max(1, Math.ceil(words * WORD_COUNT.MAX_RATIO - 1e-9))
 }
 
 /** 扩写轮最多补几句：按每句 15 词折算，1–3 句封顶（补太多等于重写） */

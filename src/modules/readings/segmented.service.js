@@ -10,7 +10,7 @@ import {
 } from './ai.prompt.js'
 import { callModel } from './model-call.js'
 import { collectWordForms, validateArticle } from './vocabulary.service.js'
-import { countWords } from './word-count.js'
+import { countWords, segmentWordCeiling } from './word-count.js'
 
 /**
  * 句级闭环生成（md/20 §5 / md/21 W4）。
@@ -104,18 +104,24 @@ async function generateOneSegment({
   // 它刚走完一整条重写链，再走一遍是重复烧钱。
   singleAttempt = false,
 }) {
+  // 段级篇幅硬上限（md/30 §6-2）：超出就只重写这一段，不重写整篇。
+  const limitWords = segmentWordCeiling(segment.maxWords)
+
   const stats = {
     id: segment.id,
     goal: segment.goal,
     maxWords: segment.maxWords,
+    limitWords,
     attempts: 0,
     actualWords: 0,
+    overLength: false,
     accepted: false,
     unknownWords: [],
   }
 
   let text = ''
   let violations = []
+  let lengthOk = true
 
   const attempt = async ({ messages, kind, repairFor }) => {
     stats.attempts += 1
@@ -137,13 +143,19 @@ async function generateOneSegment({
     // 人名从任意一次尝试里认出来都收下：后面的段可能也会用到
     for (const name of vocabulary?.detectedNames ?? []) names.add(name)
 
-    const accepted = Boolean(vocabulary) && blockingOnly(vocabulary.violations).length === 0
+    const vocabularyOk = Boolean(vocabulary) && blockingOnly(vocabulary.violations).length === 0
+    lengthOk = countWords(text) <= limitWords
     violations = vocabulary?.violations ?? []
 
+    const accepted = vocabularyOk && lengthOk
     annotateRound(rounds, { text, vocabulary, accepted })
 
-    return { accepted, vocabulary }
+    return { accepted, vocabulary, vocabularyOk }
   }
+
+  /** 片段超长时给重写提示词用的说明；没超长返回 null */
+  const overWords = () =>
+    lengthOk ? null : { actual: countWords(text), limit: limitWords }
 
   // ① 首轮
   const first = await attempt({
@@ -167,10 +179,26 @@ async function generateOneSegment({
     return { accepted: true, text, stats }
   }
 
-  // 补段只给这一轮：失败就交回调用方，由整篇接收率决定要不要判失败
+  if (!lengthOk) {
+    logger.warn(
+      { segment: segment.id, actualWords: countWords(text), limitWords },
+      'segment over length limit',
+    )
+  }
+
+  // 补段只给这一轮：失败就交回调用方，由整篇接收率决定要不要判失败。
+  // 唯一的例外是「只剩篇幅超标」：词表干净但写长了，收下比丢段好——
+  // 丢一段少 60 词、还要再花一次补段调用，而超长只是多十几个词。
   if (singleAttempt) {
     stats.actualWords = countWords(text)
     stats.unknownWords = first.vocabulary?.unknownWords ?? []
+    stats.overLength = !lengthOk
+
+    if (first.vocabularyOk) {
+      stats.accepted = true
+      return { accepted: true, text, stats }
+    }
+
     logger.warn(
       { segment: segment.id, actualWords: stats.actualWords },
       'segment refill attempt rejected',
@@ -189,6 +217,7 @@ async function generateOneSegment({
         index,
         text,
         violations: blockingOnly(violations),
+        overWords: overWords(),
       }),
     })
 
@@ -216,9 +245,17 @@ async function generateOneSegment({
 
   stats.actualWords = countWords(text)
   stats.unknownWords = last.vocabulary?.unknownWords ?? []
+  stats.overLength = !lengthOk
 
-  if (last.accepted) {
+  // 走到最后一步仍超长：词表干净就收下（理由同上，丢段比超长更伤篇幅）
+  if (last.vocabularyOk) {
     stats.accepted = true
+    if (!lengthOk) {
+      logger.warn(
+        { segment: segment.id, actualWords: stats.actualWords, limitWords },
+        'segment accepted over length after retries',
+      )
+    }
     return { accepted: true, text, stats }
   }
 

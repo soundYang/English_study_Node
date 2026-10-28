@@ -10,29 +10,32 @@ import {
   planExpandBudget,
   planSentenceBudget,
   planWordRange,
+  segmentWordCeiling,
   wordsPerSentenceFor,
 } from '../modules/readings/word-count.js'
 
 /**
  * 篇幅口径是全项目唯一来源：提示词、DTO、校验、日志都读这里。
- * 这些数字一旦漂移，界面上的「预计 220 词」就会和提示词里的 200–230 对不上。
+ * 这些数字一旦漂移，界面上的「预计 220 词」就会和提示词里的 200–220 对不上。
  */
 describe('planWordRange', () => {
-  it('200 词 → 目标 220、上限 230', () => {
+  it('200 词 → 目标 220、提示词上限 220', () => {
     expect(planWordRange(200)).toEqual({
       min: 200,
       target: 220,
-      max: 230,
-      label: '200–230 词',
+      max: 220,
+      label: '200–220 词',
     })
   })
 
-  it('100 与 800 两个端点都落在 1.15 倍以内', () => {
-    for (const targetWords of [100, 800]) {
+  it('提示词上限比重写上界低 5%，模型有操作余量（md/30 §6-1）', () => {
+    for (const targetWords of [100, 200, 600, 1000]) {
       const range = planWordRange(targetWords)
+      const accepted = planAcceptedRange(targetWords)
 
       expect(range.min).toBe(targetWords)
-      expect(range.max).toBe(Math.round(targetWords * WORD_COUNT.MAX_RATIO))
+      expect(range.max).toBe(Math.round(targetWords * WORD_COUNT.WRITE_RATIO))
+      expect(range.max).toBeLessThan(accepted.max)
       expect(range.target).toBeLessThanOrEqual(range.max)
       expect(range.target).toBeGreaterThanOrEqual(range.min)
     }
@@ -40,13 +43,13 @@ describe('planWordRange', () => {
 })
 
 describe('planSentenceBudget', () => {
-  it('200 词请求 → 约 15 句、每句 14–15 词（按目标值反推）', () => {
+  it('200 词请求 → 约 15 句、每句 14 词（按目标值反推）', () => {
     expect(planSentenceBudget(planWordRange(200))).toEqual({
       sentences: 15,
       minSentences: 14,
       maxSentences: 16,
       minWordsPerSentence: 14,
-      maxWordsPerSentence: 15,
+      maxWordsPerSentence: 14,
     })
   })
 
@@ -57,23 +60,32 @@ describe('planSentenceBudget', () => {
     )
   })
 
-  it('每句词数由区间决定，不会随句子数飘走', () => {
+  it('每句词数是目标值除以句数取整，误差不超过一句', () => {
     for (const targetWords of [100, 200, 400, 800]) {
       const range = planWordRange(targetWords)
       const budget = planSentenceBudget(range)
 
-      expect(budget.minWordsPerSentence * budget.minSentences).toBeLessThanOrEqual(range.target)
-      expect(budget.maxWordsPerSentence * budget.maxSentences).toBeGreaterThanOrEqual(range.target)
+      // 提示词上界与目标值相等之后，每句只有一个数（floor(target/句数)），
+      // 整篇 = 句数 × 每句词数，和目标的差就是取整丢掉的零头
+      expect(budget.minWordsPerSentence).toBe(
+        Math.floor(range.target / budget.sentences),
+      )
+      expect(
+        Math.abs(budget.minWordsPerSentence * budget.sentences - range.target),
+      ).toBeLessThanOrEqual(budget.sentences)
+      expect(budget.minSentences).toBeLessThanOrEqual(budget.sentences)
+      expect(budget.maxSentences).toBeGreaterThanOrEqual(budget.sentences)
     }
   })
 
-  it('句子预算与词数区间同量级：15 句 × 15 词 ≈ 目标', () => {
+  it('句子预算与词数区间同量级：句数 × 15 贴着目标值（±半句）', () => {
     for (const targetWords of [100, 200, 400, 800]) {
       const range = planWordRange(targetWords)
       const budget = planSentenceBudget(range)
 
       expect(budget.sentences * 15).toBeGreaterThanOrEqual(range.min)
-      expect(budget.sentences * 15).toBeLessThanOrEqual(range.max)
+      // 目标值不一定能被 15 整除，差半句以内都算贴着
+      expect(Math.abs(budget.sentences * 15 - range.target)).toBeLessThanOrEqual(8)
     }
   })
 
@@ -102,12 +114,12 @@ describe('planAcceptedRange', () => {
     })
   })
 
-  it('提示词区间仍然是 200–230，验收更宽', () => {
+  it('验收区间两头都比提示词宽：模型欠写/超写各留 15% 余量', () => {
     const asked = planWordRange(200)
     const accepted = planAcceptedRange(200)
 
     expect(accepted.min).toBeLessThan(asked.min)
-    expect(accepted.max).toBe(asked.max)
+    expect(accepted.max).toBeGreaterThan(asked.max)
   })
 })
 
@@ -152,6 +164,26 @@ describe('planExpandBudget', () => {
     // 差 30 词：easy 12 词/句 → 3 句；hard 19 词/句 → 2 句
     expect(planExpandBudget(80, range, 'easy').sentences).toBe(3)
     expect(planExpandBudget(80, range, 'hard').sentences).toBe(2)
+  })
+})
+
+describe('segmentWordCeiling', () => {
+  it('单段上限是 maxWords × 1.15（与整篇验收同一个口径）', () => {
+    expect(segmentWordCeiling(50)).toBe(58)
+    expect(segmentWordCeiling(60)).toBe(69)
+    expect(segmentWordCeiling(100)).toBe(115)
+  })
+
+  it('十段各卡在上限时，全文仍在 ±15% 窗口内', () => {
+    const perSegment = 60 // 600 词 / 10 段
+    expect(segmentWordCeiling(perSegment) * 10).toBeLessThanOrEqual(Math.round(600 * 1.15))
+  })
+
+  it('非法输入不返回 NaN', () => {
+    expect(segmentWordCeiling(0)).toBe(0)
+    expect(segmentWordCeiling(-5)).toBe(0)
+    expect(segmentWordCeiling('many')).toBe(0)
+    expect(segmentWordCeiling(null)).toBe(0)
   })
 })
 

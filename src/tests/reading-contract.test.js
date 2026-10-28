@@ -38,15 +38,16 @@ function fakeRes() {
 }
 
 describe('generateReadingSchema — 篇幅范围', () => {
-  // 契约层放开到 800（md/26），各档实际能写多长仍由 LEVEL_LIMITS 决定：
-  // easy 请求 800 会过 schema，但被 targetWordsTooLong 拦成 400。
-  it('100 与 800 是两个合法端点', () => {
+  // 契约层放开到 1000（md/30 §2：hard 的最终模式上限），各档实际能写多长
+  // 仍由 LEVEL_LIMITS 决定：easy 请求 800 会过 schema，但被
+  // targetWordsTooLong 拦成 400；700 以上还要过「个人词库 ≥ 3000」的解锁检查。
+  it('100 与 1000 是两个合法端点', () => {
     expect(parse(body({ targetWords: 100 })).success).toBe(true)
-    expect(parse(body({ targetWords: 800 })).success).toBe(true)
+    expect(parse(body({ targetWords: 1000 })).success).toBe(true)
   })
 
-  it('低于 100 或高于 800 → 400', () => {
-    for (const targetWords of [90, 810]) {
+  it('低于 100 或高于 1000 → 400', () => {
+    for (const targetWords of [90, 1010]) {
       const result = parse(body({ targetWords }))
       expect(result.success).toBe(false)
       expect(result.error.issues[0].path[0]).toBe('targetWords')
