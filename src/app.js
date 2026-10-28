@@ -10,6 +10,7 @@ import profileRoutes from './modules/auth/profile.routes.js'
 import basicWordRoutes from './modules/basic-words/basic-words.routes.js'
 import dictionaryRoutes from './modules/dictionary/dictionary.routes.js'
 import healthRoutes from './modules/health/health.routes.js'
+import quotaRoutes from './modules/quota/quota.routes.js'
 import readingRoutes from './modules/readings/reading.routes.js'
 import wordRoutes from './modules/words/word.routes.js'
 import { ERROR_CODES } from './shared/errors.js'
@@ -25,6 +26,10 @@ export function createApp() {
   const app = express()
 
   app.disable('x-powered-by')
+
+  // 反代后面必须配置，否则 req.ip 全是反代地址，网络指纹退化成全站一个桶
+  // （md/35 §3.4）。默认 false，与 Express 行为一致
+  if (config.trustProxy !== false) app.set('trust proxy', config.trustProxy)
 
   // 顺序不能变：helmet → cors → json → 日志 → 路由 → 404 → errorHandler
   app.use(helmet())
@@ -53,6 +58,8 @@ export function createApp() {
   app.use('/api', healthRoutes)
   app.use('/api/auth', authRoutes)
   app.use('/api/dictionary', dictionaryRoutes)
+  // 额度查询必须匿名可调：未登录也要知道这台设备今天还剩几次（md/35 §7.1）
+  app.use('/api/quota', quotaRoutes)
 
   // 个人中心必须是真的登录了（不是 req.userId 回落出来的 local-user），
   // 所以两道都挂：requireAuth 管开关打开后的统一 401，requireSession 管开关没开时的漏网

@@ -10,6 +10,18 @@ export function errorHandler(err, req, res, _next) {
 
   // 已经归一化的业务异常 → 按原样返回
   if (err instanceof ApiError) {
+    // 每日额度是「等明天」，必须给标准 Retry-After（md/35 §7.2）。
+    // 秒数按 resetAt 现算而不是缓存在 details 里：从扣额度到响应发出可能隔了几秒
+    if (err.code === ERROR_CODES.QUOTA_EXCEEDED && err.details?.resetAt) {
+      const seconds = Math.max(1, Math.ceil((Date.parse(err.details.resetAt) - Date.now()) / 1000))
+
+      // 这个请求也穿过了生成限流器，它会留下分钟级的 RateLimit 头。
+      // 前端 `retryAfterOf` 优先读它，会和「等明天」的 Retry-After 打架，必须摘掉
+      res.removeHeader('RateLimit')
+      res.removeHeader('RateLimit-Policy')
+      res.set('Retry-After', String(seconds))
+    }
+
     return res.status(err.status).json({
       error: {
         code: err.code,

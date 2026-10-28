@@ -73,6 +73,10 @@ export const ERROR_CODES = Object.freeze({
   AUTH_INVALID_CREDENTIALS: 'AUTH_INVALID_CREDENTIALS',
   AUTH_USERNAME_TAKEN: 'AUTH_USERNAME_TAKEN',
   AUTH_PHONE_TAKEN: 'AUTH_PHONE_TAKEN',
+  // ——— 每日额度（md/35）———
+  // 与 RATE_LIMITED 分开：那个是「等一分钟」，这个是「等明天 0 点」。
+  // 合成一个码的话，前端只能把两句文案都写出来，用户不知道该等多久。
+  QUOTA_EXCEEDED: 'QUOTA_EXCEEDED',
   INTERNAL_ERROR: 'INTERNAL_ERROR',
 })
 
@@ -350,3 +354,21 @@ export const usernameTaken = () =>
 
 export const phoneTaken = () =>
   conflict(ERROR_CODES.AUTH_PHONE_TAKEN, '这个手机号已经注册过了', 'phone')
+
+/**
+ * 429：今天的生成额度用完了（md/35 §7.2）。
+ *
+ * `scope` 说明是哪把锁挡住的（account / device / network），前端据此换文案：
+ * 「这个账号今天用完了」和「这台设备今天用完了」用户能做的事不一样。
+ * `resetAt` 是北京时间次日 0 点的 ISO 串，errorHandler 会据此补 `Retry-After`。
+ *
+ * **不要**同时发 `RateLimit` 头：前端 `retryAfterOf` 优先读它，那是分钟级冷却的语义。
+ */
+export const quotaExceeded = ({ scope, limit, used, resetAt }) =>
+  new ApiError(
+    429,
+    ERROR_CODES.QUOTA_EXCEEDED,
+    `今天的 ${limit} 次生成额度已用完，明天 00:00 重置`,
+    '',
+    { scope, limit, used, resetAt: resetAt.toISOString() },
+  )

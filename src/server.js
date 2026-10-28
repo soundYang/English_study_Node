@@ -7,6 +7,7 @@ import { Captcha } from './modules/auth/captcha.model.js'
 import { Session } from './modules/auth/session.model.js'
 import { User } from './modules/auth/user.model.js'
 import { loadDictionary } from './modules/dictionary/dictionary.loader.js'
+import { Quota } from './modules/quota/quota.model.js'
 import { basicWordsByLevel } from './modules/readings/basic-words.js'
 import { GenerationTask } from './modules/readings/generation-task.model.js'
 import {
@@ -39,6 +40,8 @@ async function main() {
     Session.syncIndexes(),
     Captcha.syncIndexes(),
     AppMeta.syncIndexes(),
+    // { key, day } 唯一索引是额度预扣的原子性来源：漏建的话并发预扣会多放人
+    Quota.syncIndexes(),
   ])
   logger.info('indexes synced')
 

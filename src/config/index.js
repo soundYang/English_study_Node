@@ -68,11 +68,40 @@ function readEnum(key, allowed, fallback) {
   return raw
 }
 
+/**
+ * Express 的 `trust proxy` 取值（md/35 §3.4）。
+ *
+ * 不给值时返回 false，与 Express 默认一致。生产在 nginx / Cloudflare 后面时必须设：
+ * 否则 `req.ip` 全是反代地址，网络指纹会退化成「全站一个桶」。
+ *
+ * 支持：true / false / 跳数（0、1、2）/ loopback|linklocal|uniquelocal。
+ * 写错时启动即炸——静默退回 false 的话，症状是「上线当天所有人共用额度」，
+ * 排查时很难联想到这是一行配置。
+ */
+function readTrustProxy() {
+  const raw = process.env.TRUST_PROXY?.trim()
+  if (!raw) return false
+  if (raw === 'true') return true
+  if (raw === 'false') return false
+
+  const hops = Number(raw)
+  if (Number.isInteger(hops) && hops >= 0) return hops
+
+  if (['loopback', 'linklocal', 'uniquelocal'].includes(raw)) return raw
+
+  console.error(
+    `[config] 环境变量 TRUST_PROXY 只能是 true / false / 跳数 / loopback / linklocal / uniquelocal，当前值：${raw}`,
+  )
+  process.exit(1)
+}
+
 export const config = Object.freeze({
   // 服务
   port: toNumber('PORT', 3000),
   nodeEnv,
   clientOrigin: process.env.CLIENT_ORIGIN || 'http://localhost:5173',
+  // 反代后面必须配置，否则 req.ip 不可信（见上方 readTrustProxy）
+  trustProxy: readTrustProxy(),
 
   // 数据库
   mongodbUri: process.env.MONGODB_URI,
@@ -169,4 +198,15 @@ export const config = Object.freeze({
   rateLimitLogin: toNumber('RATE_LIMIT_LOGIN', 10),
   // 改密码要跑两次 scrypt（校验旧的 + 生成新的），比只读接口贵得多
   rateLimitPassword: toNumber('RATE_LIMIT_PASSWORD', 5),
+
+  // ——— 每日额度（md/35）———
+  // 总开关默认 false：设备 ID 要等前端上线。在那之前打开，所有请求都没有 dev: 键，
+  // 只剩 net: 桶，同一个出口（家庭 / 校园网）的人会互相挤占。
+  dailyQuotaEnabled: readBoolean('DAILY_QUOTA_ENABLED', false),
+  // 账号与设备都是 3 次/天：换账号会被设备挡住，换浏览器会被账号挡住
+  dailyQuotaAccount: toNumber('DAILY_QUOTA_ACCOUNT', 3),
+  dailyQuotaDevice: toNumber('DAILY_QUOTA_DEVICE', 3),
+  // 网络指纹是兜底：清 localStorage、换无痕窗口都还能被它兜住。
+  // 共享出口（宿舍 / 公司）会按人头叠加，调小时注意误伤
+  dailyQuotaNetwork: toNumber('DAILY_QUOTA_NETWORK', 10),
 })

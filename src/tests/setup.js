@@ -33,6 +33,10 @@ process.env.RATE_LIMIT_ENABLED = 'false'
 // 开发机 .env 里若已打开，所有不带令牌的用例会集体变成 401，失败位置还看不出原因。
 // 要验证强制鉴权的用例（auth-enforced.test.js）在文件顶部自己改 true 再动态 import。
 process.env.AUTH_ENFORCED = 'false'
+// 每日额度总开关默认关闭（md/35 §10.1）：绝大多数用例不关心额度，
+// 开着会让「连着建 4 个不同任务」的老用例莫名其妙 429。
+// 要验证额度的用例在文件顶部自己改成 true 再动态 import（同 auth-enforced.test.js）。
+process.env.DAILY_QUOTA_ENABLED = 'false'
 
 // 绝大多数用例测的是整篇路径的行为（修正轮、结构错误、失败样本），
 // 打桩也只认识「一次返回整篇文章」的形状。生产默认是 segmented，
@@ -45,6 +49,7 @@ process.env.SEGMENT_TEMPERATURE = '0.5'
 
 const { AppMeta } = await import('../modules/auth/appmeta.model.js')
 const { Captcha } = await import('../modules/auth/captcha.model.js')
+const { Quota } = await import('../modules/quota/quota.model.js')
 const { Session } = await import('../modules/auth/session.model.js')
 const { User } = await import('../modules/auth/user.model.js')
 const { loadDictionary } = await import('../modules/dictionary/dictionary.loader.js')
@@ -68,6 +73,8 @@ beforeAll(async () => {
     Session.syncIndexes(),
     Captcha.syncIndexes(),
     AppMeta.syncIndexes(),
+    // 额度预扣的原子性依赖 { key, day } 唯一索引，测试里也必须真的建出来
+    Quota.syncIndexes(),
   ])
 })
 

@@ -3,6 +3,11 @@ import { Router } from 'express'
 import { generateRateLimit } from '../../shared/middleware/rateLimit.js'
 import { parseOrThrow } from '../../shared/utils/validation.js'
 import {
+  quotaIdentityFromRequest,
+  releaseReservation,
+  reserveQuota,
+} from '../quota/quota.service.js'
+import {
   cancelGenerationTask,
   createGenerationTask,
   getGenerationTask,
@@ -29,6 +34,9 @@ router.post('/generate', generateRateLimit, async (req, res) => {
     if (!res.writableEnded) controller.abort()
   })
 
+  // 同步路径没有任务文档可挂，额度用一个局部变量记住，失败时原路退回（md/35 §8.3）
+  const reservation = await reserveQuota({ identity: quotaIdentityFromRequest(req) })
+
   try {
     const dto = await generateReading({
       userId: req.userId,
@@ -38,7 +46,8 @@ router.post('/generate', generateRateLimit, async (req, res) => {
 
     res.status(201).json(dto)
   } catch (err) {
-    // 客户端已经断开，再写响应没有意义，也不该记成 500
+    // 客户端断开也算「没拿到文章」，额度退回；断开后不写响应，也不该记成 500
+    await releaseReservation(reservation)
     if (controller.signal.aborted) return
 
     throw err
@@ -56,6 +65,7 @@ router.post('/generate/tasks', generateRateLimit, async (req, res) => {
   const { task, reused } = await createGenerationTask({
     userId: req.userId,
     body: req.body ?? {},
+    identity: quotaIdentityFromRequest(req),
   })
 
   res.status(202).json({
@@ -85,6 +95,7 @@ router.post('/generate/tasks/:taskId/retry', generateRateLimit, async (req, res)
   const { task, reused } = await retryGenerationTask({
     userId: req.userId,
     id: req.params.taskId,
+    identity: quotaIdentityFromRequest(req),
   })
 
   res.status(202).json({

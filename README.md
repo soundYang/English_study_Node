@@ -75,6 +75,9 @@ Mongo 断开时返回 **503** + `status: "degraded"`，这是唯一的健康判�
 | `MAX_EXPAND_ROUNDS` | 0 | 偏短时的补写轮；默认关闭，只记录 `lengthStatus` |
 | `RATE_LIMIT_ENABLED` | 非 test 环境为 true | 只影响 `POST /readings/generate` |
 | `RATE_LIMIT_GENERATE` | 20 次/分钟 | 按 IP 计 |
+| `DAILY_QUOTA_ENABLED` | false | 打开每日额度。**等前端上线 `X-Device-Id` 后再开**，否则只按网络指纹限 |
+| `DAILY_QUOTA_ACCOUNT` / `_DEVICE` / `_NETWORK` | 3 / 3 / 10 | 账号 / 设备 / 网络指纹的每日次数（md/35） |
+| `TRUST_PROXY` | false | 部署在 nginx / CDN 后面时必须配（`1` 或 `loopback`），否则 `req.ip` 全是反代地址 |
 
 `MAX_UNKNOWN_WORDS` 默认留空：生词预算按难度取（easy 0 / medium 3 / hard 5）。
 显式设置会把它变成**全局覆盖**，三档压成同一个数，只用于调试与回放对比。
@@ -151,6 +154,7 @@ src/
     words/              个人词库 CRUD 与选池排序
     dictionary/         COCA 词库加载与前缀检索
     readings/           生成编排、分段闭环、校验、判分、历史
+    quota/              每日额度：账号 / 设备 / 网络指纹三档计数（md/35）
   tests/                vitest（每个文件独立内存 Mongo）
 data/                   词库、三档基础词表、不规则词形、词频排名
 scripts/                构建、采样、回放、清理
@@ -168,6 +172,7 @@ md/                     设计、实施、限制与缺陷文档
 | 生成 502 `AI_PROVIDER_ERROR` | key 错 / 余额不足 / 上游超时 | 看日志里的 `deepseek request failed`，它会抹掉 key 片段 |
 | 生成 502 `AI_INVALID_RESPONSE` | 模型输出结构或题目不合格，修正轮也没救回来 | 失败样本在 `GenerationFailure` 里，`finalArticle` 可复查 |
 | 生成 429 `RATE_LIMITED` | 同一 IP 超过 20 次/分 | 等窗口结束；批量脚本要设 `RATE_LIMIT_ENABLED=false` |
+| 生成 429 `QUOTA_EXCEEDED` | 当天额度用完（账号、设备或网络指纹任一档） | 等北京时间 0 点；`details.scope` 说明是哪一档，`Retry-After` 是到重置的秒数 |
 | 生成 422 `VOCABULARY_TOO_SMALL` | 已知词不够写这么长（门槛随篇幅走，见 `capacity-table.js` 的 `minKnownFor`） | 缩篇幅或加词；这是预期拦截，不是故障 |
 | 任务变成 `failed` + `TASK_INTERRUPTED` | 执行实例失联（重启 / kill -9 / OOM），心跳过期后被回收 | 调 `POST /generate/tasks/:id/retry`：已收下的段会复用，只补失败的段（md/31 §11） |
 | 生成 400 `final_mode_locked` | hard 写 601–1000 词，但个人词库不足 3000 | 继续攒词；解锁后上限从 600 抬到 1000（md/30 §2.2） |

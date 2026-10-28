@@ -6,6 +6,7 @@ import { config } from '../../config/index.js'
 import { ERROR_CODES, taskInProgress, taskNotFound } from '../../shared/errors.js'
 import { logger } from '../../shared/logger.js'
 import { parseOrThrow } from '../../shared/utils/validation.js'
+import { releaseQuota, releaseReservation, reserveQuota } from '../quota/quota.service.js'
 import { generationTaskRepository as repo } from './generation-task.repository.js'
 import { createTaskSchema } from './reading.schema.js'
 import { generateReading } from './reading.service.js'
@@ -236,6 +237,28 @@ async function finishTask(taskId, data) {
 }
 
 /**
+ * 退还一次任务的每日额度（md/35 §6.3）。
+ *
+ * 三条路径会调用：生成失败、取消且没有任何产出、失联被回收。
+ * 并发安全：先用 `quota.refundedAt` 抢退还权，抢不到的返回 null 直接跳过。
+ * **必须带状态**：失败与成功的写回可能并发，不判状态会把已交付的文章也退掉。
+ */
+async function refundTaskQuota(taskId, status) {
+  try {
+    const task = await repo.claimQuotaRefund(taskId, status)
+    if (!task) return false
+
+    await releaseQuota({ keys: task.quota?.keys ?? [], day: task.quota?.day })
+    logger.info({ taskId, day: task.quota?.day }, 'generation task quota refunded')
+    return true
+  } catch (error) {
+    // 退款失败最多让用户少一次额度，不能把调用它的失败路径再打断
+    logger.warn({ err: error, taskId }, 'generation task quota refund failed')
+    return false
+  }
+}
+
+/**
  * 一次心跳（md/31 §11）。
  *
  * 心跳失败（写库报错）不能把任务判死——下一次心跳还会再来；
@@ -341,6 +364,9 @@ async function runTask({ taskId, userId, body, resume = null }) {
       },
     })
 
+    // 失败终态 = 用户什么都没拿到，额度退回去（md/35 §4.3）
+    await refundTaskQuota(taskId, 'failed')
+
     logger.warn({ taskId, code, durationMs: finishedAt - startedAt }, 'generation task failed')
   } finally {
     if (heartbeat) clearInterval(heartbeat)
@@ -354,7 +380,7 @@ async function runTask({ taskId, userId, body, resume = null }) {
  * 三道判断按 md/31 §5 的顺序：clientToken → 同参复用 → 不同参报 409。
  * 参数校验在这里同步做完，非法参数不会留下一个注定失败的任务。
  */
-export async function createGenerationTask({ userId, body }) {
+export async function createGenerationTask({ userId, body, identity = null }) {
   const { clientToken, ...generationParams } = parseOrThrow(createTaskSchema, body)
 
   if (clientToken) {
@@ -373,20 +399,33 @@ export async function createGenerationTask({ userId, body }) {
     throw taskInProgress({ taskId: String(active._id) })
   }
 
-  const task = await repo.create({
-    userId,
-    clientToken: clientToken ?? null,
-    status: 'queued',
-    stage: 'queued',
-    params: {
-      level: generationParams.level,
-      targetWords: generationParams.targetWords,
-      questionCount: generationParams.questionCount,
-      vocabScope: generationParams.vocabScope,
-    },
-    model: config.deepseekModel,
-    strategy: config.generationStrategy,
-  })
+  // 预扣必须排在三道幂等判断之后（md/35 §4.2）：双击的第二次点击、
+  // 同参复用、409 都不扣；放在前面会让一次点击白掉两次额度
+  const reservation = await reserveQuota({ identity: identity ?? {} })
+
+  let task
+  try {
+    task = await repo.create({
+      userId,
+      clientToken: clientToken ?? null,
+      status: 'queued',
+      stage: 'queued',
+      params: {
+        level: generationParams.level,
+        targetWords: generationParams.targetWords,
+        questionCount: generationParams.questionCount,
+        vocabScope: generationParams.vocabScope,
+      },
+      model: config.deepseekModel,
+      strategy: config.generationStrategy,
+      // 开关关闭时 reservation 是 null，任务文档上不留 quota 字段（与老任务同形）
+      ...(reservation && { quota: { keys: reservation.keys, day: reservation.day } }),
+    })
+  } catch (error) {
+    // 任务没建起来就不算一次使用；不退的话用户会凭空少一次
+    await releaseReservation(reservation)
+    throw error
+  }
 
   // setImmediate 而不是直接 await：接口要立刻回 202，
   // 生成在下一个事件循环里开始，HTTP 响应已经写完了
@@ -445,7 +484,16 @@ export async function cancelGenerationTask({ userId, id }) {
 
   // finish 是条件更新：正好在这一刻跑完的任务不会被「取消」成 cancelled，
   // 返回库里真实的终态，前端据 status 决定是跳转还是回到生成页
-  return toTaskDto(updated ?? (await repo.findByIdAndUser(id, userId)) ?? task)
+  const latest = updated ?? (await repo.findByIdAndUser(id, userId)) ?? task
+
+  // 只有「零产出」的取消才退额度（md/35 §4.3）。
+  // 已经写完几段再取消也全额退的话，「生成到 80% → 取消 → 重试」
+  // 每一轮都能白嫖 4/5 篇的 token，次数永远是 1。
+  if (latest.status === 'cancelled' && (latest.progress?.done ?? 0) === 0) {
+    await refundTaskQuota(latest._id, 'cancelled')
+  }
+
+  return toTaskDto(latest)
 }
 
 /**
@@ -457,7 +505,7 @@ export async function cancelGenerationTask({ userId, id }) {
  *
  * 所以**必须重开同一个任务**，不能新建：新任务没有旧正文。
  */
-export async function retryGenerationTask({ userId, id }) {
+export async function retryGenerationTask({ userId, id, identity = null }) {
   if (!mongoose.isValidObjectId(id)) throw taskNotFound()
 
   const task = await repo.findByIdAndUser(id, userId)
@@ -475,6 +523,10 @@ export async function retryGenerationTask({ userId, id }) {
   // 计划只在分段路径落库；整篇路径没有续跑的依据，退回整篇重跑
   const resume = config.generationStrategy === 'segmented' ? toResumePlan(task) : null
 
+  // 上次是「失败」或「零产出取消」→ 额度已经退过，这次要重新占一次。
+  // 有产出的取消（已收下段落）没有退过，重试沿用原占用，不再扣（md/35 §4.3）
+  const reservation = task.quota?.refundedAt ? await reserveQuota({ identity: identity ?? {} }) : null
+
   const reopened = await repo.reopen(id, {
     status: 'queued',
     stage: 'queued',
@@ -491,10 +543,17 @@ export async function retryGenerationTask({ userId, id }) {
     // TTL 建在 createdAt 上，这里一并重置：否则一个快过期的任务重试到一半
     // 会被 TTL 删掉，轮询直接 404，而模型调用已经花出去了
     createdAt: new Date(),
+    // 重新占用的结果写回任务；refundedAt 归零，下一次失败才能再退
+    ...(reservation && {
+      quota: { keys: reservation.keys, day: reservation.day, refundedAt: null },
+    }),
   })
 
   if (!reopened) {
-    // 另一个重试请求刚刚把它改走了：返回库里现在的状态，不起第二条链路
+    // 另一个重试请求刚刚把它改走了：刚占的额度要还回去，否则白扣一次
+    await releaseReservation(reservation)
+
+    // 返回库里现在的状态，不起第二条链路
     const latest = await repo.findByIdAndUser(id, userId)
     return { task: latest ?? task, reused: true }
   }
@@ -531,9 +590,13 @@ export async function reclaimInterruptedTasks() {
     repo.reclaimStaleQueued({ staleBefore, error }),
   ])
 
-  const reclaimedRunning = running?.modifiedCount ?? 0
-  const reclaimedQueued = queued?.modifiedCount ?? 0
-  const count = reclaimedRunning + reclaimedQueued
+  const reclaimedIds = [...(running?.reclaimedIds ?? []), ...(queued?.reclaimedIds ?? [])]
+  const reclaimedRunning = running?.reclaimedIds?.length ?? 0
+  const reclaimedQueued = queued?.reclaimedIds?.length ?? 0
+  const count = reclaimedIds.length
+
+  // 被回收 = 执行实例没了、用户什么都没拿到，和普通失败一样退额度
+  await Promise.all(reclaimedIds.map((id) => refundTaskQuota(id, 'failed')))
 
   if (count > 0) {
     logger.warn({ reclaimedRunning, reclaimedQueued }, 'stale generation tasks reclaimed')

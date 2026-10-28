@@ -1,5 +1,27 @@
 import { GenerationTask } from './generation-task.model.js'
 
+/**
+ * 逐条条件更新，返回真正被翻转的 id。
+ *
+ * 每个候选都要重新带上原始条件：查询与更新之间任务可能刚好跑完，
+ * 不加条件就会把一个成功任务覆盖成 failed（同时还会退错额度）。
+ */
+async function reclaimEach(staleFilter, patch) {
+  const candidates = await GenerationTask.find(staleFilter()).select('_id').lean()
+  const reclaimedIds = []
+
+  for (const { _id } of candidates) {
+    const flipped = await GenerationTask.findOneAndUpdate(
+      { _id, ...staleFilter() },
+      { $set: patch },
+    )
+
+    if (flipped) reclaimedIds.push(_id)
+  }
+
+  return { reclaimedIds }
+}
+
 /** 只和 Mongoose 打交道，规则在 service 里 */
 export const generationTaskRepository = {
   create(data) {
@@ -99,23 +121,24 @@ export const generationTaskRepository = {
    * 为什么不能像单进程时代那样全表 updateMany：多实例下，别的实例正在跑的
    * 任务心跳是新的，一重启就把它们一起标成失败，等于谁重启谁误杀别人。
    * `heartbeatAt: null` 也要收：那是加租约之前留下的旧文档，确实没有实例在续租。
+   *
+   * 返回 `reclaimedIds` 而不是 updateMany 的 `modifiedCount`：被回收的任务
+   * 是失败终态，要给用户退额度（md/35 §8.1），而批量更新拿不到改了哪几条。
+   * 失联任务只是偶尔几条，逐条条件更新不会成为瓶颈。
    */
-  reclaimStaleRunning({ staleBefore, error }) {
-    return GenerationTask.updateMany(
-      {
-        status: 'running',
-        $or: [{ heartbeatAt: { $lt: staleBefore } }, { heartbeatAt: null }],
-      },
-      {
-        $set: {
-          status: 'failed',
-          stage: 'done',
-          finishedAt: new Date(),
-          owner: null,
-          error,
-        },
-      },
-    )
+  async reclaimStaleRunning({ staleBefore, error }) {
+    const staleFilter = () => ({
+      status: 'running',
+      $or: [{ heartbeatAt: { $lt: staleBefore } }, { heartbeatAt: null }],
+    })
+
+    return reclaimEach(staleFilter, {
+      status: 'failed',
+      stage: 'done',
+      finishedAt: new Date(),
+      owner: null,
+      error,
+    })
   },
 
   /**
@@ -124,17 +147,34 @@ export const generationTaskRepository = {
    * 用 `updatedAt` 而不是 `createdAt`：重试会重置 createdAt，而重试后的
    * 任务也应该在这么久没被认领时被回收。
    */
-  reclaimStaleQueued({ staleBefore, error }) {
-    return GenerationTask.updateMany(
-      { status: 'queued', updatedAt: { $lt: staleBefore } },
-      {
-        $set: {
-          status: 'failed',
-          stage: 'done',
-          finishedAt: new Date(),
-          error,
-        },
-      },
+  async reclaimStaleQueued({ staleBefore, error }) {
+    const staleFilter = () => ({ status: 'queued', updatedAt: { $lt: staleBefore } })
+
+    return reclaimEach(staleFilter, {
+      status: 'failed',
+      stage: 'done',
+      finishedAt: new Date(),
+      error,
+    })
+  },
+
+  /**
+   * 抢占一次额度退还权（md/35 §6.3）。
+   *
+   * 失败 / 取消 / 回收三条路径都可能同时触发退款，只有第一次能把
+   * `refundedAt` 从 null 改掉。返回**更新前**的文档（含 keys / day），
+   * 调用方拿到之后再去减计数；返回 null = 已经退过或根本没占过额度。
+   */
+  claimQuotaRefund(id, status = null) {
+    const filter = { _id: id, 'quota.keys.0': { $exists: true }, 'quota.refundedAt': null }
+    // 只退「确实是失败/取消」的任务：生成失败与取消可能和成功写入并发，
+    // 不判状态的话会把一篇已经交付的文章也退掉
+    if (status) filter.status = status
+
+    return GenerationTask.findOneAndUpdate(
+      filter,
+      { $set: { 'quota.refundedAt': new Date() } },
+      { new: false },
     )
   },
 

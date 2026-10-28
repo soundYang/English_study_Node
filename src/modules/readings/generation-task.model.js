@@ -152,6 +152,21 @@ const generationTaskSchema = new Schema(
     heartbeatAt: { type: Date, default: null },
     cancelRequested: { type: Boolean, default: false },
 
+    /**
+     * 这次任务占用的每日额度（md/35 §5.2）。
+     *
+     * keys       —— 占用了哪几个桶（acct: / dev: / net:）
+     * day        —— 占用时属于北京时间的哪一天；退还必须退回到同一天的桶
+     * refundedAt —— 退还时间。非空 = 已退，不能重复退（`releaseQuota` 会把 used 减成负数）
+     *
+     * 老任务没有这个字段，读取时一律 `?.` / `?? []`，不需要数据迁移。
+     */
+    quota: {
+      keys: { type: [String], default: [] },
+      day: { type: String, default: null },
+      refundedAt: { type: Date, default: null },
+    },
+
     readingId: { type: Schema.Types.ObjectId, default: null },
     error: {
       code: String,
