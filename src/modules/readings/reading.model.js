@@ -116,6 +116,9 @@ const segmentMetaSchema = new Schema(
     attempts: Number, // 一共调了几次模型（含首轮与降级）
     actualWords: Number, // 最后一次尝试的实际词数
     accepted: Boolean, // 是否进入正文
+    // 这段是否走过补段（md/27 §3.2 M1）：首轮被丢、第二轮又写了一次。
+    // 用它算补段命中率，才知道 M1 到底救回了多少篇幅。
+    refilled: Boolean,
     unknownWords: { type: [String], default: [] },
   },
   { _id: false },

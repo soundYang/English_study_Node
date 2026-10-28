@@ -20,7 +20,7 @@
 import mongoose from 'mongoose'
 
 import { config } from '../src/config/index.js'
-import { basicWords } from '../src/modules/readings/basic-words.js'
+import { basicWords, getBasicWords } from '../src/modules/readings/basic-words.js'
 import { calendarWords } from '../src/modules/readings/calendar-words.js'
 import { GenerationFailure } from '../src/modules/readings/generation-failure.model.js'
 import { Reading } from '../src/modules/readings/reading.model.js'
@@ -79,6 +79,25 @@ const FIXTURES = {
   'form-easy': { userId: 'fixture-form-easy', count: 280, mixedStatus: false },
   'form-medium': { userId: 'fixture-form-medium', count: 980, mixedStatus: false, rankMax: 8000 },
   'form-hard': { userId: 'fixture-form-hard', count: 2381, mixedStatus: false, rankMax: 9000 },
+
+  // ——— md/27：真人词库形态的对照组 ———
+  //
+  // 上面所有 fixture 都是「等距抽样」：3160 个词均匀铺在 rank 200–9000 上，
+  // 也就是**大部分是生僻词**。实测发现 happy / rain / slow / heavy / neighbor
+  // 这些日常词一个都不在里面，模型写故事必然飘出词表，段被整段丢弃。
+  // 这更像「一个背了几千个 GRE 词但没背过 happy 的人」，不是真实用户。
+  //
+  // real-* 改成「从最高频开始取前 N 个」，模拟真实的词汇积累顺序。
+  // reserveEasyOnly：只排除当前生效的 600 基础词——真实用户的词库里
+  // 本来就该有 hard 那 2578 张旧表里的词，不该被当成「已覆盖」而跳过。
+  'real-hard': {
+    userId: 'fixture-real-hard',
+    count: 3160,
+    mixedStatus: false,
+    rankMax: 9000,
+    common: true,
+    reserveEasyOnly: true,
+  },
 }
 
 const DAY_MS = 86_400_000
@@ -107,15 +126,29 @@ function resolveAnchor() {
 }
 
 /**
- * 从 COCA 排名表里等距抽词。
+ * 从 COCA 排名表里抽词。
  *
- * 等距而不是随机：随机抽样每次结果不同，回归对比就失去意义；
+ * 两种模式：
+ *   even（默认）—— 在区间内**等距**抽样。用于「只控制词量、不控制词形」的门槛实验。
+ *   common     —— 取**最常用的前 count 个**。真人背单词是从高频往低频走的，
+ *                 等距抽样造出来的「3000 词用户」实际认识的全是 rank 3000–9000 的生僻词，
+ *                 连 happy / rain / heavy 都可能不在里面，模型根本写不出故事。
+ *
+ * 等距而不是随机（even 模式）：随机抽样每次结果不同，回归对比就失去意义；
  * 索引固定，同一个 --fixture 每次拿到的词表逐字相同。
+ *
+ * @param {number} count
+ * @param {{ rankMax?: number, common?: boolean, reserveEasyOnly?: boolean }} [options]
+ *   reserveEasyOnly —— 只排除**当前生效**的基础词（easy 600），而不是 hard 2578。
+ *   旧 fixture 必须保持默认值，否则词表会变、历史样本失去可比性。
  */
-function pickWords(count, rankMax = RANK_MAX) {
+function pickWords(count, { rankMax = RANK_MAX, common = false, reserveEasyOnly = false } = {}) {
   // 日历词也要排除：它们会同时出现在 knownWords 的并集里，个人词撞上一个，
   // B 门就会少算 1 个——gate-* 是卡着门槛造的，差 1 个就进不去
-  const reserved = new Set([...basicWords, ...calendarWords])
+  const reserved = new Set([
+    ...(reserveEasyOnly ? getBasicWords() : basicWords),
+    ...calendarWords,
+  ])
   const pool = [...wordRanks.entries()]
     .filter(
       ([word, rank]) =>
@@ -127,13 +160,23 @@ function pickWords(count, rankMax = RANK_MAX) {
     throw new Error(`排名区间内只有 ${pool.length} 个可用词，不够 ${count} 个`)
   }
 
+  if (common) return pool.slice(0, count)
+
   const step = pool.length / count
 
   return Array.from({ length: count }, (_, index) => pool[Math.floor(index * step)])
 }
 
-function buildDocs({ userId, count, anchor, mixedStatus, rankMax = RANK_MAX }) {
-  const words = pickWords(count, rankMax)
+function buildDocs({
+  userId,
+  count,
+  anchor,
+  mixedStatus,
+  rankMax = RANK_MAX,
+  common = false,
+  reserveEasyOnly = false,
+}) {
+  const words = pickWords(count, { rankMax, common, reserveEasyOnly })
 
   return words.map(([word, cocaRank], index) => {
     // 状态：10% 已掌握 / 20% 新词 / 70% 学习中（方案写的是 reviewing，Word 里没有这个枚举）

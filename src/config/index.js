@@ -100,6 +100,12 @@ export const config = Object.freeze({
   segmentMaxAttempts: toNumber('SEGMENT_MAX_ATTEMPTS', 2),
   // 分段路径的温度：约束性文本用 0.8 等于给自己制造违规（md/21 W4）
   segmentTemperature: toNumber('SEGMENT_TEMPERATURE', 0.5),
+  // 补段轮数（md/27 §3.2 M1）：段被丢弃后，把这些空槽用原目标再写一遍的次数。
+  // 1 = 最多补一轮。调大能救更零散的丢段，但 hard 单次已经在 25 轮上下，再翻倍不值。
+  segmentRefillRounds: toNumber('SEGMENT_REFILL_ROUNDS', 1),
+  // 段接收率下限（md/23 D2）：低于这个比例就判生成失败，不再把残篇当 201 返回。
+  // 0.6 取自 md/23 D2 的建议值；easy 300 曾出现「计划 5 段只收 1 段」的 20%。
+  minSegmentAcceptance: toNumber('MIN_SEGMENT_ACCEPTANCE', 0.6),
 
   vocabularyThreshold: toNumber('VOCABULARY_THRESHOLD', 20),
   // P0 基线：修 1 轮后 4/5 次只剩 1 个违规词，再给一轮的命中率远高于成本。

@@ -1,4 +1,4 @@
-import { ApiError, ERROR_CODES } from '../../shared/errors.js'
+import { ApiError, ERROR_CODES, articleTooIncomplete } from '../../shared/errors.js'
 import { logger } from '../../shared/logger.js'
 import { config } from '../../config/index.js'
 import { parseAiContent } from './ai.schema.js'
@@ -100,6 +100,9 @@ async function generateOneSegment({
   names,
   signal,
   rounds,
+  // 补段模式：这次已经是同一个空槽的第二次机会，只给一轮，失败就认输——
+  // 它刚走完一整条重写链，再走一遍是重复烧钱。
+  singleAttempt = false,
 }) {
   const stats = {
     id: segment.id,
@@ -162,6 +165,18 @@ async function generateOneSegment({
       unknownWords: first.vocabulary.unknownWords,
     })
     return { accepted: true, text, stats }
+  }
+
+  // 补段只给这一轮：失败就交回调用方，由整篇接收率决定要不要判失败
+  if (singleAttempt) {
+    stats.actualWords = countWords(text)
+    stats.unknownWords = first.vocabulary?.unknownWords ?? []
+    logger.warn(
+      { segment: segment.id, actualWords: stats.actualWords },
+      'segment refill attempt rejected',
+    )
+
+    return { accepted: false, text: '', stats }
   }
 
   // ② 段内重写：只重写这一段，且允许删掉意思
@@ -246,9 +261,10 @@ export async function generateSegmented({
   // 但至少要知道全文走向，否则四段各写各的（md/20 §5.3，见 md/21 §9 偏离）
   const outline = segments.map(({ id, goal }) => `${id}. ${goal}`).join('\n')
 
-  const results = await mapWithConcurrency(segments, config.segmentConcurrency, (segment, index) =>
+  /** 写第 index 段。refill 时清空 mustUse：补段先保住正文，不再强求覆盖目标词。 */
+  const writeSegment = (index, refill) =>
     generateOneSegment({
-      segment,
+      segment: refill ? { ...segments[index], mustUse: [] } : segments[index],
       index: index + 1,
       total: segments.length,
       outline,
@@ -259,12 +275,48 @@ export async function generateSegmented({
       names,
       signal,
       rounds,
-    }),
+      singleAttempt: refill,
+    })
+
+  const indexes = segments.map((_, index) => index)
+  const results = await mapWithConcurrency(indexes, config.segmentConcurrency, (index) =>
+    writeSegment(index, false),
   )
+
+  // 补段（md/27 §3.2 M1）：丢一段不是「这段不重要」，而是整篇少 60 个词。
+  // 用空 mustUse 再写一次，成功就补回原位。只补 config.segmentRefillRounds 轮，
+  // 每段只给一次调用——它刚走完一整条重写链，再走一遍是重复烧钱。
+  let refillAccepted = 0
+  for (let round = 0; round < config.segmentRefillRounds; round += 1) {
+    const missing = indexes.filter((index) => !results[index].accepted)
+    if (missing.length === 0) break
+
+    const retries = await mapWithConcurrency(missing, config.segmentConcurrency, (index) =>
+      writeSegment(index, true),
+    )
+
+    for (const [position, index] of missing.entries()) {
+      const retry = retries[position]
+
+      if (retry.accepted) refillAccepted += 1
+      results[index] = {
+        accepted: retry.accepted,
+        text: retry.text,
+        stats: {
+          ...retry.stats,
+          // 尝试次数要累加：repairRounds 按 attempts-1 汇总，
+          // 只留补段那一轮会把首轮的 4 次尝试从统计里抹掉
+          attempts: results[index].stats.attempts + retry.stats.attempts,
+          refilled: true,
+        },
+      }
+    }
+  }
 
   const stats = results.map((item) => item.stats)
   const accepted = results.filter((item) => item.accepted)
   const article = accepted.map((item) => item.text).join('\n\n')
+  const acceptance = segments.length > 0 ? accepted.length / segments.length : 0
 
   if (!accepted.length) {
     throw new ApiError(
@@ -272,6 +324,25 @@ export async function generateSegmented({
       ERROR_CODES.AI_INVALID_RESPONSE,
       'AI 返回结构不合法，请稍后重试。',
     )
+  }
+
+  // 接收率下限（md/23 D2）：残篇不再当成功返回。
+  // 放在收尾之前——判断只用到正文词数，没必要为一个注定失败的请求再调一次模型。
+  if (acceptance < config.minSegmentAcceptance) {
+    logger.warn(
+      {
+        total: segments.length,
+        accepted: accepted.length,
+        minAcceptance: config.minSegmentAcceptance,
+      },
+      'segmented generation rejected: too many segments dropped',
+    )
+    throw articleTooIncomplete({
+      accepted: accepted.length,
+      total: segments.length,
+      actualWords: countWords(article),
+      minAcceptance: config.minSegmentAcceptance,
+    })
   }
 
   const detectedNames = [...names]
@@ -311,6 +382,7 @@ export async function generateSegmented({
       segments: segments.length,
       accepted: accepted.length,
       dropped: segments.length - accepted.length,
+      refilled: refillAccepted,
       actualWords: countWords(article),
       targetRange: range.label,
       attempts: stats.map(({ id, attempts }) => ({ id, attempts })),

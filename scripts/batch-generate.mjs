@@ -49,6 +49,8 @@ const FIXTURE_USER = {
   'form-easy': 'fixture-form-easy',
   'form-medium': 'fixture-form-medium',
   'form-hard': 'fixture-form-hard',
+  // md/27：真人词库形态（从最高频开始取词），用来对照等距抽样的 fixture
+  'real-hard': 'fixture-real-hard',
 }
 
 /**
@@ -151,6 +153,9 @@ const CASES = [
   { id: 28, group: 'gate', fixture: 'form-easy', level: 'easy', targetWords: 300, vocabScope: ['all'], expect: 'VOCABULARY_TOO_SMALL' },
   { id: 29, group: 'gate', fixture: 'form-medium', level: 'medium', targetWords: 500, vocabScope: ['all'], expect: 'VOCABULARY_TOO_SMALL' },
   { id: 30, group: 'gate', fixture: 'form-hard', level: 'hard', targetWords: 800, vocabScope: ['all'], expect: 'VOCABULARY_TOO_SMALL' },
+  // md/27：同样 3160 个词，但取的是**最高频**的 3160 个（真人词库的形态）。
+  // 与 #22 只差「词表怎么选」，用来证明 md/26 的失败是 fixture 造成的，不是生成器。
+  { id: 31, group: 'gate', fixture: 'real-hard', level: 'hard', targetWords: 600, vocabScope: ['all'], expect: 'ok' },
 ]
 
 const QUESTION_COUNT = 3

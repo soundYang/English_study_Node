@@ -24,7 +24,7 @@ export class ApiError extends Error {
 }
 
 /**
- * 全部 16 个业务错误码（《后端接口说明》§4.7）。
+ * 全部业务错误码（《后端接口说明》§4.7）。
  * 前端按 code 分支，不能改成别的值——尤其是 READING_NOT_FOUND
  * （渲染 404 错误卡）和 ALREADY_SUBMITTED（自动拉结果并跳转）。
  */
@@ -43,6 +43,9 @@ export const ERROR_CODES = Object.freeze({
   VOCABULARY_VALIDATION_FAILED: 'VOCABULARY_VALIDATION_FAILED',
   AI_PROVIDER_ERROR: 'AI_PROVIDER_ERROR',
   AI_INVALID_RESPONSE: 'AI_INVALID_RESPONSE',
+  // 分段路径丢段过多（md/23 D2 / md/27 §3）：结构是对的，但成文残缺。
+  // 与 AI_INVALID_RESPONSE 分开，前端才能给「换短一点的篇幅再试」这类文案。
+  ARTICLE_TOO_INCOMPLETE: 'ARTICLE_TOO_INCOMPLETE',
   RATE_LIMITED: 'RATE_LIMITED',
   INTERNAL_ERROR: 'INTERNAL_ERROR',
 })
@@ -126,6 +129,22 @@ export const targetWordsTooLong = ({ level, targetWords, maxTargetWords }) =>
       + '请缩短篇幅，或提高难度。',
     'targetWords',
     { kind: 'target_words_cap', level, targetWords, maxTargetWords },
+  )
+
+/**
+ * 502：分段路径丢段过多，成文残缺（md/23 D2 / md/27 §3）。
+ *
+ * 与 AI_INVALID_RESPONSE 分开报，是因为「结构没问题、只是没写完」和
+ * 「模型返回了非法 JSON」对用户是两件事：前者缩短篇幅有用，后者只能重试。
+ */
+export const articleTooIncomplete = ({ accepted, total, actualWords, minAcceptance }) =>
+  new ApiError(
+    502,
+    ERROR_CODES.ARTICLE_TOO_INCOMPLETE,
+    `这篇文章只写出来 ${accepted} / ${total} 段（${actualWords} 个英文单词），内容不完整。`
+      + '请缩短篇幅后重试。',
+    'targetWords',
+    { kind: 'segment_acceptance', accepted, total, actualWords, minAcceptance },
   )
 
 /**

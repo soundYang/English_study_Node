@@ -295,10 +295,60 @@ describe('分段路径 · 降级链', () => {
 
     expect(doc.aiMeta.segments).toHaveLength(10)
     expect(dropped.accepted).toBe(false)
-    // 首轮 + 2 次重写 + 1 次降级
-    expect(dropped.attempts).toBe(4)
+    // 首轮 + 2 次重写 + 1 次降级 + 补段 1 次（md/27 §3.2 M1）
+    expect(dropped.attempts).toBe(5)
+    expect(dropped.refilled).toBe(true)
     expect(doc.actualWords).toBeGreaterThanOrEqual(510)
     expect(doc.actualWords).toBeLessThanOrEqual(690)
+  })
+
+  it('某段首轮被丢 → 补段写回原位，段数不减少', async () => {
+    await seedWords(400)
+    // 第 2 段首轮 4 次全违规（首轮 + 2 重写 + 1 降级），补段那次才写对
+    // 注意不能只判 type === 'segment'：重写/降级那几次是 repair，会漏过去直接算成功
+    mockHappyPath({
+      2: (step, count) => (count <= 4 ? BAD : SHORT),
+    })
+
+    const res = await generate({ level: 'easy', targetWords: 100, questionCount: 3 })
+
+    expect(res.status).toBe(201)
+
+    const doc = await Reading.findById(res.body.id).lean()
+    const second = doc.aiMeta.segments.find((item) => item.id === 2)
+
+    expect(second.accepted).toBe(true)
+    expect(second.refilled).toBe(true)
+    // 首轮 4 次 + 补段 1 次，统计要累加
+    expect(second.attempts).toBe(5)
+    expect(doc.aiMeta.segments).toHaveLength(3)
+    expect(doc.aiMeta.segments.every((item) => item.accepted)).toBe(true)
+  })
+
+  it('丢段太多（接收率 < 60%）→ 502 ARTICLE_TOO_INCOMPLETE，且不再调收尾', async () => {
+    await seedWords(400)
+    // 3 段只成 1 段 = 33%，低于 minSegmentAcceptance 0.6
+    mockHappyPath({ 2: () => BAD, 3: () => BAD })
+
+    const res = await generate({ level: 'easy', targetWords: 100, questionCount: 3 })
+
+    expect(res.status).toBe(502)
+    expect(res.body.error.code).toBe('ARTICLE_TOO_INCOMPLETE')
+    expect(res.body.error.details).toMatchObject({
+      kind: 'segment_acceptance',
+      accepted: 1,
+      total: 3,
+    })
+
+    // 正文注定不完整，不该再花一次收尾调用
+    const finishCalled = chatJson.mock.calls.some(
+      ([args]) => classify(args.messages).type === 'finish',
+    )
+    expect(finishCalled).toBe(false)
+    expect(await Reading.countDocuments()).toBe(0)
+
+    const [failure] = await GenerationFailure.find().lean()
+    expect(failure.errorCode).toBe('ARTICLE_TOO_INCOMPLETE')
   })
 })
 
