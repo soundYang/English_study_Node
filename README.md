@@ -108,6 +108,12 @@ Mongo 断开时返回 **503** + `status: "degraded"`，这是唯一的健康判�
 | `OCR_CACHE_PATH` | 空 | 留空 = 不写缓存。模型已在本地，缓存只会再占 4MB |
 | `OCR_TIMEOUT_MS` | 20000 | 单张图识别超时；超时的 worker 直接销毁，不放回池 |
 | `OCR_WORKERS` | 2 | 常驻 worker 数 = 同时识别几张图；每个约 50–80MB 内存 |
+| `IMPORT_AI_ENABLED` | true | 导入 AI 识别的**能力**开关。请求默认 `mode=local`，只有显式 `mode=ai` 且账号接了自备 Key 才会调模型；关掉后 `mode=ai` 一律 403（md/49） |
+| `IMPORT_AI_MAX_ROWS_PER_CALL` | 150 | 每片最多多少行，也是输出 token 的主要闸门（150 × 约 28 token） |
+| `IMPORT_AI_MAX_CHARS_PER_CALL` | 6000 | 文本形态下每片最多多少字符；不会把一行从中间劈开 |
+| `IMPORT_AI_MAX_CALLS` | 4 | 单次导入最多调几次模型；4 × 150 = 600 ≥ 500 行上限 |
+| `IMPORT_AI_TIMEOUT_MS` | 45000 | 整次请求预算，前端为这一路单独设 60s |
+| `IMPORT_AI_USER_LIMIT` | 10 次/小时 | 按用户限流（内存计数，单实例）；不按 IP，避免共享出口互相误伤 |
 
 `MAX_UNKNOWN_WORDS` 默认留空：只有生词容忍生效时，预算才按难度取
 （medium 3 / hard 5；easy 恒为 0，md/41）。生词容忍不传时为「自动」：

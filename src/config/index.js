@@ -243,6 +243,22 @@ export const config = Object.freeze({
   // 下限 1：填 0 会让 acquire() 永远等不到 worker，请求全部挂死
   ocrWorkers: Math.max(1, toNumber('OCR_WORKERS', 2)),
 
+  // ——— 导入的 AI 识别（md/49）———
+  // 能力总开关。**注意它不等于「功能默认开」**：请求默认 mode=local，
+  // 只有前端显式传 mode=ai 且账号接了自备 Key 才会调模型。
+  // 这里关掉是止血阀：mode=ai 一律 403，本地解析不受影响
+  importAiEnabled: readBoolean('IMPORT_AI_ENABLED', true),
+  // 分片：每片最多多少行 / 多少字符。输出上限是 MAX_OUTPUT_TOKENS(8192)，
+  // 150 行 × 约 28 token ≈ 4.2k，留足余量；4 片 × 150 = 600 ≥ MAX_IMPORT_ROWS(500)
+  importAiMaxRowsPerCall: Math.max(10, toNumber('IMPORT_AI_MAX_ROWS_PER_CALL', 150)),
+  importAiMaxCharsPerCall: Math.max(500, toNumber('IMPORT_AI_MAX_CHARS_PER_CALL', 6000)),
+  importAiMaxCalls: Math.max(1, toNumber('IMPORT_AI_MAX_CALLS', 4)),
+  // 整次请求的时间预算。前端为这一路单独设 60s，后端 45s 先收口，
+  // 保证「后端失败」比「前端超时」先发生，用户看到的是明确错误而不是网络异常
+  importAiTimeoutMs: Math.max(1000, toNumber('IMPORT_AI_TIMEOUT_MS', 45_000)),
+  // 按用户限流（次 / 小时）。**不按 IP**：同一出口（宿舍 / 公司）会互相误伤
+  importAiUserLimit: Math.max(1, toNumber('IMPORT_AI_USER_LIMIT', 10)),
+
   // ——— 每日额度（md/35）———
   // md/35 Q4：前端 X-Device-Id 已上线，默认打开；测试由 setup.js 固定为 false，
   // 批量采样实例启动时显式 `DAILY_QUOTA_ENABLED=false`（网络桶 10 次/天会打成 429）

@@ -1,4 +1,5 @@
 import { checkMeaning, checkWord } from '../../../shared/utils/word-form.js'
+import { prepareAiImport, recognizeWithAi } from './ai.js'
 import { extractCsv } from './extractors/csv.js'
 import { extractDocx } from './extractors/docx.js'
 import { extractImage } from './extractors/image.js'
@@ -21,18 +22,39 @@ import { FILE_KINDS, IMAGE_KINDS, sniffFile } from './sniff.js'
  */
 
 /**
- * @param {{ buffer: Buffer, fileName?: string }} input
+ * @param {{
+ *   buffer: Buffer,
+ *   fileName?: string,
+ *   mode?: 'local'|'ai',
+ *   userId?: string,
+ * }} input
  * @returns {Promise<{
  *   source: string, fileName: string, size: number,
  *   rows: Array<{index:number, word:string, meaning:string, valid:boolean, reason?:string}>,
  *   stats: { total: number, valid: number, invalid: number },
  *   truncated: boolean,
- *   warnings: Array<{code:string, message:string}>
+ *   warnings: Array<{code:string, message:string}>,
+ *   engine?: 'ai',
+ *   ai?: { model:string, keySource:string, calls:number, inputTokens:number, outputTokens:number },
  * }>}
  */
-export async function extractWordsFromFile({ buffer, fileName = '' }) {
+export async function extractWordsFromFile({
+  buffer,
+  fileName = '',
+  mode = 'local',
+  userId = '',
+}) {
   const { kind, source } = sniffFile(buffer, fileName)
+
+  // L1 / L2 放在抽取之前：没资格就别解压 Word、别跑 OCR，
+  // 用户也能更快看到「去接入 Key」的提示（md/49 §5）
+  const aiKey = mode === 'ai' ? await prepareAiImport(userId) : null
+
   const extracted = await runExtractor(kind, buffer)
+
+  if (aiKey) {
+    return extractWithAi({ buffer, source, extracted, userId, aiKey, fileName })
+  }
 
   const rows = []
   const total = extracted.rows.length
@@ -54,6 +76,52 @@ export async function extractWordsFromFile({ buffer, fileName = '' }) {
     },
     truncated: total > rows.length,
     warnings: extracted.warnings,
+  }
+}
+
+/**
+ * AI 分支（md/49 §5）。
+ *
+ * AI 给的是**候选行**，这里做和本地链路完全相同的校验与截断；
+ * 唯一多出来的字段是 `meaningSource`，让前端能把「AI 补的释义」标出来。
+ */
+async function extractWithAi({ buffer, source, extracted, userId, aiKey, fileName }) {
+  const result = await recognizeWithAi({ source, buffer, extracted, userId, aiKey })
+
+  const rows = result.items.slice(0, MAX_IMPORT_ROWS).map((item, index) => {
+    const row = validateRow({ index, word: item.word, meaning: item.meaning })
+
+    return { ...row, meaningSource: item.meaning ? 'ai' : 'missing' }
+  })
+
+  return {
+    source,
+    fileName: String(fileName ?? '').slice(0, 200),
+    size: buffer.length,
+    engine: 'ai',
+    ai: {
+      model: result.usage.model,
+      keySource: result.usage.keySource,
+      calls: result.calls,
+      inputTokens: result.usage.inputTokens,
+      outputTokens: result.usage.outputTokens,
+    },
+    rows,
+    stats: {
+      // 与本地链路同口径：total 是**截断前** AI 给出的条数
+      total: result.items.length,
+      valid: rows.filter((row) => row.valid).length,
+      invalid: rows.filter((row) => !row.valid).length,
+    },
+    truncated: result.truncated,
+    warnings: [
+      ...extracted.warnings,
+      ...result.warnings,
+      {
+        code: 'AI_RECOGNIZED',
+        message: '内容由 AI 整理，可能有误；请逐条核对后再导入',
+      },
+    ],
   }
 }
 

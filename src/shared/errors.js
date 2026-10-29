@@ -91,6 +91,11 @@ export const ERROR_CODES = Object.freeze({
   USER_API_KEY_INVALID: 'USER_API_KEY_INVALID',
   USER_API_KEY_VERIFY_FAILED: 'USER_API_KEY_VERIFY_FAILED',
   USER_API_KEY_MISSING: 'USER_API_KEY_MISSING',
+  // ——— 导入的 AI 识别（md/49）———
+  // 请求级默认关（mode=local）；勾了 mode=ai 才发现没接自备 Key，用 409 而不是 403：
+  // 403 表示「你没资格」，409 表示「当前状态不满足」，前端据此引导去个人中心
+  USER_API_KEY_REQUIRED: 'USER_API_KEY_REQUIRED',
+  IMPORT_AI_DISABLED: 'IMPORT_AI_DISABLED',
   // ——— 管理员后台（md/37）———
   // 与 AUTH_REQUIRED 分开：前端拿用户令牌打管理端时必须能分辨
   // 「没登录」和「登的是用户、不是管理员」，否则会静默跳转到登录页而不是报错
@@ -487,6 +492,37 @@ export const userApiKeyMissing = () =>
     409,
     ERROR_CODES.USER_API_KEY_MISSING,
     '生成任务使用的 API Key 已不存在，请到个人中心重新导入后再试',
+  )
+
+// ——— 导入的 AI 识别（md/49）———
+
+/**
+ * 409：勾了「用 AI 识别」，但账号没有可用的自备 Key。
+ *
+ * **不回退免费池**：AI 识别花的是站方的钱还是用户的钱，必须由用户自己的
+ * 凭据决定。没有 Key 就明确说不满足条件，让用户去接入，而不是偷偷用免费额度。
+ */
+export const userApiKeyRequired = () =>
+  new ApiError(
+    409,
+    ERROR_CODES.USER_API_KEY_REQUIRED,
+    '开启 AI 识别需要先在个人中心接入你自己的 API Key',
+  )
+
+/** 403：服务端把导入 AI 的总开关关了（止血用，不影响本地解析） */
+export const importAiDisabled = () =>
+  new ApiError(403, ERROR_CODES.IMPORT_AI_DISABLED, 'AI 识别暂未开放，请使用本地识别')
+
+/** 502：整次 AI 导入超过时间预算，且一条结果都没拿到 */
+export const importAiTimeout = () =>
+  new ApiError(502, ERROR_CODES.AI_PROVIDER_ERROR, 'AI 整理超时了，请重试或改用本地识别')
+
+/** 502：模型两次返回的都解析不出 `{"items":[...]}` */
+export const importAiInvalidResponse = () =>
+  new ApiError(
+    502,
+    ERROR_CODES.AI_INVALID_RESPONSE,
+    'AI 返回的内容看不懂，请重试或改用本地识别',
   )
 
 // ——— 管理员后台（md/37）———

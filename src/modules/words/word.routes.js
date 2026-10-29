@@ -102,9 +102,29 @@ router.post('/import/extract', importLimiter, singleFile, async (req, res) => {
     await extractWordsFromFile({
       buffer: req.file.buffer,
       fileName: readFileName(req.file),
+      mode: readMode(req.body?.mode),
+      userId: req.userId,
     }),
   )
 })
+
+const IMPORT_MODES = new Set(['local', 'ai'])
+
+/**
+ * `mode` 缺省即 local（md/49 §0：这个功能**默认是关的**）。
+ *
+ * 不认识的值直接 400，不做「看不懂就当 local」的兜底：
+ * 用户勾了 AI 却没生效，比明确报错更难排查。
+ */
+function readMode(raw) {
+  if (raw === undefined || raw === null || raw === '') return 'local'
+
+  const mode = String(raw).trim().toLowerCase()
+
+  if (!IMPORT_MODES.has(mode)) throw badRequest('mode 只能是 local 或 ai', 'mode')
+
+  return mode
+}
 
 router.get('/', async (req, res) => {
   const query = parseOrThrow(listWordsQuerySchema, req.query)

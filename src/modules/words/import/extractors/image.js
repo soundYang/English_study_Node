@@ -18,16 +18,7 @@ import { recognizeImage } from '../ocr.js'
  * @returns {Promise<{ rows: Array<{index:number, word:string, meaning:string}>, warnings: Array }>}
  */
 export async function extractImage(buffer) {
-  // 必须在 OCR 之前拦：解码超大的图会直接吃掉几个 GB，崩的是整个进程而不是这次请求
-  const tooLarge = isTooLarge(readImageSize(buffer))
-
-  if (tooLarge) {
-    throw ocrFailed(
-      `图片尺寸太大（${tooLarge.width}×${tooLarge.height}），请压缩或裁剪后再传，也可以直接粘贴文本`,
-    )
-  }
-
-  const text = await recognizeImage(buffer)
+  const text = await extractImageText(buffer)
 
   const rows = []
   const warnings = []
@@ -56,5 +47,26 @@ export async function extractImage(buffer) {
     message: '图片识别难免有错，导入前请逐条核对',
   })
 
-  return { rows, warnings }
+  // 把 OCR 原文带出去：AI 模式需要它。
+  // 本地链路（rows 已经按规则切过）不读这个字段，行为不变
+  return { rows, warnings, text }
+}
+
+/**
+ * 只跑 OCR、不做切分（md/49 §5.1）。
+ *
+ * 图片转 AI 时必须给**原始文本**：rows 是本地用坏规则切出来的，
+ * 拿它去让模型纠错，等于让模型在一份错的数据上改。
+ */
+export async function extractImageText(buffer) {
+  // 必须在 OCR 之前拦：解码超大的图会直接吃掉几个 GB，崩的是整个进程而不是这次请求
+  const tooLarge = isTooLarge(readImageSize(buffer))
+
+  if (tooLarge) {
+    throw ocrFailed(
+      `图片尺寸太大（${tooLarge.width}×${tooLarge.height}），请压缩或裁剪后再传，也可以直接粘贴文本`,
+    )
+  }
+
+  return recognizeImage(buffer)
 }
