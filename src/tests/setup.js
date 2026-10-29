@@ -63,6 +63,7 @@ process.env.SEGMENT_TEMPERATURE = '0.5'
 const { AdminSession } = await import('../modules/admin/admin.model.js')
 const { UserApiKey } = await import('../modules/ai-keys/ai-key.model.js')
 const { AppMeta } = await import('../modules/auth/appmeta.model.js')
+const { BasicWordMark } = await import('../modules/basic-words/basic-word-mark.model.js')
 const { Captcha } = await import('../modules/auth/captcha.model.js')
 const { Feedback } = await import('../modules/feedback/feedback.model.js')
 const { Quota } = await import('../modules/quota/quota.model.js')
@@ -98,6 +99,8 @@ beforeAll(async () => {
     TokenUsage.syncIndexes(),
     // { userId, provider } 唯一索引是「并发 PUT 只有一条」的最终保险
     UserApiKey.syncIndexes(),
+    // { userId, word } 唯一索引保证「认识」标记不会被并发写成两条
+    BasicWordMark.syncIndexes(),
   ])
 })
 

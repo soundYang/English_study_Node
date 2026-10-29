@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 
 import { createApp } from '../app.js'
 import { config } from '../config/index.js'
+import { BasicWordMark } from '../modules/basic-words/basic-word-mark.model.js'
 import { Word } from '../modules/words/word.model.js'
 
 const app = createApp()
@@ -11,10 +12,16 @@ const uid = config.defaultUserId
 const list = (query) => request(app).get('/api/basic-words').query(query)
 const remove = (word) => request(app).delete(`/api/basic-words/${word}`)
 const restore = (word) => request(app).put(`/api/basic-words/${word}`)
+const patch = (word, state) =>
+  request(app).patch(`/api/basic-words/${word}`).send({ state })
 
 /** 直接落库：走接口造「已认识 / 已移除」的前置状态会被接口自身的规则挡住 */
 const seed = (docs) =>
   Word.insertMany(docs.map((doc) => ({ userId: uid, source: 'manual', ...doc })))
+
+/** 直接落「认识」标记（md/52） */
+const seedMark = (words) =>
+  BasicWordMark.insertMany(words.map((word) => ({ userId: uid, word })))
 
 /**
  * 词表口径（2026-10-28）：
@@ -28,6 +35,7 @@ const EMPTY_COUNTS = {
   abbreviation: 32,
   removable: 421,
   functionWord: 179,
+  known: 0,
   learned: 0,
   removed: 0,
   untouched: 650,
@@ -66,8 +74,8 @@ describe('GET /api/basic-words', () => {
     expect(body.total).toBe(650)
     expect(body.items).toHaveLength(650)
 
-    const { learned, removed, untouched, all } = body.counts
-    expect(learned + removed + untouched).toBe(all)
+    const { known, removed, untouched, all } = body.counts
+    expect(known + removed + untouched).toBe(all)
   })
 
   it('默认每页 50 条，按字母序从 a 开始', async () => {
@@ -409,6 +417,197 @@ describe('PUT /api/basic-words/:word', () => {
 
     expect(res.status).toBe(404)
     expect(res.body.error.code).toBe('BASIC_WORD_NOT_FOUND')
+  })
+})
+
+describe('PATCH /api/basic-words/:word（三态标记，md/52）', () => {
+  it('未标记 → 认识：写一条标记记录，Word 表不动', async () => {
+    const res = await patch('book', 'known')
+
+    expect(res.status).toBe(200)
+    expect(res.body.item).toMatchObject({
+      word: 'book',
+      removed: false,
+      personalState: 'known',
+      knownSource: 'mark',
+      personalStatus: null,
+      wordId: null,
+    })
+    expect(res.body.counts).toMatchObject({
+      known: 1,
+      learned: 0,
+      removed: 0,
+      untouched: 649,
+    })
+    expect(await BasicWordMark.countDocuments({ userId: uid, word: 'book' })).toBe(1)
+    // 认识不进「我的单词」，也不占词库上限
+    expect(await Word.countDocuments({ userId: uid })).toBe(0)
+  })
+
+  it('不认识 → 认识：删掉 basic-removed 占位，改标记认识', async () => {
+    await seed([{ word: 'book', status: 'new', source: 'basic-removed' }])
+
+    const res = await patch('book', 'known')
+
+    expect(res.status).toBe(200)
+    expect(res.body.item).toMatchObject({ personalState: 'known', knownSource: 'mark' })
+    expect(await Word.countDocuments({ userId: uid })).toBe(0)
+    expect(await BasicWordMark.countDocuments({ userId: uid, word: 'book' })).toBe(1)
+    expect(res.body.counts).toMatchObject({ known: 1, removed: 0, untouched: 649 })
+  })
+
+  it('认识 → 不认识：删标记，写 basic-removed 占位（带词库快照）', async () => {
+    await seedMark(['book'])
+
+    const res = await patch('book', 'unknown')
+
+    expect(res.status).toBe(200)
+    expect(res.body.item).toMatchObject({ personalState: 'removed', knownSource: null })
+    expect(await BasicWordMark.countDocuments({ userId: uid, word: 'book' })).toBe(0)
+
+    const doc = await Word.findOne({ userId: uid, word: 'book' }).lean()
+    expect(doc).toMatchObject({ status: 'new', source: 'basic-removed', dictionaryId: 'dict_book' })
+  })
+
+  it('认识 → 未标记：只删标记', async () => {
+    await seedMark(['book'])
+
+    const res = await patch('book', 'none')
+
+    expect(res.status).toBe(200)
+    expect(res.body.item).toMatchObject({ personalState: 'untouched', knownSource: null })
+    expect(await BasicWordMark.countDocuments({ userId: uid })).toBe(0)
+    expect(await Word.countDocuments({ userId: uid })).toBe(0)
+    expect(res.body.counts).toMatchObject({ known: 0, removed: 0, untouched: 650 })
+  })
+
+  it('不认识 → 未标记：删掉 basic-removed 占位', async () => {
+    await seed([{ word: 'book', status: 'new', source: 'basic-removed' }])
+
+    const res = await patch('book', 'none')
+
+    expect(res.status).toBe(200)
+    expect(res.body.item.personalState).toBe('untouched')
+    expect(await Word.countDocuments({ userId: uid })).toBe(0)
+  })
+
+  it('词库里的词本来就是认识：known 是空操作，来源是 library', async () => {
+    await seed([{ word: 'book', status: 'learning', articleExposureCount: 7 }])
+
+    const res = await patch('book', 'known')
+
+    expect(res.status).toBe(200)
+    expect(res.body.item).toMatchObject({
+      personalState: 'known',
+      knownSource: 'library',
+      personalStatus: 'learning',
+    })
+    expect(res.body.item.wordId).toBeTruthy()
+    // 词库中的词不需要再写一条标记
+    expect(await BasicWordMark.countDocuments({ userId: uid })).toBe(0)
+
+    const doc = await Word.findOne({ userId: uid, word: 'book' }).lean()
+    expect(doc).toMatchObject({ status: 'learning', articleExposureCount: 7 })
+  })
+
+  it('词库中的词不能从基础词页改回不认识 / 未标记 → 409', async () => {
+    await seed([{ word: 'book', status: 'learning', articleExposureCount: 7 }])
+
+    const asUnknown = await patch('book', 'unknown')
+    const asNone = await patch('book', 'none')
+
+    expect(asUnknown.status).toBe(409)
+    expect(asUnknown.body.error.code).toBe('BASIC_WORD_ALREADY_LEARNED')
+    expect(asNone.status).toBe(409)
+    expect(asNone.body.error.code).toBe('BASIC_WORD_ALREADY_LEARNED')
+
+    const doc = await Word.findOne({ userId: uid, word: 'book' }).lean()
+    expect(doc).toMatchObject({ status: 'learning', articleExposureCount: 7 })
+  })
+
+  it('用户自己加的新词：标认识 / 未标记 409，标不认识 200 空操作', async () => {
+    await seed([{ word: 'book', status: 'new', source: 'manual' }])
+
+    const asKnown = await patch('book', 'known')
+    const asNone = await patch('book', 'none')
+    const asUnknown = await patch('book', 'unknown')
+
+    expect(asKnown.status).toBe(409)
+    expect(asKnown.body.error.code).toBe('BASIC_WORD_ALREADY_LEARNED')
+    // 已经是「不认识」口径：PATCH 幂等，不删用户自己的记录
+    expect(asUnknown.status).toBe(200)
+    expect(asUnknown.body.item.personalState).toBe('removed')
+    expect(asNone.status).toBe(409)
+
+    expect(await Word.countDocuments({ userId: uid, word: 'book' })).toBe(1)
+  })
+
+  it('幂等：同一个状态连标两次，只留一条标记', async () => {
+    const first = await patch('book', 'known')
+    const second = await patch('book', 'known')
+
+    expect(first.status).toBe(200)
+    expect(second.status).toBe(200)
+    expect(second.body.item.personalState).toBe('known')
+    expect(await BasicWordMark.countDocuments({ userId: uid, word: 'book' })).toBe(1)
+  })
+
+  it('只读词同样不能标记 → 403', async () => {
+    const functionWord = await patch('the', 'known')
+    const calendar = await patch('monday', 'known')
+    const abbreviation = await patch('dr', 'known')
+
+    expect(functionWord.status).toBe(403)
+    expect(functionWord.body.error.code).toBe('FUNCTION_WORD_IMMUTABLE')
+    expect(calendar.status).toBe(403)
+    expect(calendar.body.error.code).toBe('BASIC_WORD_READONLY')
+    expect(abbreviation.status).toBe(403)
+    expect(abbreviation.body.error.code).toBe('BASIC_WORD_READONLY')
+  })
+
+  it('不在词表里 → 404；state 非法 → 400', async () => {
+    const missing = await patch('happy', 'known')
+    const invalid = await patch('book', 'maybe')
+
+    expect(missing.status).toBe(404)
+    expect(missing.body.error.code).toBe('BASIC_WORD_NOT_FOUND')
+    expect(invalid.status).toBe(400)
+    expect(invalid.body.error.field).toBe('state')
+  })
+
+  it('状态筛选「认识」同时包含手动标记和词库里的词', async () => {
+    await seedMark(['book'])
+    await seed([{ word: 'water', status: 'mastered' }])
+
+    const known = await list({ status: 'known' })
+    const unknown = await list({ status: 'unknown' })
+
+    expect(known.body.total).toBe(2)
+    expect(known.body.items.map((item) => [item.word, item.knownSource])).toEqual([
+      ['book', 'mark'],
+      ['water', 'library'],
+    ])
+    expect(unknown.body.total).toBe(648)
+
+    // 数字卡：known 含两类，learned 仍只算词库中的
+    expect(known.body.counts).toMatchObject({
+      known: 2,
+      learned: 1,
+      removed: 0,
+      untouched: 648,
+    })
+    const { known: knownCount, removed, untouched, all } = known.body.counts
+    expect(knownCount + removed + untouched).toBe(all)
+  })
+
+  it('DELETE 会顺手清掉此前的「认识」标记', async () => {
+    await seedMark(['book'])
+
+    const res = await remove('book')
+
+    expect(res.status).toBe(200)
+    expect(res.body.item.personalState).toBe('removed')
+    expect(await BasicWordMark.countDocuments({ userId: uid })).toBe(0)
   })
 })
 

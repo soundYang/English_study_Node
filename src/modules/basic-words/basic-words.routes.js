@@ -6,6 +6,7 @@ import {
   listBasicWords,
   removeBasicWord,
   restoreBasicWord,
+  setBasicWordState,
 } from './basic-words.service.js'
 
 const router = Router()
@@ -26,9 +27,20 @@ router.delete('/:word', async (req, res) => {
   res.json(await removeBasicWord({ userId: req.userId, word: req.params.word }))
 })
 
-// 恢复：删掉那条 basic-removed 记录
+// 恢复：删掉那条 basic-removed 记录（md/52 起已废弃，前端改用 PATCH state=none）
 router.put('/:word', async (req, res) => {
   res.json(await restoreBasicWord({ userId: req.userId, word: req.params.word }))
+})
+
+// 设成指定状态：known 认识 / unknown 不认识 / none 未标记（md/52）
+router.patch('/:word', async (req, res) => {
+  res.json(
+    await setBasicWordState({
+      userId: req.userId,
+      word: req.params.word,
+      body: req.body,
+    }),
+  )
 })
 
 export default router

@@ -28,3 +28,15 @@ export const listBasicWordsQuerySchema = z.object({
     // 650 个词按 10 条分页要翻 65 页，没有可用性
     .default(50),
 })
+
+/**
+ * PATCH /api/basic-words/:word 的 body（md/52）。
+ *
+ * 三个值对应三态：known 认识 / unknown 不认识 / none 未标记。
+ * 只认这三个字面量，不做大小写兼容——前端一次就改对，含糊的输入更容易藏 bug。
+ */
+export const basicWordStateSchema = z.object({
+  state: z.enum(['known', 'unknown', 'none'], {
+    error: '状态只能是 known / unknown / none',
+  }),
+})

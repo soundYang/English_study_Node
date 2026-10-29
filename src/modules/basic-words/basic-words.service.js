@@ -6,17 +6,20 @@ import {
   basicWordReadonly,
   functionWordImmutable,
 } from '../../shared/errors.js'
+import { parseOrThrow } from '../../shared/utils/validation.js'
 import { canonicalWord } from '../../shared/utils/word-form.js'
 import { findEntry } from '../dictionary/dictionary.loader.js'
 import { buildSummary } from '../words/word.dto.js'
 import { getWordRank } from '../words/word-ranks.js'
 import { wordRepository as repo } from '../words/word.repository.js'
+import { basicWordMarkRepository as markRepo } from './basic-word-mark.repository.js'
 import {
   BASIC_WORD_GROUPS,
   BASIC_WORD_STATUS_FILTERS,
   basicWordByWord,
   basicWordCatalog,
 } from './basic-words.catalog.js'
+import { basicWordStateSchema } from './basic-words.schema.js'
 
 /**
  * 基础词页面的读写（md/29）。
@@ -27,8 +30,8 @@ import {
  *   3. 列表里每一行都要带「这个人现在认不认识它」，不能只回静态词表。
  *
  * 分页在内存里做：词表本身是进程级常量（650 条），换成数据库分页反而要
- * 先把静态表灌库。每请求只查一次 Mongo（`$in` 650 个词），拿到个人记录后
- * 在内存里做分组、状态筛选和分页。
+ * 先把静态表灌库。每请求查两次 Mongo（Word 记录 + 认识标记，都是 `$in` 650 个词），
+ * 拿到个人数据后在内存里做分组、状态筛选和分页。
  */
 
 /**
@@ -78,13 +81,18 @@ async function loadRecords(userId) {
   return new Map(docs.map((doc) => [doc.word, doc]))
 }
 
+/** 这个用户手动标成「认识」的词（md/52）；返回 Set，没标过就是空集合 */
+function loadMarks(userId) {
+  return markRepo.findWords(userId, basicWordCatalog.map((entry) => entry.word))
+}
+
 /**
  * 把「静态词表条目 + 个人记录」合成列表行。
  *
  * 释义与音标始终取自**词库**，不取个人记录：个人记录可能是手填的空释义，
  * 基础词页要展示的是这个词本来的意思。
  */
-function toItem(entry, record) {
+function toItem(entry, record, marked = false) {
   const dictionaryEntry = findEntry(entry.word)
   const senses = (dictionaryEntry?.senses ?? []).map((sense) => ({
     pos: sense.pos ?? '',
@@ -94,6 +102,11 @@ function toItem(entry, record) {
   // removed 只看 status：用户手填一个 status=new 的同名词，同样会被
   // getPersonalBasicWords 从白名单里扣掉，页面口径必须和生成链路一致。
   const removed = record?.status === 'new'
+
+  // 认识有两个来源：词库里的 learning / mastered，或基础词页手动标记（md/52）。
+  // 优先级见 md/52 §2.3：不认识 > 词库中 > 手动标记 > 未标记
+  const inLibrary = Boolean(record) && !removed
+  const known = !removed && (inLibrary || marked)
 
   return {
     word: entry.word,
@@ -105,6 +118,10 @@ function toItem(entry, record) {
     removed,
     // 个人词库状态：null = 没标记过；new = 标了不认识；learning / mastered = 已收录
     personalStatus: record?.status ?? null,
+    // 三态（md/52）：untouched 未标记 / known 认识 / removed 不认识。前端 pill 直接按它映射
+    personalState: removed ? 'removed' : known ? 'known' : 'untouched',
+    // 认识是手动标出来的，还是因为词库里本来就有；菜单据此决定可改还是只读
+    knownSource: known ? (inLibrary ? 'library' : 'mark') : null,
     // 供前端跳词汇页 / 调 PATCH /api/words/:id；没记录时为 null
     wordId: record ? String(record._id) : null,
     cocaRank: getWordRank(entry.word),
@@ -127,10 +144,11 @@ function toItem(entry, record) {
 /**
  * 顶部数字卡。全部是**全量**口径，不受 q / group / status 影响。
  *
- * 三个状态数之和恒等于 all：这是页面唯一的自检点，
- * 测试里也按这个不变量断言。
+ * `known + removed + untouched === all` 是页面唯一的自检点（md/52 §4.5），
+ * 测试里也按这个不变量断言。`learned` 是已知的旧字段，口径仍是「词库里已收录」，
+ * 所以 `learned <= known`。
  */
-function buildCounts(records) {
+function buildCounts(records, marked) {
   const counts = {
     all: 0,
     basic: 0,
@@ -138,6 +156,8 @@ function buildCounts(records) {
     abbreviation: 0,
     removable: 0,
     functionWord: 0,
+    // known = 认识总数（词库中 + 手动标记）；learned 保持旧口径「词库中」
+    known: 0,
     learned: 0,
     removed: 0,
     untouched: 0,
@@ -150,9 +170,15 @@ function buildCounts(records) {
     if (entry.isFunctionWord) counts.functionWord += 1
 
     const record = records.get(entry.word)
-    if (!record) counts.untouched += 1
-    else if (record.status === 'new') counts.removed += 1
-    else counts.learned += 1
+    const removed = record?.status === 'new'
+    const inLibrary = Boolean(record) && !removed
+
+    if (inLibrary) counts.learned += 1
+
+    // 不变量：known + removed + untouched = all（md/52 §4.5）
+    if (removed) counts.removed += 1
+    else if (inLibrary || marked.has(entry.word)) counts.known += 1
+    else counts.untouched += 1
   }
 
   return counts
@@ -172,11 +198,11 @@ function matchesQuery(item, q) {
 function matchesStatus(item, status) {
   switch (status) {
     case 'known':
-      return item.personalStatus === 'learning' || item.personalStatus === 'mastered'
+      return item.personalState === 'known'
     case 'removed':
-      return item.removed
+      return item.personalState === 'removed'
     case 'unknown':
-      return item.personalStatus === null
+      return item.personalState === 'untouched'
     default:
       return true
   }
@@ -195,13 +221,16 @@ export async function listBasicWords({ userId, query, personalized = true }) {
   const status = BASIC_WORD_STATUS_FILTERS.includes(query.status) ? query.status : 'all'
   const { page, pageSize } = query
 
-  const records = personalized ? await loadRecords(userId) : new Map()
-  const counts = buildCounts(records)
+  // 游客视图不查 Mongo（md/50）：个人记录与认识标记都按「没有」处理
+  const [records, marked] = personalized
+    ? await Promise.all([loadRecords(userId), loadMarks(userId)])
+    : [new Map(), new Set()]
+  const counts = buildCounts(records, marked)
 
   const items = basicWordCatalog
     // 先按分组裁，再构造行：全量 650 条里通常只需要构造一部分
     .filter((entry) => group === 'all' || entry.kinds.includes(group))
-    .map((entry) => toItem(entry, records.get(entry.word)))
+    .map((entry) => toItem(entry, records.get(entry.word), marked.has(entry.word)))
     .filter((item) => matchesQuery(item, q) && matchesStatus(item, status))
 
   const total = items.length
@@ -220,33 +249,16 @@ export async function listBasicWords({ userId, query, personalized = true }) {
 }
 
 /**
- * DELETE /api/basic-words/:word —— 标记不认识（从个人基础词里移除）。
+ * 写一条「不认识」占位记录（md/29）。
  *
- * 写一条 `{ status:'new', source:'basic-removed' }` 记录，而不是删数据：
  *   · `getPersonalBasicWords` 的减法项就是 status=new 的词，写完立刻生效；
  *   · 记录里带着词库快照，词汇页看到它时不会只剩一个光秃秃的单词。
- *
- * 已经有记录时**不覆盖**：
- *   · status=new  → 已经是不认识了，重复操作给 409；
- *   · 其它状态    → 那条记录上挂着复习时间与曝光次数，覆盖等于抹掉学习进度。
  */
-export async function removeBasicWord({ userId, word }) {
-  const entry = loadEntry(word)
-  assertRemovable(entry)
-
-  const existing = await repo.findOneByWord(userId, entry.word)
-
-  if (existing) {
-    if (existing.status === 'new') throw basicWordAlreadyRemoved(entry.word)
-    throw basicWordAlreadyLearned(entry.word, existing.status)
-  }
-
+async function createRemovedRecord(userId, entry) {
   const dictionaryEntry = findEntry(entry.word)
 
-  let created
-
   try {
-    created = await repo.create({
+    await repo.create({
       userId,
       word: entry.word,
       status: 'new',
@@ -265,12 +277,36 @@ export async function removeBasicWord({ userId, word }) {
       cocaRank: getWordRank(entry.word),
     })
   } catch (err) {
-    // 并发下两个请求同时过了上面的存在性检查，靠唯一索引兜底
+    // 并发下两个请求同时过了存在性检查，靠唯一索引兜底
     if (err?.code === 11000) throw basicWordAlreadyRemoved(entry.word)
     throw err
   }
+}
 
-  return buildMutationResult(userId, entry, created)
+/**
+ * DELETE /api/basic-words/:word —— 标记不认识（从个人基础词里移除）。
+ *
+ * 已经有记录时**不覆盖**：
+ *   · status=new  → 已经是不认识了，重复操作给 409；
+ *   · 其它状态    → 那条记录上挂着复习时间与曝光次数，覆盖等于抹掉学习进度。
+ *
+ * md/52 起这里同时清掉手动「认识」标记：两种状态互斥。
+ */
+export async function removeBasicWord({ userId, word }) {
+  const entry = loadEntry(word)
+  assertRemovable(entry)
+
+  const existing = await repo.findOneByWord(userId, entry.word)
+
+  if (existing) {
+    if (existing.status === 'new') throw basicWordAlreadyRemoved(entry.word)
+    throw basicWordAlreadyLearned(entry.word, existing.status)
+  }
+
+  await createRemovedRecord(userId, entry)
+  await markRepo.deleteByWord(userId, entry.word)
+
+  return buildMutationResult(userId, entry)
 }
 
 /**
@@ -279,6 +315,9 @@ export async function removeBasicWord({ userId, word }) {
  * 只认 `source: 'basic-removed'` 的记录。用户自己在词汇页加的词
  * （哪怕状态也是 new）不在这里删——那不是这个页面的东西，
  * 删掉就是替用户丢数据。
+ *
+ * md/52 起标记为**已废弃**：前端改用 `PATCH { state:'none' }`。
+ * 保留是为了后端先上线时老页面不炸。
  */
 export async function restoreBasicWord({ userId, word }) {
   const entry = loadEntry(word)
@@ -294,15 +333,64 @@ export async function restoreBasicWord({ userId, word }) {
 
   await repo.deleteByWord(userId, entry.word)
 
-  return buildMutationResult(userId, entry, null)
+  return buildMutationResult(userId, entry)
+}
+
+/**
+ * PATCH /api/basic-words/:word —— 把这一行设成指定状态（md/52 §4.2）。
+ *
+ * 与 DELETE / PUT 的区别：PATCH 是「设成目标状态」，**幂等**，
+ * 已经是目标状态就 200 空操作；只有会覆盖学习进度时才 409。
+ */
+export async function setBasicWordState({ userId, word, body }) {
+  const { state } = parseOrThrow(basicWordStateSchema, body)
+  const entry = loadEntry(word)
+  assertRemovable(entry)
+
+  const existing = await repo.findOneByWord(userId, entry.word)
+  const removed = existing?.status === 'new'
+  const inLibrary = Boolean(existing) && !removed
+  // 用户自己在词汇页加的新词：它是用户的资产，基础词页不能删、也不能改
+  const ownNewWord = removed && existing.source !== 'basic-removed'
+
+  if (state === 'known') {
+    if (inLibrary) {
+      // 词库里的词已经是认识；顺手清掉可能残留的手动标记
+      await markRepo.deleteByWord(userId, entry.word)
+    } else if (ownNewWord) {
+      // 覆盖 status 等于抹掉学习进度，交给词汇页
+      throw basicWordAlreadyLearned(entry.word, existing.status)
+    } else {
+      // 未标记或 basic-removed 占位：先把「不认识」撤掉，再标记认识
+      if (removed) await repo.deleteByWord(userId, entry.word)
+      await markRepo.add(userId, entry.word)
+    }
+  } else if (state === 'unknown') {
+    if (inLibrary) throw basicWordAlreadyLearned(entry.word, existing.status)
+
+    // 已经是「不认识」：清掉可能残留的标记即可，不重复写记录
+    if (!removed) await createRemovedRecord(userId, entry)
+    await markRepo.deleteByWord(userId, entry.word)
+  } else {
+    // state === 'none'：回到未标记，两边都清掉
+    if (inLibrary || ownNewWord) {
+      throw basicWordAlreadyLearned(entry.word, existing.status)
+    }
+
+    await markRepo.deleteByWord(userId, entry.word)
+    if (removed) await repo.deleteByWord(userId, entry.word)
+  }
+
+  return buildMutationResult(userId, entry)
 }
 
 /** 写操作统一回「这一行 + 最新数字卡」，前端可以直接替换行、刷新卡片 */
-async function buildMutationResult(userId, entry, record) {
-  const records = await loadRecords(userId)
+async function buildMutationResult(userId, entry) {
+  // 写完重新读，item 一定是落库后的真实状态，不靠调用方拼
+  const [records, marked] = await Promise.all([loadRecords(userId), loadMarks(userId)])
 
   return {
-    item: toItem(entry, record ? record.toObject() : null),
-    counts: buildCounts(records),
+    item: toItem(entry, records.get(entry.word) ?? null, marked.has(entry.word)),
+    counts: buildCounts(records, marked),
   }
 }
