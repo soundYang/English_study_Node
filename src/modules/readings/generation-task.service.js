@@ -46,10 +46,25 @@ function fingerprint(params) {
     targetWords: params?.targetWords ?? null,
     questionCount: params?.questionCount ?? null,
     vocabScope: [...(params?.vocabScope ?? [])].sort(),
-    // md/41：开关不同就是不同请求，不能复用上一个任务（否则用户打开开关后
-    // 拿到的仍是按 0 预算生成的文章）
-    allowNewWords: params?.allowNewWords === true,
+    // md/41 / md/42：三态参与比对——true / false / null（未传 = 自动）。
+    // 开关不同就是不同请求，不能复用上一个任务；「未传」与「显式 false」
+    // 也必须分开，否则最终模式的自动默认会被一次显式关闭污染
+    allowNewWords: params?.allowNewWords ?? null,
   })
+}
+
+/**
+ * 任务的参数回显。`allowNewWords` 用 null 表示「请求没传 = 自动」，
+ * 与显式 false 区分开（md/42）。建任务 202 响应与轮询 DTO 共用这一份。
+ */
+export function toTaskParams(task) {
+  return {
+    level: task.params?.level ?? null,
+    targetWords: task.params?.targetWords ?? null,
+    questionCount: task.params?.questionCount ?? null,
+    vocabScope: [...(task.params?.vocabScope ?? [])],
+    allowNewWords: task.params?.allowNewWords ?? null,
+  }
 }
 
 /**
@@ -74,13 +89,7 @@ export function toTaskDto(task) {
       done: task.progress?.done ?? 0,
       total: task.progress?.total ?? 0,
     },
-    params: {
-      level: task.params?.level ?? null,
-      targetWords: task.params?.targetWords ?? null,
-      questionCount: task.params?.questionCount ?? null,
-      vocabScope: [...(task.params?.vocabScope ?? [])],
-      allowNewWords: task.params?.allowNewWords === true,
-    },
+    params: toTaskParams(task),
     selectedWords: (task.selectedWords ?? []).map((item) => ({
       word: item.word,
       kind: item.kind,
@@ -190,14 +199,17 @@ const activeControllers = new Map()
 
 /** 任务里存的参数是 Mongoose 子文档，展开它拿不到字段，必须显式取一遍 */
 function toPlainParams(task) {
+  const allowNewWords = task.params?.allowNewWords
+
   return {
     level: task.params?.level,
     targetWords: task.params?.targetWords,
     questionCount: task.params?.questionCount,
     vocabScope: [...(task.params?.vocabScope ?? [])],
-    // 重试必须沿用同一个开关：否则「允许生词」的任务重试后突然变严，
-    // 已收下的段与未写段的词表口径也不一致
-    allowNewWords: task.params?.allowNewWords === true,
+    // 重试必须沿用同一个口径：true / false 原样带走；**未设置就继续不设置**，
+    // 让服务端重新按「自动」判定（最终模式开，其余关）。写成 `=== true`
+    // 会把「没传」变成显式 false，最终模式重试后突然变严。
+    ...(typeof allowNewWords === 'boolean' ? { allowNewWords } : {}),
   }
 }
 
@@ -429,7 +441,8 @@ export async function createGenerationTask({ userId, body, identity = null }) {
         targetWords: generationParams.targetWords,
         questionCount: generationParams.questionCount,
         vocabScope: generationParams.vocabScope,
-        allowNewWords: generationParams.allowNewWords === true,
+        // 原样存：undefined 表示「没传」= 自动，不能被压成 false
+        allowNewWords: generationParams.allowNewWords,
       },
       model: config.deepseekModel,
       strategy: config.generationStrategy,

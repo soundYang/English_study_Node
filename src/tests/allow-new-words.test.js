@@ -67,6 +67,15 @@ function seedWords(count = 1300) {
 
 const MEDIUM = { level: 'medium', targetWords: 100, questionCount: 3 }
 const HARD = { level: 'hard', targetWords: 100, questionCount: 3 }
+/** 最终模式：hard + >600 词 + 个人词库 ≥ 3000 */
+const FINAL = { level: 'hard', targetWords: 700, questionCount: 3 }
+
+/** hard 的题型配额：至少 1 道 inference / main_idea */
+function hardPayload(article = ARTICLE) {
+  const payload = makePayload({ article })
+  payload.questions[0] = { ...payload.questions[0], type: 'inference' }
+  return payload
+}
 
 const generate = (body) => request(app).post('/api/readings/generate').send(body)
 const postTask = (body) => request(app).post('/api/readings/generate/tasks').send(body)
@@ -261,6 +270,46 @@ describe('整篇路径 · 生词预算', () => {
   })
 })
 
+describe('最终模式 · 默认开启（md/42）', () => {
+  it('不传 allowNewWords：最终模式默认开，预算 5', async () => {
+    await seedWords(3000)
+    chatJson.mockResolvedValue(
+      reply(hardPayload(`${ARTICLE} Quizzical zephyrish brontide crepuscule farrago.`)),
+    )
+
+    const res = await generate(FINAL)
+
+    expect(res.status).toBe(201)
+    expect(res.body.newWords).toHaveLength(5)
+
+    const doc = await Reading.findById(res.body.id).lean()
+    expect(doc.aiMeta.finalMode).toBe(true)
+    expect(doc.aiMeta.allowNewWords).toBe(true)
+    expect(doc.aiMeta.unknownBudget).toBe(5)
+  })
+
+  it('显式 false 仍然可以关掉', async () => {
+    await seedWords(3000)
+    chatJson.mockResolvedValue(reply(hardPayload(`${ARTICLE} Quizzical.`)))
+
+    const res = await generate({ ...FINAL, allowNewWords: false })
+
+    expect(res.status).toBe(422)
+    expect(res.body.error.code).toBe('VOCABULARY_VALIDATION_FAILED')
+    expect(chatJson).toHaveBeenCalledTimes(3)
+  })
+
+  it('600 词的 hard 不是最终模式，仍默认关', async () => {
+    await seedWords(3000)
+    chatJson.mockResolvedValue(reply(hardPayload(`${ARTICLE} Quizzical.`)))
+
+    const res = await generate({ level: 'hard', targetWords: 600, questionCount: 3 })
+
+    expect(res.status).toBe(422)
+    expect(chatJson).toHaveBeenCalledTimes(3)
+  })
+})
+
 describe('任务 · 参数与幂等', () => {
   it('params 回显 allowNewWords；开关不同不复用正在跑的任务', async () => {
     await seedWords()
@@ -286,6 +335,45 @@ describe('任务 · 参数与幂等', () => {
     expect(done.body.status).toBe('succeeded')
 
     const article = await Reading.findById(done.body.readingId).lean()
+    expect(article.aiMeta.allowNewWords).toBe(true)
+  })
+
+  it('没传时 params 回显 null（自动），不是 false', async () => {
+    await seedWords()
+    const gate = deferredChat()
+
+    const res = await postTask(MEDIUM)
+
+    expect(res.status).toBe(202)
+    expect(res.body.params.allowNewWords).toBeNull()
+
+    expect(await waitFor(() => gate.size > 0)).toBe(true)
+    gate.release()
+    await waitForFinish(res.body.taskId)
+  })
+
+  it('最终模式任务重试：没传开关仍按「自动」开启', async () => {
+    await seedWords(3000)
+    chatJson.mockRejectedValue(
+      Object.assign(new Error('upstream down'), { code: 'AI_PROVIDER_ERROR' }),
+    )
+
+    const { body } = await postTask(FINAL)
+    const failed = await waitForFinish(body.taskId)
+    expect(failed.body.status).toBe('failed')
+
+    chatJson.mockReset()
+    chatJson.mockResolvedValue(reply(hardPayload()))
+
+    const retried = await request(app).post(`/api/readings/generate/tasks/${body.taskId}/retry`)
+    expect(retried.status).toBe(202)
+
+    const done = await waitForFinish(body.taskId)
+    expect(done.body.status).toBe('succeeded')
+
+    // 重试沿用「未传」而不是显式 false，最终模式的自动默认仍然生效
+    const article = await Reading.findById(done.body.readingId).lean()
+    expect(article.aiMeta.finalMode).toBe(true)
     expect(article.aiMeta.allowNewWords).toBe(true)
   })
 })

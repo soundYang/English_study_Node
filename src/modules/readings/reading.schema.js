@@ -61,16 +61,14 @@ const readingShape = {
       'questionCount 只能是 3 / 5 / 8',
     ),
   /**
-   * 是否允许偶尔出现少量生词（md/41）。
+   * 是否允许偶尔出现少量生词（md/41、md/42）。
    *
-   * easy 的「0 生词」是卖点，固定不允许；medium / hard 默认关，
-   * 打开后最多放行该难度的 `unknownBudget`（3 / 5）个表外词。
+   * **不传 = 自动**：最终模式（hard + 篇幅 > 600 + 个人词库 ≥ 3000）默认开，
+   * 其余模式默认关；显式 true / false 始终优先。
+   * easy 的「0 生词」是卖点，固定不允许（传 true 直接 400）。
    * 语义是「允许」不是「保证」：模型全用熟词也完全合法。
    */
-  allowNewWords: z
-    .boolean({ error: 'allowNewWords 必须是布尔值' })
-    .optional()
-    .default(false),
+  allowNewWords: z.boolean({ error: 'allowNewWords 必须是布尔值' }).optional(),
 }
 
 /** easy 不能开生词容忍：这是难度承诺的一部分，不是参数偏好 */

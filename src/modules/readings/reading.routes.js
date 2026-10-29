@@ -13,6 +13,7 @@ import {
   createGenerationTask,
   getGenerationTask,
   retryGenerationTask,
+  toTaskParams,
 } from './generation-task.service.js'
 import { listHistoryQuerySchema } from './reading.schema.js'
 import {
@@ -77,7 +78,8 @@ router.post('/generate/tasks', generateRateLimit, async (req, res) => {
     status: task.status,
     stage: task.stage,
     reused,
-    params: task.params,
+    // 显式回显三态：null = 没传（自动），false / true = 用户的选择（md/42）
+    params: toTaskParams(task),
   })
 })
 

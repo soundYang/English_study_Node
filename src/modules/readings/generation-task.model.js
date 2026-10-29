@@ -120,8 +120,10 @@ const generationTaskSchema = new Schema(
       targetWords: Number,
       questionCount: Number,
       vocabScope: { type: [String], default: [] },
-      // md/41：老任务没有这个字段，读取时一律按 false 处理
-      allowNewWords: { type: Boolean, default: false },
+      // md/41 / md/42：三态——true / false / 未设置（自动：最终模式默认开）。
+      // 故意不设 default：把「没传」和「显式 false」混成一档，
+      // 最终模式的任务重试时就会突然变严（md/42 §3）。
+      allowNewWords: Boolean,
     },
 
     // done / total 都是「段」为单位，整篇路径没有段，恒为 0/0

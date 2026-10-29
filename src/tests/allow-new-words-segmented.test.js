@@ -49,6 +49,16 @@ const PLAN_200 = {
   })),
 }
 
+/** 最终模式 hard 700 词：planSegmentCount(700) 封顶 10 段 */
+const PLAN_700 = {
+  segments: Array.from({ length: 10 }, (_, index) => ({
+    id: index + 1,
+    goal: `写故事的第 ${index + 1} 部分`,
+    mustUse: [],
+    maxWords: 77,
+  })),
+}
+
 const FINISH = {
   title: 'A Good Day',
   translation: '一个男孩有一本很大的书，他和书在房子里玩，他们是好朋友。',
@@ -179,6 +189,30 @@ describe('分段路径 · allowNewWords', () => {
 
     // 2/3 ≥ minSegmentAcceptance，残篇仍然放行——丢段是段级闭环的既定行为
     expect(doc.aiMeta.segments.filter((item) => item.accepted)).toHaveLength(2)
+  })
+
+  it('最终模式不传开关：默认开，段级额度按 hard 的 5 分配', async () => {
+    // 最终模式 = hard + >600 词 + 个人词库 ≥ 3000
+    await seedWords(3000)
+    mockSegments({
+      plan: PLAN_700,
+      segmentText: (index) => (index === 1 ? `${SHORT} Quizzical.` : SHORT),
+    })
+
+    const res = await generate({ level: 'hard', targetWords: 700, questionCount: 3 })
+
+    expect(res.status).toBe(201)
+
+    const doc = await Reading.findById(res.body.id).lean()
+    expect(doc.newWords.map((item) => item.word)).toEqual(['quizzical'])
+    expect(doc.aiMeta.finalMode).toBe(true)
+    expect(doc.aiMeta.allowNewWords).toBe(true)
+    expect(doc.aiMeta.unknownBudget).toBe(5)
+
+    // hard 预算 5 < 段数 10：前 5 段各 1 个，后 5 段仍是零容忍
+    expect(doc.aiMeta.segments.map((item) => item.unknownAllowance)).toEqual([
+      1, 1, 1, 1, 1, 0, 0, 0, 0, 0,
+    ])
   })
 
   it('200 词分 4 段、预算 3：前 3 段各收 1 个，第 4 段被丢弃', async () => {

@@ -179,8 +179,8 @@ function evaluate({ content, params, allowedWords, range, unknownBudget }) {
     names: result.data.names,
   })
 
-  // 不超过预算的生词直接放行：预算按难度取（easy 0 / medium 3 / hard 5），
-  // 它是产品承诺——easy 的「一个生词都没有」不是兜底，是卖点。
+  // 不超过预算的生词直接放行：预算是「允许」不是「保证」（md/41 / md/42）。
+  // easy 的 0 是卖点；最终模式不传开关时默认开，其余默认关。
   if (vocabulary.unknownWords.length > unknownBudget) {
     return {
       result,
@@ -308,9 +308,10 @@ async function recordFailure(diag, error) {
  *       → 结构校验 → 用词校验 → 篇幅校验 →（最多 2 轮修正，三者共用）
  *       → 落库 → 返回安全 DTO。
  *
- * 放行规则（md/41）：用词预算默认 **0**，用户显式打开 `allowNewWords` 时才按难度给
- * （easy 永远 0 / medium 3 / hard 5）；预算内的生词带音标与释义落进 newWords，
- * 由前端做折叠提示。打开开关只是「允许」，模型全用熟词同样合法。
+ * 放行规则（md/41 / md/42）：不传 `allowNewWords` 时自动——最终模式默认开，
+ * 其余默认关；显式开关始终优先。预算按难度给（easy 永远 0 / medium 3 / hard 5），
+ * 预算内的生词带音标与释义落进 newWords，由前端做折叠提示。
+ * 打开开关只是「允许」，模型全用熟词同样合法。
  *
  * 闸门顺序不能换（md/30 §7.3）：
  *   1. 词数 < 20 → 422 INSUFFICIENT_VOCABULARY（冷启动跳过，见 md/39）
@@ -395,15 +396,6 @@ async function generateReadingInner({ userId, body, signal, diag, onProgress, re
   // （hard 攒够 3000 词才能写到 1000），只能挪到读完词库之后，
   // 和「解锁检查 → 篇幅上限 → 最低词量」那道顺序一起排在下面。
 
-  // 生词预算（md/41）：默认 **0**——只有 medium / hard 且用户显式打开
-  // `allowNewWords` 时，才按难度给 3 / 5（显式 MAX_UNKNOWN_WORDS 时全局覆盖）。
-  // schema 已经拦下 easy + true；这里再兜一次，防止内部调用绕过 parse。
-  // 语义是「允许」不是「保证」：模型全用熟词同样合法。
-  const allowNewWords = params.level !== 'easy' && params.allowNewWords === true
-  const unknownBudget = allowNewWords
-    ? unknownBudgetFor(params.level, config.maxUnknownWordsOverride)
-    : 0
-
   const rounds = diag.rounds
 
   // 只有 learning / mastered 算可用词汇，new 不算
@@ -469,6 +461,17 @@ async function generateReadingInner({ userId, body, signal, diag, onProgress, re
     targetWords: params.targetWords,
     personalWords,
   })
+
+  // 生词预算（md/41 / md/42）：**不传时自动**——最终模式默认开，其余默认关。
+  // 显式 true / false 始终优先；easy 永远 0（schema 已拦 easy + true，这里再兜一次）。
+  // 判定必须放在 finalMode 之后：最终模式要先知道个人词库规模。
+  // 语义是「允许」不是「保证」：模型全用熟词同样合法。
+  const allowNewWords =
+    params.level !== 'easy' && (params.allowNewWords ?? finalMode)
+  const unknownBudget = allowNewWords
+    ? unknownBudgetFor(params.level, config.maxUnknownWordsOverride)
+    : 0
+
   const finalModeUnlocked = isFinalModeUnlocked({ personalWords })
   // 采样实例显式设了 MAX_TARGET_WORDS：它要验证「没攒够词也写得出」，必须绕开解锁。
   const overrideMax = Number.isInteger(config.maxTargetWordsOverride)
