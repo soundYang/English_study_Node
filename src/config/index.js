@@ -101,7 +101,16 @@ function readClientOrigins() {
 function readTrustProxy() {
   const raw = process.env.TRUST_PROXY?.trim()
   if (!raw) return false
-  if (raw === 'true') return true
+  // `true` 是「信任任意跳」，Express 会取 X-Forwarded-For 最左边的地址，
+  // 客户端自己塞一个就能改掉 req.ip，从而绕过所有按 IP 的限流与额度（md/45 M2）。
+  // 这里按 1 处理：与 nginx 单跳的部署形态一致，客户端伪造的值会被忽略。
+  // 注意 1 只对「前面正好一层反代」成立——节点直连公网时应该写 false。
+  if (raw === 'true') {
+    console.warn(
+      '[config] TRUST_PROXY=true 已按 1（信任一层反代）处理。若节点直接暴露公网，请改成 false',
+    )
+    return 1
+  }
   if (raw === 'false') return false
 
   const hops = Number(raw)
@@ -113,6 +122,23 @@ function readTrustProxy() {
     `[config] 环境变量 TRUST_PROXY 只能是 true / false / 跳数 / loopback / linklocal / uniquelocal，当前值：${raw}`,
   )
   process.exit(1)
+}
+
+/**
+ * 自备 Key 的加密主密钥（md/45 L1）。
+ *
+ * HKDF 会把任意长度的输入拉伸成 32 字节，所以短口令**不会**导致加解密失败，
+ * 只会让「拿到数据库副本的人」更容易离线爆破。这里只在启动时告警、不改行为：
+ * 直接把短密钥按「未配置」处理会让存量密文全部解不开，比告警严重得多。
+ */
+function readUserApiKeySecret(name) {
+  const secret = (process.env[name] ?? '').trim()
+  if (secret && secret.length < 32) {
+    console.warn(
+      `[config] ${name} 只有 ${secret.length} 个字符，建议至少 32：AES-256-GCM 的强度取决于它的熵`,
+    )
+  }
+  return secret
 }
 
 export const config = Object.freeze({
@@ -318,9 +344,9 @@ export const config = Object.freeze({
   // 存量密文无法解密，继续用只会让每次生成都白跑一次解密
   userApiKeyEnabled: readBoolean('USER_API_KEY_ENABLED', true),
   // AES-256-GCM 主密钥，用 scripts/gen-user-key-secret.mjs 生成，仓库里永远没有
-  userApiKeySecret: (process.env.USER_API_KEY_SECRET ?? '').trim(),
+  userApiKeySecret: readUserApiKeySecret('USER_API_KEY_SECRET'),
   // 轮换时只用于解密：先配 PREVIOUS，确认所有用户重新导入后再删旧值
-  userApiKeySecretPrevious: (process.env.USER_API_KEY_SECRET_PREVIOUS ?? '').trim(),
+  userApiKeySecretPrevious: readUserApiKeySecret('USER_API_KEY_SECRET_PREVIOUS'),
   // 导入时校验 /models 的超时；比生成超时短得多，导入是同步接口
   userApiKeyVerifyTimeoutMs: toNumber('USER_API_KEY_VERIFY_TIMEOUT_MS', 8000),
   // 导入 / 删除 / 校验共用的按 IP 限流（次 / 分钟）

@@ -84,6 +84,16 @@ async function main() {
     logger.info(`basic words loaded: ${level} ${list.length} (version ${basicWordsVersions[level]})`)
   }
 
+  // 安全开关自检（md/45 H2）：照抄 .env.example 部署时这里就是 false，
+  // 此时所有匿名请求都归到 DEFAULT_USER_ID，全站共用一份词库、文章和额度，
+  // 而且不会以任何报错的形式暴露。不硬拒启动是因为本地开发离不开这个模式，
+  // 但必须让它在日志第一屏就显眼——上线时 grep 一条 AUTH_ENFORCED 就能发现。
+  if (!config.authEnforced) {
+    logger.warn(
+      `AUTH_ENFORCED=false：匿名请求将全部归到 ${config.defaultUserId}，全站共用一个数据域。仅限本地开发，生产必须设 true`,
+    )
+  }
+
   // 队列心跳必须在开始接任务之前启动，否则正常排队的任务会被巡检误杀
   startGenerationScheduler()
 

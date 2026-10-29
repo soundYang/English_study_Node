@@ -122,6 +122,8 @@ export function errorHandler(err, req, res, _next) {
   if (err.type === 'entity.parse.failed') {
     return res.status(400).json({
       error: { code: ERROR_CODES.INVALID_REQUEST, message: '请求体不是合法 JSON' },
+      // 4xx 也带 requestId：这两个分支不经过 ApiError，漏掉时前端排查断链（md/45 L4）
+      requestId: req.id,
     })
   }
 
@@ -129,6 +131,7 @@ export function errorHandler(err, req, res, _next) {
   if (err.type === 'entity.too.large') {
     return res.status(413).json({
       error: { code: ERROR_CODES.INVALID_REQUEST, message: '请求体过大' },
+      requestId: req.id,
     })
   }
 

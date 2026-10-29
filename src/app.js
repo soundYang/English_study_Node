@@ -35,7 +35,11 @@ export function createApp() {
   // （md/35 §3.4）。默认 false，与 Express 行为一致
   if (config.trustProxy !== false) app.set('trust proxy', config.trustProxy)
 
-  // 顺序不能变：helmet → cors → json → 日志 → 路由 → 404 → errorHandler
+  // 顺序不能变：helmet → cors → 日志 → json → 路由 → 404 → errorHandler
+  //
+  // 日志必须排在 express.json **之前**：请求体过大（413）或不是合法 JSON（400）
+  // 都是在 json 中间件里抛的，那时如果还没走到 requestLogger，req.id 就不存在，
+  // 这两种错误响应带不上 requestId，访问日志也漏掉它们（md/45 L4）。
   app.use(helmet())
   app.use(
     cors({
@@ -53,13 +57,14 @@ export function createApp() {
       credentials: false,
     }),
   )
-  app.use(express.json({ limit: '64kb' }))
-
   // 请求日志：一个请求一行可读文本，同时提供 req.id / req.log（md/13 C3）。
   // 替换 pino-http 的原因是它默认打整个 req / res 的 JSON，终端里看不出前端调了什么。
   app.use(requestLogger)
   // 访问日志落库（md/53）：终端日志重启即丢，这里按 IP / 用户 / 路径可回查
   app.use(accessLogger)
+
+  // 放在日志之后：解析失败时 req.id 已经存在，400/413 才能带上 requestId
+  app.use(express.json({ limit: '64kb' }))
 
   // 解析令牌 → req.userId（md/33 §7.1）。只解析不拦截，见 currentUser.js
   app.use(currentUser)
@@ -95,7 +100,12 @@ export function createApp() {
   // 404 兜底：Express 5 里 app.use('*', ...) 已失效，直接写无路径中间件。
   // 这里的 NOT_FOUND 只表示"没有这个路由"，不属于 §4.7 的业务错误码。
   app.use((req, res) => {
-    res.status(404).json({ error: { code: 'NOT_FOUND', message: '接口不存在' } })
+    // 与 4xx/5xx 一样带 requestId：前端 ServerError 读的就是这个字段，
+    // 没有它时「接口不存在」这类报障无法对上日志（md/45 L4）
+    res.status(404).json({
+      error: { code: 'NOT_FOUND', message: '接口不存在' },
+      requestId: req.id,
+    })
   })
 
   app.use(errorHandler)
