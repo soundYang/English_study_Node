@@ -83,7 +83,8 @@ Mongo 断开时返回 **503** + `status: "degraded"`，这是唯一的健康判�
 | `MAX_REPAIR_ROUNDS` | 2 | 整篇路径的用词修正轮 |
 | `MAX_LENGTH_ROUNDS` | 1 | 超长时的压缩轮 |
 | `MAX_EXPAND_ROUNDS` | 0 | 偏短时的补写轮；默认关闭，只记录 `lengthStatus` |
-| `RATE_LIMIT_ENABLED` | 非 test 环境为 true | 只影响 `POST /readings/generate` |
+| `WORD_LIBRARY_LIMIT` | 5000 | 个人词库上限，只对新建计数；合并已有词不受限。`0` = 不限制。超限返回 409 `WORD_LIMIT_REACHED`（md/44） |
+| `RATE_LIMIT_ENABLED` | 非 test 环境为 true | 影响 `POST /readings/generate` 与 `POST /api/words/check` |
 | `RATE_LIMIT_GENERATE` | 20 次/分钟 | 按 IP 计 |
 | `DAILY_QUOTA_ENABLED` | true | 每日额度总开关。前端 `X-Device-Id` 已上线，默认打开；**批量采样实例要显式设 false**，否则网络指纹桶（10 次/天）会把 3100–3102 打成 429 |
 | `DAILY_QUOTA_ACCOUNT` / `_DEVICE` / `_NETWORK` | 3 / 3 / 10 | 账号 / 设备 / 网络指纹的每日次数（md/35） |

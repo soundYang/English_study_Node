@@ -1,12 +1,12 @@
 import { ApiError, ERROR_CODES } from '../../shared/errors.js'
+import { WORD_MAX_LENGTH, WORD_PATTERN } from '../../shared/utils/word-form.js'
 import { resolveBaseForms } from '../../shared/utils/word.js'
 import { getBucket } from './dictionary.loader.js'
 
 const DEFAULT_LIMIT = 8
 const MAX_LIMIT = 20
 const MIN_LIMIT = 1
-const MAX_QUERY_LENGTH = 45
-const WORD_PATTERN = /^[a-z'-]+$/
+const MAX_QUERY_LENGTH = WORD_MAX_LENGTH
 /** 只有够长才做词形还原，否则 "goes" 这种短词的候选噪音太大 */
 const BASE_FORM_MIN_LENGTH = 3
 
@@ -54,7 +54,7 @@ export function searchDictionary({ q, limit }) {
     throw new ApiError(
       400,
       ERROR_CODES.INVALID_QUERY,
-      '查询词只能包含英文字母、连字符和撇号，长度 1–45',
+      `查询词只能包含英文字母、连字符和撇号，长度 1–${WORD_MAX_LENGTH}`,
     )
   }
 

@@ -45,6 +45,13 @@ export const createWordSchema = z.object({
   phonetic: z.unknown().nullish(),
   senses: z.unknown().nullish(),
   meaning: z.string({ error: '释义必须是字符串' }).nullish(),
+  // 重复词处理策略（md/44 §5.3）。默认 auto：占位词升级、同状态幂等，
+  // 需要旧语义（409）的调用方显式传 error
+  onDuplicate: z.enum(['auto', 'skip', 'error'], {
+    error: 'onDuplicate 只能是 auto / skip / error',
+  }).default('auto'),
+  // 顺带返回 counts / total，让前端添加成功后不必整页重拉（md/44 §5.7）
+  includeCounts: z.boolean({ error: 'includeCounts 必须是布尔值' }).default(false),
 })
 
 /**
@@ -58,4 +65,52 @@ export const updateWordSchema = z.object({
   word: z.string({ error: '单词必须是字符串' }).optional(),
   status: z.string({ error: '状态必须是字符串' }).optional(),
   meaning: z.string({ error: '释义必须是字符串' }).optional(),
+})
+
+/** 一次批量导入的上限（md/44 §5.4）。200 条已覆盖「一整课单词」的极端情况 */
+export const MAX_BATCH_WORDS = 200
+/** 粘贴文本上限；express.json 是 64kb，留一半给 JSON 结构 */
+export const MAX_BATCH_TEXT_LENGTH = 32768
+
+const batchWordSchema = z.object({
+  word: z.string({ error: '请填写单词' }),
+  status: z.string().nullish(),
+  meaning: z.string({ error: '释义必须是字符串' }).nullish(),
+  source: z.string().nullish(),
+})
+
+/**
+ * POST /api/words/batch 的请求体。
+ *
+ * `words` 与 `text` 二选一：对象数组适合前端编辑好的表格，
+ * 文本适合从课本 / 生词本直接粘贴。两者都给时以 `words` 为准。
+ */
+export const batchWordsSchema = z
+  .object({
+    words: z
+      .array(batchWordSchema, { error: 'words 必须是数组' })
+      .max(MAX_BATCH_WORDS, `一次最多导入 ${MAX_BATCH_WORDS} 个单词`)
+      .optional(),
+    text: z
+      .string({ error: 'text 必须是字符串' })
+      .max(MAX_BATCH_TEXT_LENGTH, `一次最多粘贴 ${MAX_BATCH_TEXT_LENGTH} 个字符`)
+      .optional(),
+    status: z.string().nullish(),
+    onDuplicate: z.enum(['auto', 'skip', 'error'], {
+      error: 'onDuplicate 只能是 auto / skip / error',
+    }).default('auto'),
+    dryRun: z.boolean({ error: 'dryRun 必须是布尔值' }).default(false),
+  })
+  .refine(
+    (body) => (body.words?.length ?? 0) > 0 || Boolean(body.text?.trim()),
+    { message: '请提供 words 或 text', path: ['words'] },
+  )
+
+/** POST /api/words/check 的请求体；非法单词不报 400，逐条回结果 */
+export const checkWordsSchema = z.object({
+  words: z
+    .array(z.string({ error: 'words 里只能放字符串' }), { error: 'words 必须是数组' })
+    .min(1, '至少提供 1 个单词')
+    .max(MAX_BATCH_WORDS, `一次最多检查 ${MAX_BATCH_WORDS} 个单词`),
+  status: z.string().nullish(),
 })

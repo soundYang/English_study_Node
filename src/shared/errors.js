@@ -35,6 +35,9 @@ export const ERROR_CODES = Object.freeze({
   READONLY_FIELD: 'READONLY_FIELD',
   DICTIONARY_ENTRY_NOT_FOUND: 'DICTIONARY_ENTRY_NOT_FOUND',
   WORD_NOT_FOUND: 'WORD_NOT_FOUND',
+  // 个人词库到上限（md/44 §5.6）。与 WORD_EXISTS 分开：
+  // 前端要提示「去删一些旧词」，而不是「这个词加过了」
+  WORD_LIMIT_REACHED: 'WORD_LIMIT_REACHED',
   READING_NOT_FOUND: 'READING_NOT_FOUND',
   WORD_EXISTS: 'WORD_EXISTS',
   // ——— 基础词表（md/29）：只有 421 个实词可改，功能词 / 日历词 / 缩写只读 ———
@@ -118,6 +121,20 @@ export const conflict = (code, message, field) =>
 // 常用快捷方式，避免调用点漏写 code
 export const wordNotFound = () =>
   notFound(ERROR_CODES.WORD_NOT_FOUND, '单词不存在')
+
+/**
+ * 409：个人词库达到上限（md/44 §5.6）。
+ *
+ * 只在**新建**时检查；合并已有词不受限——否则用户连「把标错的词改回来」都做不了。
+ */
+export const wordLimitReached = (limit) =>
+  new ApiError(
+    409,
+    ERROR_CODES.WORD_LIMIT_REACHED,
+    `个人词库已达上限（${limit} 词），请先删除一些再添加`,
+    'word',
+    { limit },
+  )
 
 export const readingNotFound = () =>
   notFound(ERROR_CODES.READING_NOT_FOUND, '练习不存在')

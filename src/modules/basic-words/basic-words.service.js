@@ -6,6 +6,7 @@ import {
   basicWordReadonly,
   functionWordImmutable,
 } from '../../shared/errors.js'
+import { canonicalWord } from '../../shared/utils/word-form.js'
 import { findEntry } from '../dictionary/dictionary.loader.js'
 import { buildSummary } from '../words/word.dto.js'
 import { getWordRank } from '../words/word-ranks.js'
@@ -33,9 +34,10 @@ import {
 /**
  * 词形与搜索词都先做同样的规范化：去首尾空格 + 转小写。
  * 不截断——截断会让超长输入「意外命中」某个 45 字符的词，宁可查不到给 404。
+ * 规则本身来自 shared/utils/word-form.js，与添加单词共用一份（md/44 §5.1）。
  */
 function normalizeWord(raw) {
-  return String(raw ?? '').trim().toLowerCase()
+  return canonicalWord(raw)
 }
 
 /**

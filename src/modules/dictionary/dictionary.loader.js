@@ -2,14 +2,15 @@ import { readFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { WORD_MAX_LENGTH, WORD_PATTERN } from '../../shared/utils/word-form.js'
+
 const DATA_DIR = resolve(
   dirname(fileURLToPath(import.meta.url)),
   '../../../data/dictionary',
 )
 
 /** 与 POST /words 的词形规则完全一致：先转小写再判 */
-const WORD_PATTERN = /^[a-z'-]+$/
-const MAX_HEADWORD_LENGTH = 45
+const MAX_HEADWORD_LENGTH = WORD_MAX_LENGTH
 const LETTERS = 'abcdefghijklmnopqrstuvwxyz'
 
 /**

@@ -189,12 +189,38 @@ describe('POST /api/words', () => {
     expect(typeof res.body.createdAt).toBe('string')
   })
 
-  it('重复单词 → 409 WORD_EXISTS，field=word', async () => {
+  it('重复单词 + onDuplicate=error → 409 WORD_EXISTS，field=word（旧行为）', async () => {
     await post({ word: 'apple', source: 'manual', meaning: '苹果' })
-    const res = await post({ word: 'APPLE', source: 'manual', meaning: '苹果' })
+    const res = await post({
+      word: 'APPLE',
+      source: 'manual',
+      meaning: '苹果',
+      onDuplicate: 'error',
+    })
 
     expect(res.status).toBe(409)
     expect(res.body.error).toMatchObject({ code: 'WORD_EXISTS', field: 'word' })
+  })
+
+  it('手填但没填释义 → 服务端回查词库补快照（md/44 §5.2）', async () => {
+    const res = await post({ word: 'Abandon', source: 'manual' })
+
+    expect(res.status).toBe(201)
+    expect(res.body).toMatchObject({
+      word: 'abandon',
+      source: 'dictionary',
+      dictionaryId: 'dict_abandon',
+    })
+    expect(res.body.phonetic.uk).toMatch(/\//)
+    expect(res.body.senses.length).toBeGreaterThan(0)
+  })
+
+  it('手填且填了释义 → 尊重用户，仍存 manual', async () => {
+    const res = await post({ word: 'abandon', source: 'manual', meaning: '我的记法' })
+
+    expect(res.status).toBe(201)
+    expect(res.body.source).toBe('manual')
+    expect(res.body.senses).toEqual([{ pos: '', meaning: '我的记法' }])
   })
 
   it('非法字符 and/or → 400，field=word', async () => {
@@ -252,6 +278,160 @@ describe('POST /api/words', () => {
 
     expect(res.status).toBe(400)
     expect(res.body.error.code).toBe('DICTIONARY_ENTRY_NOT_FOUND')
+  })
+})
+
+/**
+ * md/44 §5.3：重复词不再是一条死路。
+ *
+ * 最要紧的不是「200 而不是 409」，而是合并之后**学习进度与用户释义都还在**——
+ * 覆盖掉就是拿一次误操作抹掉几个月的复习记录。
+ */
+describe('重复词合并', () => {
+  it('默认 auto：同状态 → 200 action=kept，库内仍只有一条', async () => {
+    await post({ word: 'apple', source: 'manual', meaning: '苹果' })
+
+    const res = await post({ word: 'apple', source: 'manual', meaning: '苹果' })
+
+    expect(res.status).toBe(200)
+    expect(res.body).toMatchObject({
+      word: 'apple',
+      status: 'learning',
+      duplicate: true,
+      action: 'kept',
+    })
+    expect(await Word.countDocuments({ userId: uid, word: 'apple' })).toBe(1)
+  })
+
+  it('learning → mastered：更新状态，不重置复习时间与曝光次数', async () => {
+    const reviewedAt = new Date('2026-10-01T00:00:00.000Z')
+    const doc = await Word.create({
+      userId: uid,
+      word: 'apple',
+      source: 'manual',
+      status: 'learning',
+      lastReviewedAt: reviewedAt,
+      articleExposureCount: 4,
+    })
+
+    const res = await post({ word: 'apple', status: 'mastered' })
+
+    expect(res.status).toBe(200)
+    expect(res.body).toMatchObject({ status: 'mastered', action: 'updated' })
+
+    const after = await Word.findById(doc._id).lean()
+    expect(after.status).toBe('mastered')
+    expect(after.lastReviewedAt).toEqual(reviewedAt)
+    expect(after.articleExposureCount).toBe(4)
+  })
+
+  it('basic-removed 占位词重新添加 → reactivated，source 不再是不认识', async () => {
+    const reviewedAt = new Date('2026-10-02T00:00:00.000Z')
+    const doc = await Word.create({
+      userId: uid,
+      word: 'apple',
+      status: 'new',
+      source: 'basic-removed',
+      dictionaryId: 'dict_apple',
+      phonetic: { uk: '/ˈæpl/', us: null },
+      senses: [{ pos: 'n.', meaning: '苹果' }],
+      articleExposureCount: 2,
+      lastReviewedAt: reviewedAt,
+    })
+
+    const res = await post({ word: 'apple', status: 'learning' })
+
+    expect(res.status).toBe(200)
+    expect(res.body.action).toBe('reactivated')
+
+    const after = await Word.findById(doc._id).lean()
+    expect(after.status).toBe('learning')
+    expect(after.source).toBe('dictionary')
+    // 移除时写进去的快照还在，不该被清空
+    expect(after.senses).toEqual([{ pos: 'n.', meaning: '苹果' }])
+    expect(after.articleExposureCount).toBe(2)
+    expect(after.lastReviewedAt).toEqual(reviewedAt)
+  })
+
+  it('手填空释义 + 词库命中 → enriched 补快照', async () => {
+    const doc = await Word.create({
+      userId: uid,
+      word: 'abandon',
+      source: 'manual',
+      senses: [],
+    })
+
+    const res = await post({ word: 'abandon' })
+
+    expect(res.status).toBe(200)
+    expect(res.body).toMatchObject({ action: 'enriched', source: 'dictionary' })
+    expect(res.body.senses.length).toBeGreaterThan(0)
+    expect((await Word.findById(doc._id).lean()).dictionaryId).toBe('dict_abandon')
+  })
+
+  it('手填空释义 + 这次带了释义 → 用用户释义补上', async () => {
+    const doc = await Word.create({
+      userId: uid,
+      word: 'gadget',
+      source: 'manual',
+      senses: [],
+    })
+
+    const res = await post({ word: 'gadget', source: 'manual', meaning: '小装置' })
+
+    expect(res.body.action).toBe('enriched')
+    expect(res.body.senses).toEqual([{ pos: '', meaning: '小装置' }])
+    expect((await Word.findById(doc._id).lean()).senses[0].meaning).toBe('小装置')
+  })
+
+  it('已有非空手填释义 → 词库命中也不覆盖', async () => {
+    const doc = await Word.create({
+      userId: uid,
+      word: 'abandon',
+      source: 'manual',
+      senses: [{ pos: '', meaning: '我的记法' }],
+    })
+
+    const res = await post({
+      word: 'abandon',
+      source: 'manual',
+      meaning: '服务端不该用这条',
+    })
+
+    expect(res.body.senses).toEqual([{ pos: '', meaning: '我的记法' }])
+    expect((await Word.findById(doc._id).lean()).senses[0].meaning).toBe('我的记法')
+  })
+
+  it('onDuplicate=skip → 200 且完全不改库', async () => {
+    const doc = await Word.create({
+      userId: uid,
+      word: 'apple',
+      source: 'manual',
+      status: 'learning',
+    })
+
+    const res = await post({ word: 'apple', status: 'mastered', onDuplicate: 'skip' })
+
+    expect(res.status).toBe(200)
+    expect(res.body.action).toBe('kept')
+    expect((await Word.findById(doc._id).lean()).status).toBe('learning')
+  })
+
+  it('includeCounts → counts / total 与列表接口一致', async () => {
+    await post({ word: 'apple', source: 'manual', meaning: '苹果' })
+    const res = await post({
+      word: 'banana',
+      source: 'manual',
+      meaning: '香蕉',
+      includeCounts: true,
+    })
+
+    expect(res.body.total).toBe(2)
+    expect(res.body.counts).toMatchObject({ all: 2, learning: 2 })
+
+    const list = await get({ q: '', status: 'all', page: 1, pageSize: 10 })
+    expect(res.body.counts).toEqual(list.body.counts)
+    expect(res.body.total).toBe(list.body.total)
   })
 })
 

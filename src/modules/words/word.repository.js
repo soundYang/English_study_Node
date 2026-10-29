@@ -65,12 +65,13 @@ export const wordRepository = {
    * 而页面只关心词表里这 650 个。只选三个字段——列表不展示个人记录里的快照，
    * 释义与音标一律以词库为准（见 basic-words.service 的 toItem）。
    */
-  findByWords(userId, words) {
+  findByWords(userId, words, select = 'word status source') {
     if (!words.length) return Promise.resolve([])
 
-    return Word.find({ userId, word: { $in: words } })
-      .select('word status source')
-      .lean()
+    const query = Word.find({ userId, word: { $in: words } })
+
+    // 传 null 表示「全字段」：批量导入的合并判定要读 senses / phonetic / source
+    return (select ? query.select(select) : query).lean()
   },
 
   findOneByWord(userId, word) {
@@ -120,6 +121,19 @@ export const wordRepository = {
 
   create(data) {
     return Word.create(data)
+  },
+
+  /**
+   * 批量新建成（md/44 §5.4）。`ordered: false` 让一条失败不拦住后面所有条，
+   * 重复由唯一索引报 11000，调用方再按合并策略兜一次。
+   */
+  insertMany(docs) {
+    return Word.insertMany(docs, { ordered: false })
+  },
+
+  /** 批量合并已有词：一次 bulkWrite 代替 N 次 save */
+  bulkUpdate(operations) {
+    return Word.bulkWrite(operations)
   },
 
   save(doc) {

@@ -46,6 +46,10 @@ process.env.TOKEN_BUDGET_ENABLED = 'false'
 process.env.USER_API_KEY_ENABLED = 'false'
 process.env.USER_API_KEY_SECRET = ''
 process.env.USER_API_KEY_SECRET_PREVIOUS = ''
+// 个人词库上限（md/44 §5.6）显式写生产默认值：开发机 .env 里若为调试设成了 10，
+// 「批量导入 20 个词」这类用例会变成一半 409，失败位置跟上限看不出关系。
+// 要验证上限的用例（words-library-limit.test.js）在自己文件顶部改成小值再动态 import。
+process.env.WORD_LIBRARY_LIMIT = '5000'
 
 // 绝大多数用例测的是整篇路径的行为（修正轮、结构错误、失败样本），
 // 打桩也只认识「一次返回整篇文章」的形状。生产默认是 segmented，

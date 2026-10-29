@@ -158,6 +158,9 @@ export const config = Object.freeze({
   minSegmentAcceptance: toNumber('MIN_SEGMENT_ACCEPTANCE', 0.6),
 
   vocabularyThreshold: toNumber('VOCABULARY_THRESHOLD', 20),
+  // 个人词库上限（md/44 §5.6）。生成前 `findVocabulary` 是全量拉取，
+  // 词库过大时白花时间与内存；0 = 不限。5000 远高于真实用量（基础词 650 + 手填）
+  wordLibraryLimit: toNumber('WORD_LIBRARY_LIMIT', 5000),
   // P0 基线：修 1 轮后 4/5 次只剩 1 个违规词，再给一轮的命中率远高于成本。
   // 2 轮意味着最坏情况一次生成调 3 次模型（方案 §12）
   maxRepairRounds: toNumber('MAX_REPAIR_ROUNDS', 2),

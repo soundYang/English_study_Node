@@ -1,16 +1,22 @@
 import mongoose from 'mongoose'
 
+import { config } from '../../config/index.js'
 import {
   ApiError,
   ERROR_CODES,
   badRequest,
   conflict,
+  wordLimitReached,
   wordNotFound,
 } from '../../shared/errors.js'
 import { escapeRegex } from '../../shared/utils/regex.js'
 import { parseOrThrow } from '../../shared/utils/validation.js'
-import { findEntry } from '../dictionary/dictionary.loader.js'
+import {
+  normalizeMeaningOrThrow,
+  normalizeWordOrThrow,
+} from '../../shared/utils/word-form.js'
 import { toWordDto } from './word.dto.js'
+import { buildCreatePayload, resolveDuplicate } from './word-import.js'
 import { getWordRank } from './word-ranks.js'
 import { wordRepository as repo } from './word.repository.js'
 import {
@@ -20,43 +26,8 @@ import {
   updateWordSchema,
 } from './word.schema.js'
 
-const WORD_MAX_LENGTH = 45
-const WORD_PATTERN = /^[a-z'-]+$/
-/** 手填释义上限；词库义项不受这个限制（apt 有 163 字） */
-const MANUAL_MEANING_MAX_LENGTH = 100
 /** PATCH 时不允许修改的字段 */
 const READONLY_FIELDS = ['source', 'dictionaryId', 'phonetic', 'senses']
-
-/** 去首尾空格 + 转小写，再按词形规则校验 */
-function normalizeWord(raw) {
-  const word = String(raw).trim().toLowerCase()
-
-  if (
-    word.length === 0 ||
-    word.length > WORD_MAX_LENGTH ||
-    !WORD_PATTERN.test(word)
-  ) {
-    throw badRequest(
-      '单词只能包含英文字母、连字符和撇号，且不超过 45 个字符',
-      'word',
-    )
-  }
-
-  return word
-}
-
-function normalizeMeaning(raw) {
-  const meaning = String(raw ?? '').trim()
-
-  if (meaning.length > MANUAL_MEANING_MAX_LENGTH) {
-    throw badRequest(
-      `释义不能超过 ${MANUAL_MEANING_MAX_LENGTH} 个字符`,
-      'meaning',
-    )
-  }
-
-  return meaning
-}
 
 /**
  * GET /api/words
@@ -96,91 +67,168 @@ export async function listWords({ userId, query }) {
         })
 
   const rows = await repo.countByStatus(userId)
-  const counts = { all: 0, mastered: 0, learning: 0, new: 0 }
-  for (const row of rows) {
-    if (row._id in counts) counts[row._id] = row.n
-    counts.all += row.n
-  }
 
   return {
     items: items.map(toWordDto),
     total,
     page: currentPage,
     pageSize,
-    counts,
+    counts: foldCounts(rows),
   }
 }
 
-/** POST /api/words */
+/**
+ * 把 `countByStatus` 的聚合结果折成四个键。
+ *
+ * `all` 是求和而**不是**一次单独 count：两个数字走两次查询，
+ * 中间有写入时会出现 all ≠ 三档之和，页面的自检不变量就破了。
+ */
+function foldCounts(rows) {
+  const counts = { all: 0, mastered: 0, learning: 0, new: 0 }
+
+  for (const row of rows) {
+    if (row._id in counts) counts[row._id] = row.n
+    counts.all += row.n
+  }
+
+  return counts
+}
+
+/** 词库全量快照（`includeCounts` 用，md/44 §5.7） */
+async function librarySnapshot(userId) {
+  const counts = foldCounts(await repo.countByStatus(userId))
+
+  return { counts, total: counts.all }
+}
+
+/**
+ * POST /api/words
+ *
+ * 返回 `{ created, dto }`：`created=false` 表示走的是重复词合并（HTTP 200），
+ * `created=true` 是新建（HTTP 201）。响应体本身仍是扁平 WordDto——
+ * 前端 `result.item.word` 依赖它，不能改成信封（md/44 §3.1）。
+ */
 export async function createWord({ userId, body }) {
   const parsed = parseOrThrow(createWordSchema, body)
-  const word = normalizeWord(parsed.word)
+  const word = normalizeWordOrThrow(parsed.word)
 
   // source 只认 dictionary，其它一律按 manual
   const source = parsed.source === 'dictionary' ? 'dictionary' : 'manual'
-  // status 非法回落 learning，不报错（契约 §3.2 第 7 条）
-  const status = WORD_STATUSES.includes(parsed.status)
-    ? parsed.status
-    : 'learning'
-
-  let payload
-
-  if (source === 'dictionary') {
-    // 以服务端词库为准：忽略请求体里的 phonetic / senses
-    const entry = findEntry(word)
-    if (!entry || !entry.senses?.length) {
-      throw new ApiError(
-        400,
-        ERROR_CODES.DICTIONARY_ENTRY_NOT_FOUND,
-        '词库中没有这个单词',
-      )
-    }
-
-    payload = {
-      userId,
-      word,
-      status,
-      source,
-      dictionaryId: entry.id ?? null,
-      phonetic: {
-        uk: entry.phonetic?.uk ?? null,
-        us: entry.phonetic?.us ?? null,
-      },
-      senses: entry.senses.map((sense) => ({
-        pos: sense.pos ?? '',
-        meaning: sense.meaning,
-      })),
-    }
-  } else {
-    const meaning = normalizeMeaning(parsed.meaning)
-
-    payload = {
-      userId,
-      word,
-      status,
-      source: 'manual',
-      dictionaryId: null,
-      phonetic: null,
-      senses: meaning ? [{ pos: '', meaning }] : [],
-    }
+  // 只有手填分支会用到释义；dictionary 分支忽略请求体（契约 §3.2 第 4 条）
+  const meaning = source === 'manual'
+    ? normalizeMeaningOrThrow(parsed.meaning)
+    : ''
+  const options = {
+    userId,
+    word,
+    status: parsed.status,
+    meaning,
+    onDuplicate: parsed.onDuplicate,
+    includeCounts: parsed.includeCounts,
   }
 
-  // 词频排名两个分支都要写：手填词与源表里没有的词（an / yourselves）查不到，存 null
-  payload.cocaRank = getWordRank(word)
+  const existing = await repo.findOneByWord(userId, word)
+  if (existing) return resolveExistingWord({ ...options, existing })
 
-  if (await repo.existsByWord(userId, word)) {
+  await assertLibraryHasRoom(userId)
+
+  const payload = buildCreatePayload({
+    userId,
+    word,
+    status: parsed.status,
+    source,
+    meaning,
+  })
+
+  try {
+    const doc = await repo.create(payload)
+
+    return {
+      created: true,
+      dto: await decorate(toWordDto(doc), { action: 'created', ...options }),
+    }
+  } catch (err) {
+    if (err?.code !== 11000) throw err
+
+    // 并发下两个请求同时过了上面的存在检查，唯一索引兜底成功后
+    // 不能再直接 409：串行请求看到的是合并结果，并行也必须一致
+    const raced = await repo.findOneByWord(userId, word)
+    if (!raced) {
+      throw conflict(ERROR_CODES.WORD_EXISTS, '这个单词已经添加过了', 'word')
+    }
+
+    return resolveExistingWord({ ...options, existing: raced })
+  }
+}
+
+/** 已存在词的统一出口：按策略返回原样 / 合并 / 409 */
+async function resolveExistingWord({
+  userId,
+  existing,
+  status,
+  meaning,
+  onDuplicate,
+  includeCounts,
+}) {
+  if (onDuplicate === 'error') {
     throw conflict(ERROR_CODES.WORD_EXISTS, '这个单词已经添加过了', 'word')
   }
 
-  try {
-    return toWordDto(await repo.create(payload))
-  } catch (err) {
-    // 并发下两个请求同时过了上面的 exists 检查，靠唯一索引兜底
-    if (err?.code === 11000) {
-      throw conflict(ERROR_CODES.WORD_EXISTS, '这个单词已经添加过了', 'word')
+  if (onDuplicate === 'skip') {
+    return {
+      created: false,
+      dto: await decorate(toWordDto(existing), {
+        action: 'kept',
+        userId,
+        includeCounts,
+      }),
     }
-    throw err
   }
+
+  const { action, update } = resolveDuplicate(existing, { status, meaning })
+
+  if (update) {
+    existing.set(update)
+    await repo.save(existing)
+  }
+
+  return {
+    created: false,
+    dto: await decorate(toWordDto(existing), {
+      action,
+      userId,
+      includeCounts,
+    }),
+  }
+}
+
+/**
+ * 给 DTO 补合并信息（只出现在创建响应里，列表接口不受影响）。
+ *
+ * `duplicate` 单独给一个布尔：前端不该靠 action 字面量判断
+ * 「这次是不是新词」——action 以后可能加值。
+ */
+async function decorate(dto, { action, userId, includeCounts }) {
+  const result = { ...dto, action, duplicate: action !== 'created' }
+
+  if (includeCounts) {
+    const { counts, total } = await librarySnapshot(userId)
+    result.counts = counts
+    result.total = total
+  }
+
+  return result
+}
+
+/**
+ * 词库上限。只拦新建——合并已有词不增加条数，
+ * 否则用户在满库时连「把标错的词改回来」都做不到。
+ */
+async function assertLibraryHasRoom(userId) {
+  const limit = config.wordLibraryLimit
+  if (!limit || limit <= 0) return
+
+  if ((await repo.count({ userId })) >= limit) throw wordLimitReached(limit)
 }
 
 /**
@@ -223,9 +271,11 @@ export async function updateWord({ userId, id, body }) {
   }
 
   const nextWord =
-    parsed.word !== undefined ? normalizeWord(parsed.word) : doc.word
+    parsed.word !== undefined ? normalizeWordOrThrow(parsed.word) : doc.word
   const nextMeaning =
-    parsed.meaning !== undefined ? normalizeMeaning(parsed.meaning) : undefined
+    parsed.meaning !== undefined
+      ? normalizeMeaningOrThrow(parsed.meaning)
+      : undefined
 
   if (parsed.status !== undefined) doc.status = parsed.status
 
