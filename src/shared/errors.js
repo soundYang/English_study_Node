@@ -81,6 +81,16 @@ export const ERROR_CODES = Object.freeze({
   // 与 QUOTA_EXCEEDED 分开：那个是「你个人今天用完了」，等 0 点就恢复；
   // 这个是「全站免费额度到顶了」，等到明天也不会恢复，必须换自己的 API Key
   FREE_BUDGET_EXHAUSTED: 'FREE_BUDGET_EXHAUSTED',
+  // ——— 管理员后台（md/37）———
+  // 与 AUTH_REQUIRED 分开：前端拿用户令牌打管理端时必须能分辨
+  // 「没登录」和「登的是用户、不是管理员」，否则会静默跳转到登录页而不是报错
+  ADMIN_AUTH_REQUIRED: 'ADMIN_AUTH_REQUIRED',
+  // 登录失败**不区分**用户名错与密码错（少给爆破者一个字节的信息）
+  ADMIN_AUTH_FAILED: 'ADMIN_AUTH_FAILED',
+  ADMIN_USER_NOT_FOUND: 'ADMIN_USER_NOT_FOUND',
+  FEEDBACK_TOO_SHORT: 'FEEDBACK_TOO_SHORT',
+  FEEDBACK_TOO_LONG: 'FEEDBACK_TOO_LONG',
+  FEEDBACK_NOT_FOUND: 'FEEDBACK_NOT_FOUND',
   INTERNAL_ERROR: 'INTERNAL_ERROR',
 })
 
@@ -396,4 +406,58 @@ export const freeBudgetExhausted = ({ limitTokens, usedTokens }) =>
     '免费生成额度已用完，请接入自己的 API Key 后继续使用',
     '',
     { limitTokens, usedTokens },
+  )
+
+// ——— 管理员后台（md/37）———
+
+/** 401：没带管理员令牌 / 令牌无效 / 已过期 */
+export const adminAuthRequired = () =>
+  new ApiError(401, ERROR_CODES.ADMIN_AUTH_REQUIRED, '管理员登录已失效，请重新登录')
+
+/**
+ * 401：账号或密码错。
+ * **故意不区分**两种情况——区分等于告诉爆破者「用户名对了」。
+ */
+export const adminAuthFailed = () =>
+  new ApiError(401, ERROR_CODES.ADMIN_AUTH_FAILED, '账号或密码不正确')
+
+/** 404：用户不存在（dataKey 拼错或用户已被删） */
+export const adminUserNotFound = () =>
+  notFound(ERROR_CODES.ADMIN_USER_NOT_FOUND, '用户不存在')
+
+export const feedbackNotFound = () =>
+  notFound(ERROR_CODES.FEEDBACK_NOT_FOUND, '反馈不存在')
+
+/**
+ * 400：反馈内容太短 / 太长。
+ *
+ * 不复用 `badRequest`（INVALID_REQUEST）：前端要把提示挂到输入框下面，
+ * 而且要显示「还差几个字」这类计数，单独的码更好分支。
+ */
+export const feedbackTooShort = (minLength) =>
+  new ApiError(
+    400,
+    ERROR_CODES.FEEDBACK_TOO_SHORT,
+    `反馈内容至少 ${minLength} 个字`,
+    'content',
+    { minLength },
+  )
+
+export const feedbackTooLong = (maxLength) =>
+  new ApiError(
+    400,
+    ERROR_CODES.FEEDBACK_TOO_LONG,
+    `反馈内容最多 ${maxLength} 个字`,
+    'content',
+    { maxLength },
+  )
+
+/** 429：同一设备一天最多提交 5 条反馈（md/37 §5.1） */
+export const feedbackFlood = (limit) =>
+  new ApiError(
+    429,
+    ERROR_CODES.RATE_LIMITED,
+    `今天提交的反馈太多了（每天最多 ${limit} 条），请明天再来`,
+    '',
+    { limit, scope: 'feedback' },
   )

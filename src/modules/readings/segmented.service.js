@@ -107,6 +107,10 @@ async function generateOneSegment({
   names,
   signal,
   rounds,
+  // 段内每次调用都要记到这个人 / 这个任务头上（md/37 §8 S2）；
+  // 不往这里传的话，分段路径的流水会落到空用户上，后台少掉一半费用
+  userId = '',
+  taskId = null,
   // 补段模式：这次已经是同一个空槽的第二次机会，只给一轮，失败就认输——
   // 它刚走完一整条重写链，再走一遍是重复烧钱。
   singleAttempt = false,
@@ -143,6 +147,8 @@ async function generateOneSegment({
       signal,
       rounds,
       temperature: config.segmentTemperature,
+      userId,
+      taskId,
     })
 
     text = parseSegmentText(response.content)
@@ -307,6 +313,10 @@ export async function generateSegmented({
   names,
   signal,
   rounds,
+  // token 流水归属（md/37）：整篇与分段两个策略必须同口径，
+  // 否则后台看到的费用会少掉分段那一半
+  userId = '',
+  taskId = null,
   questionCount,
   range,
   level,
@@ -376,6 +386,8 @@ export async function generateSegmented({
       names,
       signal,
       rounds,
+      userId,
+      taskId,
       singleAttempt: refill,
     })
 
@@ -514,6 +526,8 @@ export async function generateSegmented({
     signal,
     rounds,
     temperature: config.segmentTemperature,
+    userId,
+    taskId,
   })
 
   const parsed = parseFinish(finish.content)

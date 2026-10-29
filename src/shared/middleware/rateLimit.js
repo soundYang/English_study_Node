@@ -22,13 +22,22 @@ import { ApiError, ERROR_CODES } from '../errors.js'
  * 与生成限流共用一个实现：响应头格式、错误形状、测试开关都必须一致，
  * 三份拷贝迟早会长出三种行为。
  *
- * @param {{ windowMs: number, limit: number, message: string, enabled?: boolean }} options
+ * @param {{
+ *   windowMs: number,
+ *   limit: number,
+ *   message: string,
+ *   enabled?: boolean,
+ *   skipSuccessfulRequests?: boolean,
+ * }} options
  */
 export function createIpLimiter({
   windowMs,
   limit,
   message,
   enabled = config.rateLimitEnabled,
+  // 管理员登录用：只数失败次数。成功登录不占配额，
+  // 否则同一个人一天登几次就会被自己的正常操作锁住
+  skipSuccessfulRequests = false,
 }) {
   return rateLimit({
     windowMs,
@@ -36,6 +45,7 @@ export function createIpLimiter({
     standardHeaders: 'draft-7',
     legacyHeaders: false,
     skip: () => !enabled,
+    skipSuccessfulRequests,
     handler: (req, res, next) => {
       next(
         new ApiError(429, ERROR_CODES.RATE_LIMITED, message, '', {

@@ -25,6 +25,9 @@ Word Reading 的 API 服务：Express 5 + MongoDB + 本地 COCA 词库 + DeepSee
 | MongoDB | 7.x | 本地 `mongod` 或 `docker run -d -p 27017:27017 mongo:7` |
 | DeepSeek Key | — | 只有生成接口需要；其它接口没有 key 也能跑 |
 
+**MongoDB 必须先于后端启动**（`mongod` 没装成服务时，关掉它的终端就会停）。连库失败时
+启动会直接退出；已启动后断开则 `/api/health` 返回 503 `degraded`——先看这一项，再怀疑前端网络。
+
 ```bash
 npm i
 cp .env.example .env        # Windows: copy .env.example .env
@@ -61,7 +64,7 @@ Mongo 断开时返回 **503** + `status: "degraded"`，这是唯一的健康判�
 | 变量 | 默认 | 什么时候要改 |
 | ---- | ---- | ------------ |
 | `PORT` | 3000 | 本机已有服务占用时（测试实例习惯用 3100–3102） |
-| `CLIENT_ORIGIN` | `http://localhost:5173` | 前端换了地址。**多个用逗号分隔**（局域网联调写 `http://localhost:5173,http://192.168.x.x:5173`），结尾斜杠会被忽略 |
+| `CLIENT_ORIGIN` | `http://localhost:5173,http://127.0.0.1:5173` | 前端换了地址。**多个用逗号分隔**（局域网联调写 `http://localhost:5173,http://127.0.0.1:5173,http://192.168.x.x:5173`），结尾斜杠会被忽略。按源精确匹配：`localhost` 与 `127.0.0.1`、vite 打印的每个网卡 IP 都是不同的源，漏配就会 `ERR_FAILED` + 页面「网络错误」 |
 | `MONGODB_URI` | — | **必填**，缺了进程直接退出并提示 |
 | `DEFAULT_USER_ID` | `local-user` | MVP 无登录，所有请求归属它；采样脚本会改成 fixture 用户 |
 | `DEEPSEEK_API_KEY` | 空 | 不填也能启动，但生成接口会 502 |
@@ -82,6 +85,8 @@ Mongo 断开时返回 **503** + `status: "degraded"`，这是唯一的健康判�
 | `TRUST_PROXY` | false | 部署在 nginx / CDN 后面时必须配（`1` 或 `loopback`），否则 `req.ip` 全是反代地址 |
 | `TOKEN_BUDGET_ENABLED` | true | 全局免费池总开关；到顶后所有生成返回 503（md/36） |
 | `FREE_TOKEN_BUDGET` | 200000000 | 免费池总量（token）。到顶是**永久停服**，不是每日恢复 |
+| `ADMIN_USERNAME` | 空 | 管理员账号（只有一个）。留空则 `/api/admin/*` 整体 404（md/37） |
+| `ADMIN_PASSWORD_HASH` | 空 | scrypt 哈希，用 `node scripts/hash-admin-password.mjs '密码'` 生成；明文永不入库 |
 
 `MAX_UNKNOWN_WORDS` 默认留空：生词预算按难度取（easy 0 / medium 3 / hard 5）。
 显式设置会把它变成**全局覆盖**，三档压成同一个数，只用于调试与回放对比。
@@ -138,6 +143,8 @@ node scripts/build-word-ranks.mjs        # 生成 data/word-ranks.json
 | `node scripts/summarize-runs.mjs` | 只读汇总：成功率、P95、token、费用 | 只读 |
 | `npm run replay` | 用离线夹具回放词表校验，验证「改校验器没引入回归」 | 只读 |
 | `npm run calibrate` | 诊断历史成功正文的表外词分布；门槛数字已作废，现行值看 `capacity-table.js` | 只读 |
+| `node scripts/hash-admin-password.mjs '密码'` | 生成 `ADMIN_PASSWORD_HASH`，只打印可直接粘进 `.env` 的一行（md/37） | 只读，不打印明文 |
+| `node scripts/backfill-token-usage.mjs` | 把历史 `readings` / `generationfailures` 的 token 写成 `legacy` 流水；**默认 dry-run**，`--yes` 才写 | 写库；按 `(userId, totalTokens, createdAt)` 判重，可重复执行 |
 
 **费用提示**：所有价格按 token 计，DeepSeek 牌价会变，代码里只有默认值。
 `summarize-runs.mjs` 支持 `PRICE_CACHE_HIT` / `PRICE_CACHE_MISS` / `PRICE_OUTPUT`
@@ -160,6 +167,9 @@ src/
     readings/           生成编排、分段闭环、校验、判分、历史
     quota/              每日额度：账号 / 设备 / 网络指纹三档计数（md/35）
     budget/             全局免费 token 池：每次模型调用累加，到顶即停（md/36）
+    usage/              token 流水（每次模型调用一条，按用户 / 任务 / 天归类，md/37）
+    feedback/           用户反馈：用户侧提交 + 管理端回复（md/37）
+    admin/              管理员后台：单账号鉴权 + 只读用户台账（md/37）
   tests/                vitest（每个文件独立内存 Mongo）
 data/                   词库、三档基础词表、不规则词形、词频排名
 scripts/                构建、采样、回放、清理
@@ -179,6 +189,10 @@ md/                     设计、实施、限制与缺陷文档
 | 生成 429 `RATE_LIMITED` | 同一 IP 超过 20 次/分 | 等窗口结束；批量脚本要设 `RATE_LIMIT_ENABLED=false` |
 | 生成 429 `QUOTA_EXCEEDED` | 当天额度用完（账号、设备或网络指纹任一档） | 等北京时间 0 点；`details.scope` 说明是哪一档，`Retry-After` 是到重置的秒数 |
 | 生成 503 `FREE_BUDGET_EXHAUSTED` | 全局免费池（`FREE_TOKEN_BUDGET`）用完了 | **不会自己恢复**：加预算（改 `.env` 或调计数器）后重启；`details` 里有上限与已用量 |
+| `/api/admin/*` 一律 404 | 没配 `ADMIN_USERNAME` 或 `ADMIN_PASSWORD_HASH` | 生成哈希写进 `.env` 后**重启**；改密码同样要重启（md/37 §2.1） |
+| 管理端 401 `ADMIN_AUTH_REQUIRED` | 没带管理员令牌 / 过期（12 小时）/ 登出过 | 重新登录；用户令牌与管理端令牌不通用 |
+| 管理端登录 429 | 15 分钟内失败 5 次 / 同一 IP | 等窗口结束；成功登录不占配额 |
+| 用户反馈 429 `RATE_LIMITED`（`scope=feedback`） | 同一设备当天已提交 5 条 | 明天再来；计数按北京时间自然日 |
 | 生成 422 `VOCABULARY_TOO_SMALL` | 已知词不够写这么长（门槛随篇幅走，见 `capacity-table.js` 的 `minKnownFor`） | 缩篇幅或加词；这是预期拦截，不是故障 |
 | 任务变成 `failed` + `TASK_INTERRUPTED` | 执行实例失联（重启 / kill -9 / OOM），心跳过期后被回收 | 调 `POST /generate/tasks/:id/retry`：已收下的段会复用，只补失败的段（md/31 §11） |
 | 生成 400 `final_mode_locked` | hard 写 601–1000 词，但个人词库不足 3000 | 继续攒词；解锁后上限从 600 抬到 1000（md/30 §2.2） |

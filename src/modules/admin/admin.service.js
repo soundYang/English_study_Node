@@ -1,0 +1,450 @@
+import { randomBytes, timingSafeEqual } from 'node:crypto'
+
+import { config } from '../../config/index.js'
+import { adminAuthFailed, adminUserNotFound } from '../../shared/errors.js'
+import { logger } from '../../shared/logger.js'
+import { hashToken } from '../auth/auth.service.js'
+import { getDummyHash, verifyPassword } from '../auth/password.js'
+import { getProfileStats } from '../auth/profile.stats.js'
+import { User } from '../auth/user.model.js'
+import { getBudgetStatus } from '../budget/budget.service.js'
+import { Feedback } from '../feedback/feedback.model.js'
+import { Quota } from '../quota/quota.model.js'
+import { quotaDay } from '../quota/quota.service.js'
+import { GenerationFailure } from '../readings/generation-failure.model.js'
+import { measureKnownVocabulary } from '../readings/level-limits.js'
+import { Reading } from '../readings/reading.model.js'
+import { LEVELS } from '../readings/reading.schema.js'
+import {
+  emptyTokenBuckets,
+  tokenBreakdownByUsers,
+  tokenBreakdownForUser,
+} from '../usage/token-usage.service.js'
+import { TokenUsage } from '../usage/token-usage.model.js'
+import { Word } from '../words/word.model.js'
+import { wordRepository } from '../words/word.repository.js'
+import { AdminSession } from './admin.model.js'
+
+/**
+ * 管理员后台的服务层（md/37）。
+ *
+ * 两块：单账号鉴权 + 只读的用户台账。台账的所有数字都必须来自
+ * 「用户个人中心用的那套函数」，不能另写一遍——两套口径三个月后必然分叉，
+ * 到时候管理员看到的数字和用户看到的对不上，谁也说不清哪个是真的。
+ */
+
+/** 12 小时。管理端是低频后台，没必要给 30 天 */
+export const ADMIN_TOKEN_TTL_SECONDS = 12 * 60 * 60
+
+/** 两项都配置了才挂载 `/api/admin/*`，否则整体 404（md/37 §2.1） */
+export function isAdminConfigured() {
+  return Boolean(config.adminUsername && config.adminPasswordHash)
+}
+
+/** 长度不同的字符串直接算不相等，避免 timingSafeEqual 抛错 */
+function safeEqual(left, right) {
+  const a = Buffer.from(String(left))
+  const b = Buffer.from(String(right))
+
+  if (a.length !== b.length) return false
+
+  return timingSafeEqual(a, b)
+}
+
+/**
+ * 管理员登录。
+ *
+ * 用户名错时也要跑一次 scrypt（用陪跑哈希），否则响应时间会告诉爆破者
+ * 「用户名对了，只是密码错」——用户侧登录早就这么做了，这里保持一致。
+ */
+export async function loginAdmin({ username = '', password = '', ip = '', userAgent = '' }) {
+  if (!isAdminConfigured()) throw adminAuthFailed()
+
+  const usernameOk = safeEqual(username, config.adminUsername)
+  const hash = usernameOk ? config.adminPasswordHash : await getDummyHash()
+  const passwordOk = await verifyPassword(password, hash)
+
+  if (!usernameOk || !passwordOk) {
+    logger.warn({ ip, username: String(username).slice(0, 32) }, 'admin login failed')
+    throw adminAuthFailed()
+  }
+
+  const token = randomBytes(32).toString('base64url')
+  const expiresAt = new Date(Date.now() + ADMIN_TOKEN_TTL_SECONDS * 1000)
+
+  await AdminSession.create({
+    username: config.adminUsername,
+    tokenHash: hashToken(token),
+    expiresAt,
+    ip: String(ip ?? '').slice(0, 64),
+    userAgent: String(userAgent ?? '').slice(0, 200),
+  })
+
+  logger.info({ admin: config.adminUsername, ip }, 'admin login')
+
+  return { token, expiresAt }
+}
+
+/** 解析令牌；无效一律返回 null（与用户侧同一原则：解析不抛错） */
+export async function resolveAdminToken(token) {
+  if (!token) return null
+
+  return AdminSession.findOne({
+    tokenHash: hashToken(token),
+    expiresAt: { $gt: new Date() },
+  }).lean()
+}
+
+export async function logoutAdmin(token) {
+  if (token) await AdminSession.deleteOne({ tokenHash: hashToken(token) })
+  return { ok: true }
+}
+
+export function toAdminDto(session) {
+  return {
+    username: session.username,
+    expiresAt: session.expiresAt,
+  }
+}
+
+// ——— 用户台账 ———
+
+const DAY_MS = 24 * 60 * 60 * 1000
+
+/** 北京时间今天的 0 点（与额度分桶同一个时区） */
+function startOfToday(now = new Date()) {
+  return new Date(Date.parse(`${quotaDay(now)}T00:00:00+08:00`))
+}
+
+function escapeRegex(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+/** `13800000000` → `138****8000`；空值保持 null，前端显示「未填写」 */
+export function maskPhone(phone) {
+  if (!phone) return null
+
+  const value = String(phone)
+
+  // 短号不脱敏会变成满屏星号，反而看不出是号码
+  if (value.length <= 7) return value
+
+  return `${value.slice(0, 3)}****${value.slice(-4)}`
+}
+
+function buildUserFilter(q) {
+  if (!q?.trim()) return {}
+
+  const rx = new RegExp(escapeRegex(q.trim()), 'i')
+
+  return { $or: [{ username: rx }, { nickname: rx }, { phone: rx }] }
+}
+
+function sortSpecFor(sort) {
+  if (sort === 'lastLoginAt') return { lastLoginAt: -1, _id: -1 }
+  if (sort === 'username') return { usernameLower: 1, _id: 1 }
+
+  return { createdAt: -1, _id: -1 }
+}
+
+/**
+ * 按 token / 文章数排序时先排 dataKey，再取那一页的用户。
+ *
+ * 这两项不是 users 文档上的字段，没法用 Mongo 的 sort 直接分页；
+ * 全表聚合一次（几千用户，毫秒级）比给 users 加冗余计数字段更不容易出错。
+ */
+async function rankDataKeysBy(sort) {
+  const group = sort === 'tokens'
+    ? [{ $group: { _id: '$userId', value: { $sum: '$totalTokens' } } }]
+    : [{ $group: { _id: '$userId', value: { $sum: 1 } } }]
+
+  const model = sort === 'tokens' ? TokenUsage : Reading
+  const rows = await model.aggregate([...group, { $sort: { value: -1 } }])
+
+  return rows.map((row) => row._id)
+}
+
+/** 一页用户的基础指标；四组查询并发 */
+async function attachMetrics(users, now = new Date()) {
+  if (users.length === 0) return []
+
+  const keys = users.map((user) => user.dataKey)
+  const day = quotaDay(now)
+  const today = startOfToday(now)
+
+  const [wordRows, readingRows, tokenMap, quotaRows, failureRows] = await Promise.all([
+    // 与 wordRepository.countVocabulary 同口径：只算 learning / mastered。
+    // basic-removed 是 status=new 的占位行，天然被排除
+    Word.aggregate([
+      { $match: { userId: { $in: keys }, status: { $in: ['learning', 'mastered'] } } },
+      { $group: { _id: '$userId', count: { $sum: 1 } } },
+    ]),
+    Reading.aggregate([
+      { $match: { userId: { $in: keys } } },
+      {
+        $group: {
+          _id: '$userId',
+          generated: { $sum: 1 },
+          completed: { $sum: { $cond: [{ $eq: ['$status', 'submitted'] }, 1, 0] } },
+          // 分母用真实题数，与 profile.stats 同口径
+          answered: {
+            $sum: {
+              $cond: [
+                { $eq: ['$status', 'submitted'] },
+                { $size: { $ifNull: ['$questions', []] } },
+                0,
+              ],
+            },
+          },
+          correct: {
+            $sum: {
+              $cond: [
+                { $eq: ['$status', 'submitted'] },
+                { $ifNull: ['$correctCount', 0] },
+                0,
+              ],
+            },
+          },
+          today: { $sum: { $cond: [{ $gte: ['$createdAt', today] }, 1, 0] } },
+        },
+      },
+    ]),
+    tokenBreakdownByUsers(keys),
+    Quota.find({ key: { $in: keys.map((key) => `acct:${key}`) }, day }).lean(),
+    GenerationFailure.aggregate([
+      { $match: { userId: { $in: keys } } },
+      { $group: { _id: '$userId', count: { $sum: 1 } } },
+    ]),
+  ])
+
+  const words = new Map(wordRows.map((row) => [row._id, row.count]))
+  const readings = new Map(readingRows.map((row) => [row._id, row]))
+  const quotas = new Map(
+    quotaRows.map((row) => [String(row.key).replace(/^acct:/, ''), row.used]),
+  )
+  const failures = new Map(failureRows.map((row) => [row._id, row.count]))
+
+  return users.map((user) => {
+    const stats = readings.get(user.dataKey) ?? {
+      generated: 0,
+      completed: 0,
+      answered: 0,
+      correct: 0,
+      today: 0,
+    }
+    const accuracy =
+      stats.answered > 0 ? Math.round((stats.correct / stats.answered) * 100) : 0
+    // 开关关闭时库里没有记录，必须报 null 而不是 0/3（md/37 §3.6）
+    const used = config.dailyQuotaEnabled ? (quotas.get(user.dataKey) ?? 0) : null
+
+    return {
+      dataKey: user.dataKey,
+      username: user.username,
+      nickname: user.nickname || user.username,
+      phone: maskPhone(user.phone),
+      createdAt: user.createdAt,
+      lastLoginAt: user.lastLoginAt ?? null,
+      vocabulary: { personalWords: words.get(user.dataKey) ?? 0 },
+      readings: {
+        generated: stats.generated,
+        completed: stats.completed,
+        today: stats.today,
+      },
+      questions: { answered: stats.answered, correct: stats.correct, accuracy },
+      tokens: tokenMap.get(user.dataKey) ?? emptyTokenBuckets(),
+      failures: { count: failures.get(user.dataKey) ?? 0 },
+      quota: {
+        enabled: config.dailyQuotaEnabled,
+        limit: config.dailyQuotaEnabled ? config.dailyQuotaAccount : null,
+        used,
+        remaining: used === null ? null : Math.max(0, config.dailyQuotaAccount - used),
+        day,
+      },
+    }
+  })
+}
+
+/**
+ * GET /api/admin/users
+ *
+ * 按 token / 文章数排序时走「先排名再取页」；其余排序交给 Mongo。
+ */
+export async function listUsers({ q = '', page = 1, size = 20, sort = 'createdAt' } = {}) {
+  const filter = buildUserFilter(q)
+  const skip = (page - 1) * size
+
+  if (sort === 'tokens' || sort === 'readings') {
+    const matched = await User.find(filter).select('dataKey').lean()
+    const allowed = new Set(matched.map((user) => user.dataKey))
+    const ranked = (await rankDataKeysBy(sort)).filter((key) => allowed.has(key))
+
+    // 没有任何记录的用户排在最后：只按 createdAt 补在队尾，不影响前几页
+    if (ranked.length < allowed.size) {
+      const rest = await User.find(
+        { dataKey: { $in: [...allowed].filter((key) => !ranked.includes(key)) } },
+      )
+        .select('dataKey')
+        .sort({ createdAt: -1 })
+        .lean()
+
+      ranked.push(...rest.map((user) => user.dataKey))
+    }
+
+    const pageKeys = ranked.slice(skip, skip + size)
+    const users = await User.find({ dataKey: { $in: pageKeys } }).lean()
+    const byKey = new Map(users.map((user) => [user.dataKey, user]))
+    const ordered = pageKeys.map((key) => byKey.get(key)).filter(Boolean)
+
+    return { total: ranked.length, page, size, items: await attachMetrics(ordered) }
+  }
+
+  const [users, total] = await Promise.all([
+    User.find(filter).sort(sortSpecFor(sort)).skip(skip).limit(size).lean(),
+    User.countDocuments(filter),
+  ])
+
+  return { total, page, size, items: await attachMetrics(users) }
+}
+
+/**
+ * GET /api/admin/users/:dataKey
+ *
+ * 比列表多：全量手机号、三档 knownWords、最近 20 篇、失败 Top 3、
+ * token 明细（成功 / 失败 / 取消 / 同步 / 历史）。
+ */
+export async function getUserDetail({ dataKey, now = new Date() }) {
+  const user = await User.findOne({ dataKey }).lean()
+  if (!user) throw adminUserNotFound()
+
+  const [words, newWords, stats, quotaDoc, recent, failures, todayCount, failureTotal] =
+    await Promise.all([
+      wordRepository.findVocabulary(dataKey),
+      wordRepository.findNewWords(dataKey),
+      getProfileStats({ userId: dataKey, now }),
+      Quota.findOne({ key: `acct:${dataKey}`, day: quotaDay(now) }).lean(),
+      Reading.find({ userId: dataKey })
+        .sort({ createdAt: -1, _id: -1 })
+        .limit(20)
+        // 单篇的 aiMeta.totalTokens 只用于诊断，不参与用户总额（§12 第 4 条）
+        .select('level targetWords actualWords status score correctCount questions aiMeta.totalTokens createdAt submittedAt')
+        .lean(),
+      GenerationFailure.aggregate([
+        { $match: { userId: dataKey } },
+        { $group: { _id: '$errorCode', count: { $sum: 1 } } },
+        { $sort: { count: -1 } },
+        { $limit: 3 },
+      ]),
+      Reading.countDocuments({ userId: dataKey, createdAt: { $gte: startOfToday(now) } }),
+      GenerationFailure.countDocuments({ userId: dataKey }),
+    ])
+
+  const learnedWords = words.map((word) => word.word)
+  const removedBasicWords = newWords.map((word) => word.word)
+
+  const knownWords = {}
+  for (const level of LEVELS) {
+    knownWords[level] = measureKnownVocabulary({
+      level,
+      learnedWords,
+      removedBasicWords,
+    }).knownWords
+  }
+
+  const tokens = await tokenBreakdownForUser(dataKey)
+  const used = config.dailyQuotaEnabled ? (quotaDoc?.used ?? 0) : null
+
+  return {
+    dataKey: user.dataKey,
+    username: user.username,
+    nickname: user.nickname || user.username,
+    signature: user.signature ?? '',
+    // 详情页给全量：客服要用它联系用户。访问行为进审计日志
+    phone: user.phone ?? null,
+    createdAt: user.createdAt,
+    lastLoginAt: user.lastLoginAt ?? null,
+    vocabulary: {
+      personalWords: words.length,
+      knownWords,
+    },
+    // 不用 stats.reading.totalTokens：那个口径是 aiMeta 求和，与 tokenusages
+    // 是两套账，混着展示等于把「token 翻倍」的坑摆到管理员面前（§12 第 4 条）
+    readings: {
+      generated: stats.reading.generatedCount,
+      completed: stats.reading.completedCount,
+      today: todayCount,
+      failed: failureTotal,
+    },
+    questions: stats.questions,
+    tokens,
+    quota: {
+      enabled: config.dailyQuotaEnabled,
+      limit: config.dailyQuotaEnabled ? config.dailyQuotaAccount : null,
+      used,
+      remaining: used === null ? null : Math.max(0, config.dailyQuotaAccount - used),
+      day: quotaDay(now),
+      resetAt: new Date(
+        Date.parse(`${quotaDay(now)}T00:00:00+08:00`) + DAY_MS,
+      ),
+    },
+    recentReadings: recent.map((reading) => {
+      const questionCount = Array.isArray(reading.questions) ? reading.questions.length : 0
+      const correctCount = reading.correctCount ?? null
+      const accuracy =
+        reading.status === 'submitted' && questionCount > 0
+          ? Math.round(((correctCount ?? 0) / questionCount) * 100)
+          : null
+
+      return {
+        id: String(reading._id),
+        level: reading.level,
+        targetWords: reading.targetWords,
+        actualWords: reading.actualWords,
+        status: reading.status,
+        score: reading.score ?? null,
+        correctCount,
+        questionCount,
+        accuracy,
+        tokens: reading.aiMeta?.totalTokens ?? 0,
+        createdAt: reading.createdAt,
+        submittedAt: reading.submittedAt ?? null,
+      }
+    }),
+    failureSummary: {
+      total: failures.reduce((sum, row) => sum + row.count, 0),
+      topCodes: failures.map((row) => ({ code: row._id ?? 'UNKNOWN', count: row.count })),
+    },
+  }
+}
+
+/** GET /api/admin/overview */
+export async function getOverview({ now = new Date() } = {}) {
+  const today = startOfToday(now)
+
+  const [
+    totalUsers,
+    activeToday,
+    readingsToday,
+    readingsTotal,
+    feedbackRows,
+    freeBudget,
+  ] = await Promise.all([
+    User.countDocuments({}),
+    User.countDocuments({ lastLoginAt: { $gte: today } }),
+    Reading.countDocuments({ createdAt: { $gte: today } }),
+    Reading.countDocuments({}),
+    Feedback.aggregate([{ $group: { _id: '$status', count: { $sum: 1 } } }]),
+    getBudgetStatus(),
+  ])
+
+  const feedback = { open: 0, replied: 0, closed: 0 }
+  for (const row of feedbackRows) {
+    if (row._id in feedback) feedback[row._id] = row.count
+  }
+
+  return {
+    users: { total: totalUsers, activeToday },
+    readings: { today: readingsToday, total: readingsTotal },
+    tokens: { freeBudget },
+    feedback,
+  }
+}

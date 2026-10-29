@@ -4,11 +4,14 @@ import helmet from 'helmet'
 import pinoHttp from 'pino-http'
 
 import { config } from './config/index.js'
+import adminRoutes from './modules/admin/admin.routes.js'
+import { isAdminConfigured } from './modules/admin/admin.service.js'
 import authRoutes from './modules/auth/auth.routes.js'
 import { requireAuth, requireSession } from './modules/auth/auth.middleware.js'
 import profileRoutes from './modules/auth/profile.routes.js'
 import basicWordRoutes from './modules/basic-words/basic-words.routes.js'
 import dictionaryRoutes from './modules/dictionary/dictionary.routes.js'
+import feedbackRoutes from './modules/feedback/feedback.routes.js'
 import healthRoutes from './modules/health/health.routes.js'
 import quotaRoutes from './modules/quota/quota.routes.js'
 import readingRoutes from './modules/readings/reading.routes.js'
@@ -85,6 +88,14 @@ export function createApp() {
   app.use('/api/words', requireAuth, wordRoutes)
   app.use('/api/basic-words', requireAuth, basicWordRoutes)
   app.use('/api/readings', requireAuth, readingRoutes)
+
+  // 用户侧反馈：**不挂 requireAuth**（md/37 §5.1）。
+  // 「在登录页卡住了」是最常见的反馈场景，要求登录等于把这类反馈关掉
+  app.use('/api/feedback', feedbackRoutes)
+
+  // 管理端：两项 env 都配置了才挂载，否则整个前缀 404（md/37 §2.1）。
+  // 不做「启动了但登录时再报错」——少一个未鉴权接口暴露在外面
+  if (isAdminConfigured()) app.use('/api/admin', adminRoutes)
 
   // 404 兜底：Express 5 里 app.use('*', ...) 已失效，直接写无路径中间件。
   // 这里的 NOT_FOUND 只表示"没有这个路由"，不属于 §4.7 的业务错误码。

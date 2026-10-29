@@ -50,13 +50,16 @@ process.env.SEGMENT_CONCURRENCY = '4'
 process.env.SEGMENT_MAX_ATTEMPTS = '2'
 process.env.SEGMENT_TEMPERATURE = '0.5'
 
+const { AdminSession } = await import('../modules/admin/admin.model.js')
 const { AppMeta } = await import('../modules/auth/appmeta.model.js')
 const { Captcha } = await import('../modules/auth/captcha.model.js')
+const { Feedback } = await import('../modules/feedback/feedback.model.js')
 const { Quota } = await import('../modules/quota/quota.model.js')
 const { Session } = await import('../modules/auth/session.model.js')
 const { User } = await import('../modules/auth/user.model.js')
 const { loadDictionary } = await import('../modules/dictionary/dictionary.loader.js')
 const { Reading } = await import('../modules/readings/reading.model.js')
+const { TokenUsage } = await import('../modules/usage/token-usage.model.js')
 const { Word } = await import('../modules/words/word.model.js')
 
 let mongod
@@ -78,6 +81,10 @@ beforeAll(async () => {
     AppMeta.syncIndexes(),
     // 额度预扣的原子性依赖 { key, day } 唯一索引，测试里也必须真的建出来
     Quota.syncIndexes(),
+    // 管理员令牌的唯一性、反馈的去重/计数、token 流水的聚合都靠索引
+    AdminSession.syncIndexes(),
+    Feedback.syncIndexes(),
+    TokenUsage.syncIndexes(),
   ])
 })
 

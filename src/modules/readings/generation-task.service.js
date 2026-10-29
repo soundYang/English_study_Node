@@ -321,6 +321,8 @@ async function runTask({ taskId, userId, body, resume = null }) {
 
     const dto = await generateReading({
       userId,
+      // token 流水挂到任务上（md/37）：被取消的任务也要有人认账
+      taskId,
       body,
       signal: controller.signal,
       onProgress,

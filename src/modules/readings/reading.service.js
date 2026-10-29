@@ -323,8 +323,8 @@ async function recordFailure(diag, error) {
  * 想统计「违规词长什么样、属于哪一类」时既没有分母也没法回查。
  * 薄壳保证任何业务异常都落一条 GenerationFailure，同时原错误原样抛给调用方。
  */
-export async function generateReading({ userId, body, signal, onProgress, resume }) {
-  const diag = { userId, startedAt: Date.now(), rounds: [] }
+export async function generateReading({ userId, taskId = null, body, signal, onProgress, resume }) {
+  const diag = { userId, taskId, startedAt: Date.now(), rounds: [] }
 
   try {
     return await generateReadingInner({ userId, body, signal, diag, onProgress, resume })
@@ -679,6 +679,8 @@ async function generateReadingInner({ userId, body, signal, diag, onProgress, re
         signal,
         rounds,
         temperature: config.segmentTemperature,
+        userId: diag.userId,
+        taskId: diag.taskId,
       })
 
       // 计划不合法由代码补齐（md/20 §5.3），不为此再调一次模型
@@ -722,6 +724,9 @@ async function generateReadingInner({ userId, body, signal, diag, onProgress, re
       // 已收下的正文：这些段不再调模型（重试只补失败段，md/31 §11）
       prewritten: resume?.segmentTexts ?? null,
       rounds,
+      // token 流水的归属（md/37）：分段路径的每次调用都记到这个人 / 这个任务头上
+      userId: diag.userId,
+      taskId: diag.taskId,
       questionCount: params.questionCount,
       range,
       // 收尾生成题目时要按难度执行题型配额（W7）
@@ -770,6 +775,8 @@ async function generateReadingInner({ userId, body, signal, diag, onProgress, re
         messages: repairMessages,
         signal,
         rounds,
+        userId: diag.userId,
+        taskId: diag.taskId,
       })
 
       // 收尾的 JSON 里没有 article（正文是分段拼出来的），不能直接拿它当整篇校验。
@@ -809,7 +816,14 @@ async function generateReadingInner({ userId, body, signal, diag, onProgress, re
       freeForm: finalMode,
     })
 
-    const first = await callModel({ kind: 'generate', messages, signal, rounds })
+    const first = await callModel({
+      kind: 'generate',
+      messages,
+      signal,
+      rounds,
+      userId: diag.userId,
+      taskId: diag.taskId,
+    })
 
     content = first.content
     finishReason = first.finishReason
@@ -870,6 +884,8 @@ async function generateReadingInner({ userId, body, signal, diag, onProgress, re
           : buildRepairMessages(messages, state.feedback, previous, params.level),
         signal,
         rounds,
+        userId: diag.userId,
+        taskId: diag.taskId,
       })
 
       content = repaired.content

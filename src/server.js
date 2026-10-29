@@ -2,11 +2,13 @@ import mongoose from 'mongoose'
 
 import { createApp } from './app.js'
 import { config } from './config/index.js'
+import { AdminSession } from './modules/admin/admin.model.js'
 import { AppMeta } from './modules/auth/appmeta.model.js'
 import { Captcha } from './modules/auth/captcha.model.js'
 import { Session } from './modules/auth/session.model.js'
 import { User } from './modules/auth/user.model.js'
 import { loadDictionary } from './modules/dictionary/dictionary.loader.js'
+import { Feedback } from './modules/feedback/feedback.model.js'
 import { Quota } from './modules/quota/quota.model.js'
 import { basicWordsByLevel } from './modules/readings/basic-words.js'
 import { GenerationTask } from './modules/readings/generation-task.model.js'
@@ -16,6 +18,7 @@ import {
 } from './modules/readings/generation-task.service.js'
 import { Reading } from './modules/readings/reading.model.js'
 import { basicWordsVersions } from './modules/readings/versions.js'
+import { TokenUsage } from './modules/usage/token-usage.model.js'
 import { Word } from './modules/words/word.model.js'
 import { logger } from './shared/logger.js'
 
@@ -42,6 +45,11 @@ async function main() {
     AppMeta.syncIndexes(),
     // { key, day } 唯一索引是额度预扣的原子性来源：漏建的话并发预扣会多放人
     Quota.syncIndexes(),
+    // 管理端会话靠 tokenHash 唯一索引与过期 TTL；反馈靠状态/设备索引
+    AdminSession.syncIndexes(),
+    Feedback.syncIndexes(),
+    // token 流水是只追加的账本，只是性能索引，但漏建会让台账页随数据量变慢
+    TokenUsage.syncIndexes(),
   ])
   logger.info('indexes synced')
 

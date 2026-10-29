@@ -238,4 +238,12 @@ export const config = Object.freeze({
   // 免费池总量。2 亿 token ≈ 按 2026-10-28 实测均值（约 4.2 万 token / 篇）
   // 约 4700 篇。到顶后所有生成返回 503 FREE_BUDGET_EXHAUSTED
   freeTokenBudget: toNumber('FREE_TOKEN_BUDGET', 200_000_000),
+
+  // ——— 管理员后台（md/37）———
+  // 单账号，不建 admins 表。**两项都为空时 /api/admin/* 整体不挂载**（404），
+  // 避免「先启动、登录时才发现没配置」的未鉴权窗口。
+  adminUsername: (process.env.ADMIN_USERNAME ?? '').trim(),
+  // scrypt 字符串；用 scripts/hash-admin-password.mjs 生成。
+  // 仓库里永远不出现明文密码
+  adminPasswordHash: (process.env.ADMIN_PASSWORD_HASH ?? '').trim(),
 })

@@ -1,5 +1,6 @@
 import { config } from '../../config/index.js'
 import { recordTokenUsage } from '../budget/budget.service.js'
+import { recordUsageEvent } from '../usage/token-usage.service.js'
 import { chatJson } from './ai.client.js'
 
 /**
@@ -19,6 +20,8 @@ import { chatJson } from './ai.client.js'
  *   rounds: Array,
  *   repairFor?: string|null,
  *   temperature?: number,
+ *   userId?: string,
+ *   taskId?: string|object|null,
  * }} params
  */
 export async function callModel({
@@ -28,6 +31,8 @@ export async function callModel({
   rounds,
   repairFor = null,
   temperature = 0.8,
+  userId = '',
+  taskId = null,
 }) {
   const startedAt = Date.now()
   const response = await chatJson({
@@ -61,6 +66,18 @@ export async function callModel({
   // 补段重试花掉的钱都是账单上的钱。不 await：记账不该拖慢生成，
   // 也不该在写库失败时把一次已经付过钱的调用再搞失败
   void recordTokenUsage(totalTokens)
+
+  // 同一次调用再记一条**归属到用户**的流水（md/37 §3.5）。任务触发的带 taskId，
+  // 同步 /generate 没有任务所以为 null。两条都 `void`，失败只打日志
+  void recordUsageEvent({
+    userId,
+    taskId,
+    kind,
+    model: config.deepseekModel,
+    promptTokens,
+    completionTokens,
+    totalTokens,
+  })
 
   return response
 }
