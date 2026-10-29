@@ -18,7 +18,8 @@ Word Reading 的 API 服务：Express 5 + MongoDB + 本地 COCA 词库 + DeepSee
 用户自备 DeepSeek API Key 见 [md/43_用户自备API_Key_方案.md](md/43_用户自备API_Key_方案.md)，
 代码结构与不变量见 [md/24_后端代码说明.md](md/24_后端代码说明.md)，
 功能边界与已知限制见 [md/13_AI生成文章_功能与限制.md](md/13_AI生成文章_功能与限制.md)，
-现存缺陷台账见 [md/23_核心功能现存不足.md](md/23_核心功能现存不足.md)。
+现存缺陷台账见 [md/23_核心功能现存不足.md](md/23_核心功能现存不足.md)，
+后端缺陷与安全审查见 [md/45_后端缺陷与安全审查.md](md/45_后端缺陷与安全审查.md)。
 
 ## 启动步骤
 
