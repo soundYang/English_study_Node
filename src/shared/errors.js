@@ -101,6 +101,15 @@ export const ERROR_CODES = Object.freeze({
   FEEDBACK_TOO_SHORT: 'FEEDBACK_TOO_SHORT',
   FEEDBACK_TOO_LONG: 'FEEDBACK_TOO_LONG',
   FEEDBACK_NOT_FOUND: 'FEEDBACK_NOT_FOUND',
+  // ——— 文件导入（md/48）———
+  // 三个码对应三种「用户能做点什么」的失败，不能合成一个：
+  //   415 = 换个格式（另存为 docx / xlsx）
+  //   422 FILE_PARSE_FAILED = 文件坏了 / 加密了，重试无用
+  //   422 OCR_FAILED = 图片里没认出来，换张清楚的照片
+  UNSUPPORTED_MEDIA_TYPE: 'UNSUPPORTED_MEDIA_TYPE',
+  PAYLOAD_TOO_LARGE: 'PAYLOAD_TOO_LARGE',
+  FILE_PARSE_FAILED: 'FILE_PARSE_FAILED',
+  OCR_FAILED: 'OCR_FAILED',
   INTERNAL_ERROR: 'INTERNAL_ERROR',
 })
 
@@ -533,3 +542,27 @@ export const feedbackFlood = (limit) =>
     '',
     { limit, scope: 'feedback' },
   )
+
+// ——— 文件导入（md/48） ———
+
+/** 415：格式不支持。message 里必须给出下一步，否则用户不知道该怎么改 */
+export const unsupportedMediaType = (detail) =>
+  new ApiError(415, ERROR_CODES.UNSUPPORTED_MEDIA_TYPE, detail, 'file')
+
+/** 413：文件超过上传上限 */
+export const payloadTooLarge = (maxBytes) =>
+  new ApiError(
+    413,
+    ERROR_CODES.PAYLOAD_TOO_LARGE,
+    `文件太大了，最大 ${Math.round(maxBytes / 1024 / 1024)}MB`,
+    'file',
+    { maxBytes },
+  )
+
+/** 422：文件结构坏了 / 加密了 / 被 zip 炸弹防护挡下 */
+export const fileParseFailed = (message, details = null) =>
+  new ApiError(422, ERROR_CODES.FILE_PARSE_FAILED, message, 'file', details)
+
+/** 422：图片里没识别出单词（换张清楚的照片比重试有用） */
+export const ocrFailed = (message) =>
+  new ApiError(422, ERROR_CODES.OCR_FAILED, message, 'file')

@@ -101,6 +101,12 @@ Mongo 断开时返回 **503** + `status: "degraded"`，这是唯一的健康判�
 | `USER_API_KEY_SECRET_PREVIOUS` | 空 | 轮换期间保留的旧主密钥；两张表都匹配不上时按免费路径处理 |
 | `USER_API_KEY_VERIFY_TIMEOUT_MS` | 8000 | 导入时请求上游 `/models` 的超时，不重试 |
 | `RATE_LIMIT_API_KEY` | 5 次/分钟 | `PUT` / `DELETE` / `verify` 共用同一个桶（按 IP） |
+| `OCR_ENABLED` | true | 图片导入总开关；关掉后图片返回 422 `OCR_FAILED`，Word / Excel 不受影响（md/48） |
+| `OCR_LANG` | `eng` | 识别语言，多个用 `+` 连接。仓库只带 `eng`：快速模式只取英文词，释义留空由词库补 |
+| `OCR_LANG_PATH` | 空 | 模型目录。留空 = 用仓库自带的 `data/ocr`；目录不存在时退回 CDN（首次要下 2MB） |
+| `OCR_CACHE_PATH` | 空 | 留空 = 不写缓存。模型已在本地，缓存只会再占 4MB |
+| `OCR_TIMEOUT_MS` | 20000 | 单张图识别超时；超时的 worker 直接销毁，不放回池 |
+| `OCR_WORKERS` | 2 | 常驻 worker 数 = 同时识别几张图；每个约 50–80MB 内存 |
 
 `MAX_UNKNOWN_WORDS` 默认留空：只有生词容忍生效时，预算才按难度取
 （medium 3 / hard 5；easy 恒为 0，md/41）。生词容忍不传时为「自动」：
@@ -180,6 +186,7 @@ src/
   modules/
     health/             健康检查
     words/              个人词库 CRUD 与选池排序
+      import/           文件抽取：嗅探 → docx / xlsx / csv / txt / 图片（md/48）
     dictionary/         COCA 词库加载与前缀检索
     readings/           生成编排、分段闭环、校验、判分、历史
     quota/              每日额度：账号 / 设备 / 网络指纹三档计数（md/35）
@@ -188,7 +195,7 @@ src/
     feedback/           用户反馈：用户侧提交 + 管理端回复（md/37）
     admin/              管理员后台：单账号鉴权 + 只读用户台账（md/37）
   tests/                vitest（每个文件独立内存 Mongo）
-data/                   词库、三档基础词表、不规则词形、词频排名
+data/                   词库、三档基础词表、不规则词形、词频排名、OCR 语言模型
 scripts/                构建、采样、回放、清理
 md/                     设计、实施、限制与缺陷文档
 ```
@@ -214,6 +221,9 @@ md/                     设计、实施、限制与缺陷文档
 | 管理端 401 `ADMIN_AUTH_REQUIRED` | 没带管理员令牌 / 过期（12 小时）/ 登出过 | 重新登录；用户令牌与管理端令牌不通用 |
 | 管理端登录 429 | 15 分钟内失败 5 次 / 同一 IP | 等窗口结束；成功登录不占配额 |
 | 用户反馈 429 `RATE_LIMITED`（`scope=feedback`） | 同一设备当天已提交 5 条 | 明天再来；计数按北京时间自然日 |
+| 文件导入 422 `OCR_FAILED`「图片识别未就绪」 | `data/ocr/` 里没有对应语言的模型 | `npm run fetch:ocr`（或按提示设 `OCR_LANG_PATH`）；Word / Excel 不受影响 |
+| 文件导入 422 `OCR_FAILED`「图片识别暂时不可用」 | 上一次起 worker 失败，60 秒冷却中 | 等一分钟；持续失败看日志里的 `ocr worker error` |
+| 文件导入 415 `UNSUPPORTED_MEDIA_TYPE` | `.doc` / `.xls` / `.pdf` 等旧格式，或不是 Office 文件 | 按提示另存为 `.docx` / `.xlsx`；txt / csv 直接传 |
 | 生成 422 `VOCABULARY_TOO_SMALL` | 已知词不够写这么长（门槛随篇幅走，见 `capacity-table.js` 的 `minKnownFor`） | 缩篇幅或加词；这是预期拦截，不是故障 |
 | 任务变成 `failed` + `TASK_INTERRUPTED` | 执行实例失联（重启 / kill -9 / OOM），心跳过期后被回收 | 调 `POST /generate/tasks/:id/retry`：已收下的段会复用，只补失败的段（md/31 §11） |
 | 生成 400 `final_mode_locked` | hard 写 601–1000 词，但个人词库不足 3000 | 继续攒词；解锁后上限从 600 抬到 1000（md/30 §2.2） |

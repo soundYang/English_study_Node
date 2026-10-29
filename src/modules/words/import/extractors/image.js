@@ -1,0 +1,50 @@
+import { ocrFailed } from '../../../../shared/errors.js'
+import { parseWordText } from '../../word-import.js'
+import { recognizeImage } from '../ocr.js'
+
+/**
+ * 图片抽取（md/48 §7.2 快速模式）。
+ *
+ * **只认英文，释义一律丢弃**：tesseract 的强项是英文印刷体，中文是弱项，
+ * 而行内混排（`abandon 放弃`）恰恰最常见。与其把识别错的中文写进用户的词库，
+ * 不如让释义留空——现有规则会在「空释义 + 词库命中」时补上词库快照
+ * （md/44 规则 5b），用户拿到的释义反而是准的。
+ *
+ * 代价：用户自己想记的释义没了。要保留就只能切到 `eng+chi_sim`（md/48 §7.2
+ * 完整模式），那是后续阶段的事。
+ *
+ * @param {Buffer} buffer
+ * @returns {Promise<{ rows: Array<{index:number, word:string, meaning:string}>, warnings: Array }>}
+ */
+export async function extractImage(buffer) {
+  const text = await recognizeImage(buffer)
+
+  const rows = []
+  const warnings = []
+
+  for (const entry of parseWordText(text)) {
+    // OCR 常把横向排布的多个词黏成一行（`abandon ability able`），
+    // parseWordText 会把它当成一个整词。这里再拆一刀：
+    // 没有释义且含空白 → 按空白拆成多个候选词
+    if (!entry.meaning && /\s/.test(entry.word)) {
+      for (const token of entry.word.split(/\s+/)) {
+        if (token) rows.push({ index: rows.length, word: token, meaning: '' })
+      }
+
+      continue
+    }
+
+    if (entry.word) rows.push({ index: rows.length, word: entry.word, meaning: '' })
+  }
+
+  if (rows.length === 0) {
+    throw ocrFailed('图片里没识别出单词，换一张清楚点的截图，或直接粘贴文本')
+  }
+
+  warnings.push({
+    code: 'OCR_LOW_CONFIDENCE',
+    message: '图片识别难免有错，导入前请逐条核对',
+  })
+
+  return { rows, warnings }
+}

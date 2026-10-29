@@ -223,6 +223,26 @@ export const config = Object.freeze({
   // 改密码要跑两次 scrypt（校验旧的 + 生成新的），比只读接口贵得多
   rateLimitPassword: toNumber('RATE_LIMIT_PASSWORD', 5),
 
+  // ——— 文件导入与 OCR（md/48）———
+  // OCR 解析是唯一会把 CPU 打满的接口，单独给一个开关：
+  // 关掉后图片上传直接 422 OCR_FAILED，Word / Excel 不受影响
+  ocrEnabled: readBoolean('OCR_ENABLED', true),
+  // 只认英文（快速模式）。改成 eng+chi_sim 会同时加载中文模型，
+  // 体积从 4MB 涨到 24MB，且中文识别错误会污染释义——见 md/48 §7.2
+  ocrLang: (process.env.OCR_LANG ?? 'eng').trim() || 'eng',
+  // 模型目录。留空 = 用仓库自带的 data/ocr（见 ocr.js 的 BUNDLED_LANG_DIR），
+  // 该目录不存在时才退回 tesseract 的 CDN——那种情况下服务器必须有外网
+  ocrLangPath: (process.env.OCR_LANG_PATH ?? '').trim(),
+  // 模型缓存目录。留空 = 不写缓存：模型本来就放在本地，
+  // tesseract 默认会往工作目录写一个 4MB 的 eng.traineddata
+  ocrCachePath: (process.env.OCR_CACHE_PATH ?? '').trim(),
+  // 单张图识别超时。超时后 worker 会被销毁重建，不会拖住后续请求
+  ocrTimeoutMs: Math.max(1000, toNumber('OCR_TIMEOUT_MS', 20_000)),
+  // worker 池大小。每个 worker 是一个独立线程 + 几十 MB 内存，
+  // 调大只在「很多人同时传图」时才有意义。
+  // 下限 1：填 0 会让 acquire() 永远等不到 worker，请求全部挂死
+  ocrWorkers: Math.max(1, toNumber('OCR_WORKERS', 2)),
+
   // ——— 每日额度（md/35）———
   // md/35 Q4：前端 X-Device-Id 已上线，默认打开；测试由 setup.js 固定为 false，
   // 批量采样实例启动时显式 `DAILY_QUOTA_ENABLED=false`（网络桶 10 次/天会打成 429）
