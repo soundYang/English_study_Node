@@ -16,6 +16,7 @@ const ADMIN_PASSWORD = 'AdminPass123'
 
 process.env.ACCESS_LOG_ENABLED = 'true'
 process.env.ERROR_LOG_ENABLED = 'true'
+process.env.LOGIN_LOG_ENABLED = 'true'
 process.env.ADMIN_USERNAME = ADMIN_USERNAME
 
 // hashPassword 只依赖 node:crypto，可以在设置 ADMIN_* 之后、导入 app 之前调用
@@ -23,8 +24,10 @@ const { hashPassword } = await import('../modules/auth/password.js')
 process.env.ADMIN_PASSWORD_HASH = await hashPassword(ADMIN_PASSWORD)
 
 const { createApp } = await import('../app.js')
+const { createCaptcha } = await import('../modules/auth/captcha.service.js')
 const { AccessLog } = await import('../modules/logs/access-log.model.js')
 const { ErrorLog } = await import('../modules/logs/error-log.model.js')
+const { LoginRecord } = await import('../modules/logs/login-log.model.js')
 const { ApiError, ERROR_CODES } = await import('../shared/errors.js')
 const { errorHandler } = await import('../shared/middleware/errorHandler.js')
 const { accessLogger } = await import('../shared/middleware/accessLog.js')
@@ -346,5 +349,273 @@ describe('GET /api/admin/logs', () => {
 
     expect(badPage.status).toBe(400)
     expect(badPage.body.error.code).toBe(ERROR_CODES.INVALID_REQUEST)
+  })
+})
+
+describe('时间范围筛选', () => {
+  const DAY = 24 * 60 * 60 * 1000
+
+  async function seedAccessAt(offsets) {
+    const now = Date.now()
+
+    await AccessLog.collection.insertMany(
+      offsets.map(([daysAgo, path]) => ({
+        method: 'GET',
+        path,
+        statusCode: 200,
+        ip: '198.51.100.30',
+        userId: 'fixture-range',
+        createdAt: new Date(now - daysAgo * DAY),
+      })),
+    )
+
+    return now
+  }
+
+  it('from / to 按 createdAt 过滤，只给一端也能用', async () => {
+    const token = await adminToken()
+    const now = await seedAccessAt([
+      [3, '/api/old'],
+      [1, '/api/mid'],
+      [0, '/api/new'],
+    ])
+
+    const fromRes = await request(app)
+      .get('/api/admin/logs/access')
+      .query({ userId: 'fixture-range', from: new Date(now - 2 * DAY).toISOString() })
+      .set('Authorization', `Bearer ${token}`)
+
+    expect(fromRes.status).toBe(200)
+    expect(fromRes.body.total).toBe(2)
+    expect(fromRes.body.items.map((item) => item.path).sort()).toEqual(['/api/mid', '/api/new'])
+
+    const toRes = await request(app)
+      .get('/api/admin/logs/access')
+      .query({ userId: 'fixture-range', to: new Date(now - 2 * DAY).toISOString() })
+      .set('Authorization', `Bearer ${token}`)
+
+    expect(toRes.body.total).toBe(1)
+    expect(toRes.body.items[0].path).toBe('/api/old')
+  })
+
+  it('时间格式错误 / 开始晚于结束 → 400', async () => {
+    const token = await adminToken()
+
+    const badFormat = await request(app)
+      .get('/api/admin/logs/access')
+      .query({ from: 'yesterday' })
+      .set('Authorization', `Bearer ${token}`)
+
+    expect(badFormat.status).toBe(400)
+    expect(badFormat.body.error.code).toBe(ERROR_CODES.INVALID_REQUEST)
+
+    const reversed = await request(app)
+      .get('/api/admin/logs/errors')
+      .query({
+        from: '2026-10-29T00:00:00.000Z',
+        to: '2026-10-28T00:00:00.000Z',
+      })
+      .set('Authorization', `Bearer ${token}`)
+
+    expect(reversed.status).toBe(400)
+    expect(reversed.body.error.message).toBe('开始时间不能晚于结束时间')
+  })
+})
+
+describe('登录记录', () => {
+  /** 注册需要验证码；返回一个可用的 captchaId */
+  async function captchaId() {
+    const { captchaId: id } = await createCaptcha({ text: 'AB3D' })
+
+    return id
+  }
+
+  it('注册成功即登录：记一条成功，带 dataKey / 用户名 / IP', async () => {
+    const id = await captchaId()
+    const res = await request(app).post('/api/auth/register').send({
+      username: 'LogUser',
+      password: 'Passw0rd1',
+      captchaId: id,
+      captchaCode: 'AB3D',
+    })
+
+    expect(res.status).toBe(201)
+
+    const doc = await waitFor(() => LoginRecord.findOne({ username: 'LogUser' }).lean())
+
+    expect(doc).not.toBeNull()
+    expect(doc.role).toBe('user')
+    expect(doc.success).toBe(true)
+    expect(doc.userId).toBeTruthy()
+    expect(doc.ip).toBeTruthy()
+  })
+
+  it('密码错也记：success=false，IP 留着用于排查爆破', async () => {
+    const id = await captchaId()
+    await request(app).post('/api/auth/register').send({
+      username: 'LogUser',
+      password: 'Passw0rd1',
+      captchaId: id,
+      captchaCode: 'AB3D',
+    })
+
+    const res = await request(app)
+      .post('/api/auth/login')
+      .send({ usernameOrPhone: 'LogUser', password: 'WrongPass1' })
+
+    expect(res.status).toBe(401)
+
+    const failed = await waitFor(() =>
+      LoginRecord.findOne({ username: 'LogUser', success: false }).lean(),
+    )
+
+    expect(failed).not.toBeNull()
+    expect(failed.success).toBe(false)
+    expect(failed.ip).toBeTruthy()
+  })
+
+  it('管理员登录成功与失败都记，role=admin', async () => {
+    await request(app)
+      .post('/api/admin/auth/login')
+      .send({ username: ADMIN_USERNAME, password: ADMIN_PASSWORD })
+    await request(app)
+      .post('/api/admin/auth/login')
+      .send({ username: ADMIN_USERNAME, password: 'WrongPass1' })
+
+    const success = await waitFor(() =>
+      LoginRecord.findOne({ role: 'admin', success: true }).lean(),
+    )
+    const failed = await waitFor(() =>
+      LoginRecord.findOne({ role: 'admin', success: false }).lean(),
+    )
+
+    expect(success?.username).toBe(ADMIN_USERNAME)
+    expect(failed?.username).toBe(ADMIN_USERNAME)
+    expect(success?.userId).toBe('')
+  })
+
+  it('查询：按 ip / role / success / username 过滤，非管理员 401', async () => {
+    const token = await adminToken()
+
+    await LoginRecord.create([
+      {
+        userId: 'fixture-login-a',
+        username: 'Alice',
+        role: 'user',
+        success: true,
+        ip: '198.51.100.40',
+      },
+      { username: 'Mallory', role: 'user', success: false, ip: '198.51.100.41' },
+      { username: 'admin', role: 'admin', success: true, ip: '198.51.100.42' },
+    ])
+
+    const denied = await request(app).get('/api/admin/logs/logins')
+    expect(denied.status).toBe(401)
+    expect(denied.body.error.code).toBe('ADMIN_AUTH_REQUIRED')
+
+    const failedByIp = await request(app)
+      .get('/api/admin/logs/logins')
+      .query({ ip: '198.51.100.41', success: 'false' })
+      .set('Authorization', `Bearer ${token}`)
+
+    expect(failedByIp.status).toBe(200)
+    expect(failedByIp.body.total).toBe(1)
+    expect(failedByIp.body.items[0].username).toBe('Mallory')
+    // 失败记录没有 dataKey
+    expect(failedByIp.body.items[0].userId).toBe('')
+
+    const byUser = await request(app)
+      .get('/api/admin/logs/logins')
+      .query({ userId: 'fixture-login-a' })
+      .set('Authorization', `Bearer ${token}`)
+
+    expect(byUser.body.total).toBe(1)
+    expect(byUser.body.items[0].role).toBe('user')
+
+    // 模糊匹配用户名：大小写不敏感
+    const byName = await request(app)
+      .get('/api/admin/logs/logins')
+      .query({ username: 'alice' })
+      .set('Authorization', `Bearer ${token}`)
+
+    expect(byName.body.total).toBe(1)
+
+    // 管理员登录（adminToken 那次）也在表里
+    const admins = await request(app)
+      .get('/api/admin/logs/logins')
+      .query({ role: 'admin' })
+      .set('Authorization', `Bearer ${token}`)
+
+    expect(admins.body.total).toBeGreaterThanOrEqual(2)
+  })
+})
+
+describe('GET /api/admin/logs/summary', () => {
+  it('返回最近 N 天的请求 / 错误 / 登录汇总', async () => {
+    const token = await adminToken()
+    const now = new Date()
+
+    await AccessLog.collection.insertMany([
+      { method: 'GET', path: '/api/a', statusCode: 200, ip: '198.51.100.50', createdAt: now },
+      { method: 'GET', path: '/api/b', statusCode: 404, ip: '198.51.100.50', createdAt: now },
+      { method: 'GET', path: '/api/c', statusCode: 500, ip: '198.51.100.51', createdAt: now },
+    ])
+    await ErrorLog.create({
+      method: 'GET',
+      path: '/api/c',
+      statusCode: 500,
+      code: 'INTERNAL_ERROR',
+      message: 'boom',
+      ip: '198.51.100.51',
+    })
+    await LoginRecord.create([
+      {
+        userId: 'fixture-summary',
+        username: 'S1',
+        role: 'user',
+        success: true,
+        ip: '198.51.100.51',
+      },
+      { username: 'S1', role: 'user', success: false, ip: '198.51.100.51' },
+    ])
+
+    const res = await request(app)
+      .get('/api/admin/logs/summary')
+      .query({ days: 1 })
+      .set('Authorization', `Bearer ${token}`)
+
+    expect(res.status).toBe(200)
+    expect(res.body.range.days).toBe(1)
+    expect(res.body.range.from).toBeTruthy()
+
+    // 管理员登录本身也会留下访问 / 登录记录，所以只断言下界
+    expect(res.body.access.total).toBeGreaterThanOrEqual(3)
+    expect(res.body.access.ok).toBeGreaterThanOrEqual(1)
+    expect(res.body.access.clientError).toBeGreaterThanOrEqual(1)
+    expect(res.body.access.serverError).toBeGreaterThanOrEqual(1)
+    expect(res.body.access.uniqueIps).toBeGreaterThanOrEqual(2)
+
+    expect(res.body.errors.total).toBeGreaterThanOrEqual(1)
+    expect(res.body.errors.byCode).toContainEqual({ code: 'INTERNAL_ERROR', count: 1 })
+
+    expect(res.body.logins.total).toBeGreaterThanOrEqual(3)
+    expect(res.body.logins.failed).toBeGreaterThanOrEqual(1)
+    expect(res.body.logins.uniqueUsers).toBeGreaterThanOrEqual(1)
+    expect(res.body.logins.byRole.user).toBeGreaterThanOrEqual(2)
+    expect(res.body.logins.byRole.admin).toBeGreaterThanOrEqual(1)
+  })
+
+  it('days 越界 → 400', async () => {
+    const token = await adminToken()
+
+    for (const days of ['0', '91', 'abc']) {
+      const res = await request(app)
+        .get('/api/admin/logs/summary')
+        .query({ days })
+        .set('Authorization', `Bearer ${token}`)
+
+      expect(res.status).toBe(400)
+      expect(res.body.error.code).toBe(ERROR_CODES.INVALID_REQUEST)
+    }
   })
 })

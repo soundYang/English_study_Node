@@ -40,6 +40,7 @@ router.post('/captcha', captchaLimiter, async (req, res) => {
 router.post('/register', registerLimiter, async (req, res) => {
   const result = await registerUser({
     body: req.body ?? {},
+    ip: req.ip ?? '',
     userAgent: req.get('user-agent') ?? '',
   })
 
@@ -49,6 +50,7 @@ router.post('/register', registerLimiter, async (req, res) => {
 router.post('/login', loginLimiter, async (req, res) => {
   const result = await loginUser({
     body: req.body ?? {},
+    ip: req.ip ?? '',
     userAgent: req.get('user-agent') ?? '',
   })
 

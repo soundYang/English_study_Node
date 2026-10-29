@@ -12,6 +12,7 @@ import { loadDictionary } from './modules/dictionary/dictionary.loader.js'
 import { Feedback } from './modules/feedback/feedback.model.js'
 import { AccessLog } from './modules/logs/access-log.model.js'
 import { ErrorLog } from './modules/logs/error-log.model.js'
+import { LoginRecord } from './modules/logs/login-log.model.js'
 import { Quota } from './modules/quota/quota.model.js'
 import { basicWordsByLevel } from './modules/readings/basic-words.js'
 import { GenerationTask } from './modules/readings/generation-task.model.js'
@@ -60,6 +61,7 @@ async function main() {
     // 漏建时表会一直长，最后撑爆磁盘
     AccessLog.syncIndexes(),
     ErrorLog.syncIndexes(),
+    LoginRecord.syncIndexes(),
   ])
   logger.info('indexes synced')
 

@@ -10,6 +10,7 @@ import { getProfileStats } from '../auth/profile.stats.js'
 import { User } from '../auth/user.model.js'
 import { getBudgetStatus } from '../budget/budget.service.js'
 import { Feedback } from '../feedback/feedback.model.js'
+import { recordLogin } from '../logs/log.service.js'
 import { Quota } from '../quota/quota.model.js'
 import { quotaDay } from '../quota/quota.service.js'
 import { GenerationFailure } from '../readings/generation-failure.model.js'
@@ -67,6 +68,8 @@ export async function loginAdmin({ username = '', password = '', ip = '', userAg
 
   if (!usernameOk || !passwordOk) {
     logger.warn({ ip, username: String(username).slice(0, 32) }, 'admin login failed')
+    // 失败也留痕：管理端是最值得盯的入口（md/53 §10）
+    recordLogin({ username, role: 'admin', success: false, ip, userAgent })
     throw adminAuthFailed()
   }
 
@@ -82,6 +85,9 @@ export async function loginAdmin({ username = '', password = '', ip = '', userAg
   })
 
   logger.info({ admin: config.adminUsername, ip }, 'admin login')
+
+  // userId 留空：管理员不是 users 表里的用户，用 role + username 识别
+  recordLogin({ username: config.adminUsername, role: 'admin', success: true, ip, userAgent })
 
   return { token, expiresAt }
 }

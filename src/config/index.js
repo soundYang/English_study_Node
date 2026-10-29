@@ -209,6 +209,9 @@ export const config = Object.freeze({
   // 报错日志：只记 5xx，比访问日志少得多，默认留 90 天
   errorLogEnabled: readBoolean('ERROR_LOG_ENABLED', nodeEnv !== 'test'),
   errorLogRetentionDays: toNumber('ERROR_LOG_RETENTION_DAYS', 90),
+  // 登录记录：成功与失败都记，量很小；留 180 天是为了「半年前谁从哪登录过」也能查
+  loginLogEnabled: readBoolean('LOGIN_LOG_ENABLED', nodeEnv !== 'test'),
+  loginLogRetentionDays: toNumber('LOGIN_LOG_RETENTION_DAYS', 180),
 
   // 限流（次 / 分钟）
   // 总开关：测试环境默认关闭。开着的话一个 50 次预检的验收用例会把后面的用例

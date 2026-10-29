@@ -7,6 +7,7 @@ import {
   usernameTaken,
 } from '../../shared/errors.js'
 import { parseOrThrow } from '../../shared/utils/validation.js'
+import { recordLogin } from '../logs/log.service.js'
 import { AppMeta } from './appmeta.model.js'
 import { loginSchema, registerSchema } from './auth.schema.js'
 import { verifyCaptcha } from './captcha.service.js'
@@ -171,7 +172,7 @@ async function issueSession({ user, rememberMe, userAgent }) {
  *
  * @param {{ body: object, ip?: string, userAgent?: string }} payload
  */
-export async function registerUser({ body, userAgent = '' }) {
+export async function registerUser({ body, ip = '', userAgent = '' }) {
   const input = parseOrThrow(registerSchema, body)
 
   // 先消耗验证码再查重：否则「这个用户名被占了吗」不用解题就能问出来
@@ -202,6 +203,16 @@ export async function registerUser({ body, userAgent = '' }) {
 
   const session = await issueSession({ user, rememberMe: false, userAgent })
 
+  // 注册即登录，同样算一次登录（md/53 §10）
+  recordLogin({
+    userId: user.dataKey,
+    username: user.username,
+    role: 'user',
+    success: true,
+    ip,
+    userAgent,
+  })
+
   return { ...session, user: toUserDto(user) }
 }
 
@@ -211,7 +222,7 @@ export async function registerUser({ body, userAgent = '' }) {
  * 用户不存在时**也要跑一次 scrypt**（用 dummy hash 陪跑）：
  * 直接返回的话，「不存在」比「密码错」快几十毫秒，这个时间差足够枚举账号。
  */
-export async function loginUser({ body, userAgent = '' }) {
+export async function loginUser({ body, ip = '', userAgent = '' }) {
   const input = parseOrThrow(loginSchema, body)
   const identifier = input.usernameOrPhone.toLowerCase()
 
@@ -227,12 +238,27 @@ export async function loginUser({ body, userAgent = '' }) {
   if (!user) {
     await verifyPassword(input.password, await getDummyHash())
     recordLoginFailure(identifier)
+    recordLogin({
+      username: input.usernameOrPhone,
+      role: 'user',
+      success: false,
+      ip,
+      userAgent,
+    })
     throw invalidCredentials()
   }
 
   const passed = await verifyPassword(input.password, user.passwordHash)
   if (!passed) {
     recordLoginFailure(identifier)
+    recordLogin({
+      userId: user.dataKey,
+      username: user.username,
+      role: 'user',
+      success: false,
+      ip,
+      userAgent,
+    })
     throw invalidCredentials()
   }
 
@@ -247,6 +273,15 @@ export async function loginUser({ body, userAgent = '' }) {
   await User.updateOne({ _id: user._id }, { $set: { lastLoginAt: new Date() } })
 
   const session = await issueSession({ user, rememberMe: input.rememberMe === true, userAgent })
+
+  recordLogin({
+    userId: user.dataKey,
+    username: user.username,
+    role: 'user',
+    success: true,
+    ip,
+    userAgent,
+  })
 
   return { ...session, user: toUserDto(user) }
 }
