@@ -182,14 +182,20 @@ function matchesStatus(item, status) {
   }
 }
 
-/** GET /api/basic-words */
-export async function listBasicWords({ userId, query }) {
+/**
+ * GET /api/basic-words、GET /api/public/basic-words
+ *
+ * `personalized = false` 是游客视图（md/50）：**完全不查 Mongo**，
+ * 个人状态一律按「没有记录」处理。650 条词表本身就是静态常量，
+ * 没有 userId 参与，也就不存在越权读取别人词库的可能。
+ */
+export async function listBasicWords({ userId, query, personalized = true }) {
   const q = normalizeWord(query.q)
   const group = BASIC_WORD_GROUPS.includes(query.group) ? query.group : 'all'
   const status = BASIC_WORD_STATUS_FILTERS.includes(query.status) ? query.status : 'all'
   const { page, pageSize } = query
 
-  const records = await loadRecords(userId)
+  const records = personalized ? await loadRecords(userId) : new Map()
   const counts = buildCounts(records)
 
   const items = basicWordCatalog

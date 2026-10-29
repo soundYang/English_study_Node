@@ -9,6 +9,7 @@ import { isAdminConfigured } from './modules/admin/admin.service.js'
 import authRoutes from './modules/auth/auth.routes.js'
 import { requireAuth, requireSession } from './modules/auth/auth.middleware.js'
 import profileRoutes from './modules/auth/profile.routes.js'
+import publicBasicWordRoutes from './modules/basic-words/basic-words.public.routes.js'
 import basicWordRoutes from './modules/basic-words/basic-words.routes.js'
 import dictionaryRoutes from './modules/dictionary/dictionary.routes.js'
 import feedbackRoutes from './modules/feedback/feedback.routes.js'
@@ -76,6 +77,8 @@ export function createApp() {
   app.use('/api', healthRoutes)
   app.use('/api/auth', authRoutes)
   app.use('/api/dictionary', dictionaryRoutes)
+  // 基础词汇库的游客只读视图（md/50）：静态词表，不查库、不看令牌
+  app.use('/api/public/basic-words', publicBasicWordRoutes)
   // 额度查询必须匿名可调：未登录也要知道这台设备今天还剩几次（md/35 §7.1）
   app.use('/api/quota', quotaRoutes)
 
