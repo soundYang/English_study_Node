@@ -10,6 +10,9 @@ import { recordAccess } from '../../modules/logs/log.service.js'
  *
  * 写库在响应结束之后异步进行，不阻塞返回；失败只打终端 warn。
  * 请求体和请求头都不落库：自备 Key 接口的 body 是明文密钥，令牌在 Authorization 里。
+ *
+ * **只记失败请求**（md/53 §12）：2xx / 3xx 不写。成功登录由 `loginrecords`
+ * 单独记录，其余成功请求只是流量；只有 >= 400 与中途断开值得回查。
  */
 
 /** 探活轮询高频且无信息量 */
@@ -30,6 +33,14 @@ export function accessLogger(req, res, next) {
     logged = true
 
     if (SKIP_PATHS.has(pathname)) return
+
+    // md/53 §12：成功请求不落访问日志。
+    //
+    // 成功登录已经由 LoginRecord 单独记录，其余 2xx / 3xx 只是流量，
+    // 没有排查价值却会迅速把表撑大。只有失败（>= 400）和中途断开才写：
+    // 断开时状态码可能还停在默认的 200，用 writableFinished 区分。
+    const aborted = !res.writableFinished
+    if (res.statusCode < 400 && !aborted) return
 
     recordAccess({
       method: req.method,

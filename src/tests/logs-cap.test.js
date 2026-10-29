@@ -63,13 +63,14 @@ describe('日志容量上限', () => {
       })),
     )
 
-    const res = await request(app).get('/api/public/basic-words')
-    expect(res.status).toBe(200)
+    // 成功请求已经不落库（md/53 §12），必须用失败请求才会走到写入路径
+    const res = await request(app).get('/api/definitely-not-a-route')
+    expect(res.status).toBe(404)
 
     // 等异步的 count 检查 + 可能的写库完成
     await sleep(300)
 
-    expect(await AccessLog.countDocuments({ path: '/api/public/basic-words' })).toBe(0)
+    expect(await AccessLog.countDocuments({ path: '/api/definitely-not-a-route' })).toBe(0)
     expect(await AccessLog.countDocuments({})).toBe(3)
   })
 

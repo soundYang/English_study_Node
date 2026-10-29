@@ -75,39 +75,39 @@ async function adminToken() {
 }
 
 describe('访问日志', () => {
-  it('一次请求写一条：IP / 路径 / 状态码 / 用户 / requestId', async () => {
+  it('成功请求不落库：2xx 只进登录记录，访问日志只留失败', async () => {
     const res = await request(app)
       .get('/api/public/basic-words')
       .set('User-Agent', 'vitest-access-log')
 
     expect(res.status).toBe(200)
+    // 写库是异步的，等一小会儿再确认「确实没有写」
+    await sleep(200)
 
-    const doc = await waitFor(() =>
-      AccessLog.findOne({ path: '/api/public/basic-words' }).lean(),
-    )
-
-    expect(doc).not.toBeNull()
-    expect(doc.method).toBe('GET')
-    expect(doc.statusCode).toBe(200)
-    // supertest 走 loopback，地址本身不重要，重要的是「非空且是请求来源」
-    expect(doc.ip).toBeTruthy()
-    expect(doc.userAgent).toBe('vitest-access-log')
-    expect(doc.requestId).toMatch(/^req-\d+$/)
-    expect(doc.durationMs).toBeGreaterThanOrEqual(0)
-    // currentUser 在 accessLogger 之后执行，但写库发生在响应结束时，
-    // 所以这里必须已经拿到回落用户——同时验证了中间件顺序
-    expect(doc.userId).toBe('local-user')
+    expect(await AccessLog.countDocuments({ path: '/api/public/basic-words' })).toBe(0)
   })
 
-  it('4xx 也记：业务错误是预期分支，不写 errorlogs，但要能在访问日志里看到', async () => {
-    const res = await request(app).get('/api/definitely-not-a-route')
+  it('4xx 记一条：IP / 路径 / 状态码 / 用户 / requestId', async () => {
+    const res = await request(app)
+      .get('/api/definitely-not-a-route')
+      .set('User-Agent', 'vitest-access-log')
 
     expect(res.status).toBe(404)
 
     const access = await waitFor(() =>
       AccessLog.findOne({ path: '/api/definitely-not-a-route' }).lean(),
     )
-    expect(access?.statusCode).toBe(404)
+    expect(access).not.toBeNull()
+    expect(access.method).toBe('GET')
+    expect(access.statusCode).toBe(404)
+    // supertest 走 loopback，地址本身不重要，重要的是「非空且是请求来源」
+    expect(access.ip).toBeTruthy()
+    expect(access.userAgent).toBe('vitest-access-log')
+    expect(access.requestId).toMatch(/^req-\d+$/)
+    expect(access.durationMs).toBeGreaterThanOrEqual(0)
+    // currentUser 在 accessLogger 之后执行，但写库发生在响应结束时，
+    // 所以这里必须已经拿到回落用户——同时验证了中间件顺序
+    expect(access.userId).toBe('local-user')
 
     // 等一小会儿再确认：4xx 不应该出现在报错表里
     await sleep(100)
@@ -121,13 +121,18 @@ describe('访问日志', () => {
     expect(await AccessLog.countDocuments({ path: '/api/health' })).toBe(0)
   })
 
-  it('请求体与令牌不落库：表里没有这些字段', async () => {
-    await request(app)
+  it('成功的登录不写访问日志，登录记录里没有密码 / 令牌', async () => {
+    const res = await request(app)
       .post('/api/admin/auth/login')
       .send({ username: ADMIN_USERNAME, password: ADMIN_PASSWORD })
 
+    expect(res.status).toBe(200)
+    await sleep(200)
+    // 成功请求整体不落 accesslogs——包括登录
+    expect(await AccessLog.countDocuments({ path: '/api/admin/auth/login' })).toBe(0)
+
     const doc = await waitFor(() =>
-      AccessLog.findOne({ path: '/api/admin/auth/login' }).lean(),
+      LoginRecord.findOne({ username: ADMIN_USERNAME }).lean(),
     )
 
     expect(doc).not.toBeNull()
