@@ -109,8 +109,13 @@ async function main() {
   // 队列心跳必须在开始接任务之前启动，否则正常排队的任务会被巡检误杀
   startGenerationScheduler()
 
-  const server = app.listen(config.port, () => {
-    logger.info(`api listening on http://localhost:${config.port}`)
+  // 没配 HOST 时保持 Node 默认（所有网卡）；配了则只监听该地址（md/45 L9）。
+  // 日志里打实际地址：写死 localhost 会在「绑了 127.0.0.1」和「绑了全部」两种情况下
+  // 打出一模一样的行，出事时反而误导
+  const listen = [config.port, config.host].filter((item) => item !== undefined)
+  const server = app.listen(...listen, () => {
+    const where = config.host ?? '0.0.0.0'
+    logger.info(`api listening on http://${where}:${config.port}`)
   })
 
   // HTTP 超时（md/45 L6）。Node 默认 requestTimeout=300s、headersTimeout=60s，

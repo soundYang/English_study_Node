@@ -161,6 +161,15 @@ function readUserApiKeySecret(name) {
 export const config = Object.freeze({
   // 服务
   port: toNumber('PORT', 3000),
+  /**
+   * 监听地址。留空 = Node 默认（所有网卡），本地开发与容器内直连保持原行为。
+   *
+   * 生产在 nginx 后面时应该设 `127.0.0.1`：端口**根本不监听公网网卡**，
+   * 比「监听 0.0.0.0 再靠安全组挡」多一层——安全组规则配错、临时放开调试、
+   * 或者机器被换到别的网络，都不会让 3000 直接暴露出去。
+   * 反代仍然能连：nginx 与 Node 在同一台机器上，走回环即可。
+   */
+  host: (process.env.HOST ?? '').trim() || undefined,
   nodeEnv,
   // 逗号分隔多源；局域网联调时把 `http://<本机IP>:5173` 也加进来
   clientOrigins: readClientOrigins(),
