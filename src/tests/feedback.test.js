@@ -21,6 +21,7 @@ process.env.ADMIN_PASSWORD_HASH = await hashPassword(ADMIN_PASSWORD)
 const { createApp } = await import('../app.js')
 const { createCaptcha } = await import('../modules/auth/captcha.service.js')
 const { Feedback } = await import('../modules/feedback/feedback.model.js')
+const { FEEDBACK_IP_DAILY_LIMIT } = await import('../modules/feedback/feedback.service.js')
 const { User } = await import('../modules/auth/user.model.js')
 
 const app = createApp()
@@ -203,6 +204,33 @@ describe('管理端反馈接口', () => {
     expect(res.body.content).toContain('这篇文章太难了')
   })
 
+  it('列表打码手机号与联系方式，详情才给完整值（md/45 M6）', async () => {
+    const { token } = await registerAndGetToken({ phone: '13800000000' })
+
+    const created = await submit(
+      {
+        category: 'bug',
+        content: '打码用例：列表里不应该看到完整手机号',
+        contact: '13800000000',
+      },
+      { token },
+    )
+    expect(created.status).toBe(201)
+
+    const list = await adminRequest('get', '/api/admin/feedback')
+    const item = list.body.items.find((row) => row.id === created.body.id)
+
+    // 一次翻页 20 条，列表不能直接把手机号交出去
+    expect(item.phone).toBe('138****8000')
+    expect(item.contact).toBe('138****8000')
+
+    const detail = await adminRequest('get', `/api/admin/feedback/${created.body.id}`)
+
+    // 详情是客服真正联系用户的入口，给完整值
+    expect(detail.body.phone).toBe('13800000000')
+    expect(detail.body.contact).toBe('13800000000')
+  })
+
   it('回复后 status=replied，repliedAt / repliedBy 写入', async () => {
     const { id } = await seedFeedback()
 
@@ -256,5 +284,29 @@ describe('管理端反馈接口', () => {
       expect(res.status).toBe(404)
       expect(res.body.error.code).toBe('FEEDBACK_NOT_FOUND')
     }
+  })
+})
+
+describe('IP 桶兜底（md/45 M3）', () => {
+  it('轮换设备 ID 也挡得住：同一 IP 第 21 条 429', async () => {
+    for (let index = 0; index < FEEDBACK_IP_DAILY_LIMIT; index += 1) {
+      const res = await submit(validBody(`轮换设备第 ${index + 1} 条反馈内容`), {
+        deviceId: `rotating-device-${String(index).padStart(4, '0')}`,
+      })
+
+      // 每次都换设备 ID，设备档永远数到 1，只有 IP 档能拦住
+      expect(res.status).toBe(201)
+    }
+
+    const blocked = await submit(validBody('第 21 条应该被 IP 桶挡住'), {
+      deviceId: 'rotating-device-final',
+    })
+
+    expect(blocked.status).toBe(429)
+    expect(blocked.body.error.code).toBe('RATE_LIMITED')
+    expect(blocked.body.error.details).toMatchObject({
+      scope: 'feedback',
+      limit: FEEDBACK_IP_DAILY_LIMIT,
+    })
   })
 })

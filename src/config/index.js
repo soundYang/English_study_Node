@@ -279,6 +279,9 @@ export const config = Object.freeze({
   rateLimitGenerate: toNumber('RATE_LIMIT_GENERATE', 20),
   // IP 安全桶：始终按 IP，挡住「轮换设备 ID / 换账号」绕过身份桶。
   rateLimitGenerateIp: toNumber('RATE_LIMIT_GENERATE_IP', 60),
+  // 反馈是匿名可达的写接口，这是挡脚本空转的第一道闸（次 / 小时 / IP）。
+  // 真正的「一天几条」在 feedback.service 里数库：设备 5 / IP 20，重启不清零
+  rateLimitFeedback: toNumber('RATE_LIMIT_FEEDBACK', 60),
 
   // ——— 鉴权（md/33）———
   // 强制鉴权开关。默认 false = 行为与无登录时完全一致（回落 DEFAULT_USER_ID）。

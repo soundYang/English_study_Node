@@ -680,7 +680,7 @@ export const feedbackTooLong = (maxLength) =>
     { maxLength },
   )
 
-/** 429：同一设备一天最多提交 5 条反馈（md/37 §5.1） */
+/** 429：同一设备每天 5 条、同一 IP 每天 20 条反馈（md/37 §5.1、md/45 M3） */
 export const feedbackFlood = (limit) =>
   new ApiError(
     429,

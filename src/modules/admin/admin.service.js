@@ -3,6 +3,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { config } from '../../config/index.js'
 import { adminAuthFailed, adminUserNotFound } from '../../shared/errors.js'
 import { logger } from '../../shared/logger.js'
+import { maskPhone } from '../../shared/utils/mask.js'
 import { escapeRegex } from '../../shared/utils/regex.js'
 import { UserApiKey } from '../ai-keys/ai-key.model.js'
 import { hashToken } from '../auth/auth.service.js'
@@ -122,18 +123,6 @@ const DAY_MS = 24 * 60 * 60 * 1000
 /** 北京时间今天的 0 点（与额度分桶同一个时区） */
 function startOfToday(now = new Date()) {
   return new Date(Date.parse(`${quotaDay(now)}T00:00:00+08:00`))
-}
-
-/** `13800000000` → `138****8000`；空值保持 null，前端显示「未填写」 */
-export function maskPhone(phone) {
-  if (!phone) return null
-
-  const value = String(phone)
-
-  // 短号不脱敏会变成满屏星号，反而看不出是号码
-  if (value.length <= 7) return value
-
-  return `${value.slice(0, 3)}****${value.slice(-4)}`
 }
 
 /**

@@ -9,6 +9,7 @@ import {
   feedbackTooShort,
 } from '../../shared/errors.js'
 import { logger } from '../../shared/logger.js'
+import { maskContact, maskPhone } from '../../shared/utils/mask.js'
 import { User } from '../auth/user.model.js'
 import { quotaDay } from '../quota/quota.service.js'
 import { Feedback } from './feedback.model.js'
@@ -24,6 +25,15 @@ export const FEEDBACK_MIN_LENGTH = 10
 export const FEEDBACK_MAX_LENGTH = 2000
 /** 一台设备一天最多提交几次；与登录限流分开，防的是刷库不是爆破 */
 export const FEEDBACK_DAILY_LIMIT = 5
+/**
+ * 同一 IP 一天的上限（md/45 M3）。
+ *
+ * `X-Device-Id` 是客户端自报的，换一个值就是新桶，所以设备档挡不住脚本。
+ * IP 档是唯一不依赖客户端自觉的兜底，定得比设备档宽（20 条 = 同一出口下
+ * 最多 4 台设备各发满 5 条），共享出口（宿舍 / 公司）里的正常用户碰不到，
+ * 脚本换设备 ID 也只能拿到 20 条。
+ */
+export const FEEDBACK_IP_DAILY_LIMIT = 20
 /** 未登录提交的占位归属；管理端显示「未登录用户」 */
 export const ANONYMOUS_DATA_KEY = 'anonymous'
 
@@ -71,17 +81,27 @@ export async function createFeedback({
   if (content.length < FEEDBACK_MIN_LENGTH) throw feedbackTooShort(FEEDBACK_MIN_LENGTH)
   if (content.length > FEEDBACK_MAX_LENGTH) throw feedbackTooLong(FEEDBACK_MAX_LENGTH)
 
-  // 设备 ID 缺失时退回 IP：匿名提交不允许完全无法归因（否则就是刷库入口）。
-  // 两者不用 $or 相加——同一个 NAT 后面的多台设备会被并成一个大桶，
-  // 一台刷完 5 条就把整个办公室锁死了
-  const owner = deviceId ? { deviceId } : ip ? { ip } : null
-  if (owner) {
-    const usedToday = await Feedback.countDocuments({
-      ...owner,
-      createdAt: { $gte: startOfQuotaDay(now) },
-    })
+  // 设备与 IP 两个桶**同时判**，任一到顶就拒（md/45 M3）。
+  //
+  // 不能只按设备：`X-Device-Id` 是客户端自报的，换一个值就是新桶；
+  // 也不能只按 IP：同一个 NAT 后面多台设备会被并成一个桶，一台刷完
+  // 整个办公室就发不了反馈。所以设备档负责区分度（5/天），IP 档负责兜底（20/天）。
+  // 没有设备 ID 时只剩 IP 档——匿名提交不允许完全无法归因。
+  const since = startOfQuotaDay(now)
+  const buckets = [
+    deviceId && { key: { deviceId }, limit: FEEDBACK_DAILY_LIMIT },
+    ip && { key: { ip }, limit: FEEDBACK_IP_DAILY_LIMIT },
+  ].filter(Boolean)
 
-    if (usedToday >= FEEDBACK_DAILY_LIMIT) throw feedbackFlood(FEEDBACK_DAILY_LIMIT)
+  if (buckets.length > 0) {
+    const used = await Promise.all(
+      buckets.map((bucket) =>
+        Feedback.countDocuments({ ...bucket.key, createdAt: { $gte: since } }),
+      ),
+    )
+
+    const hit = buckets.find((bucket, index) => used[index] >= bucket.limit)
+    if (hit) throw feedbackFlood(hit.limit)
   }
 
   const dataKey = userId || ANONYMOUS_DATA_KEY
@@ -116,16 +136,23 @@ export async function createFeedback({
 
 // ——— 管理端 ———
 
-function toListItem(doc) {
+/**
+ * 列表与详情的公共字段。
+ *
+ * `reveal` 默认 false：**列表一律打码**（md/45 M6）。完整手机号与联系方式
+ * 只在详情里给，详情有管理端审计点；列表没有——一次翻页 20 条，管理员账号
+ * 被借用就能批量导出，而且查不到痕迹。
+ */
+function toListItem(doc, { reveal = false } = {}) {
   return {
     id: String(doc._id),
     userId: doc.userId,
     username: doc.username || (doc.userId === ANONYMOUS_DATA_KEY ? '未登录用户' : ''),
-    phone: doc.phone,
+    phone: reveal ? (doc.phone ?? null) : maskPhone(doc.phone),
     category: doc.category,
     excerpt: excerptOf(doc.content),
     status: doc.status,
-    contact: doc.contact,
+    contact: reveal ? (doc.contact ?? '') : maskContact(doc.contact),
     page: doc.page,
     repliedAt: doc.repliedAt ?? null,
     createdAt: doc.createdAt,
@@ -135,7 +162,8 @@ function toListItem(doc) {
 
 function toDetail(doc) {
   return {
-    ...toListItem(doc),
+    // 详情给完整值：客服要打电话 / 加微信，打码等于把这条路堵死
+    ...toListItem(doc, { reveal: true }),
     content: doc.content,
     reply: doc.reply,
     repliedBy: doc.repliedBy,
