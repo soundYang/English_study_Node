@@ -123,10 +123,13 @@ describe('POST /api/readings/generate · 参数校验', () => {
 })
 
 describe('POST /api/readings/generate · 词汇量闸门', () => {
+  // 100 / 200 词走冷启动，0 词也能生成（md/39）；这道闸门只在 300 词以上生效
+  const LONG_BODY = { ...VALID_BODY, targetWords: 300 }
+
   it('不足 20 个 → 422 INSUFFICIENT_VOCABULARY，且不调 AI', async () => {
     await seedWords(19)
 
-    const res = await generate(VALID_BODY)
+    const res = await generate(LONG_BODY)
 
     expect(res.status).toBe(422)
     expect(res.body.error.code).toBe('INSUFFICIENT_VOCABULARY')
@@ -146,7 +149,7 @@ describe('POST /api/readings/generate · 词汇量闸门', () => {
       })),
     )
 
-    const res = await generate(VALID_BODY)
+    const res = await generate(LONG_BODY)
 
     expect(res.status).toBe(422)
     expect(chatJson).not.toHaveBeenCalled()

@@ -245,6 +245,7 @@ const readingSchema = new Schema(
       minKnown: Number, // 写 targetWords 词所需的最低 knownWords
       personalWords: Number, // 个人词库条数（learning + mastered），最终模式的解锁口径
       finalMode: Boolean, // true = 最终模式（无目标词）
+      coldStart: Boolean, // true = 冷启动（≤ 200 词只用基础词，无目标词，md/39）
       // 题目质量的非阻断提示；`[]` = 检查过没问题，undefined = 老文档未检查
       questionWarnings: { type: [questionWarningSchema] },
       // true = 在跳过已知词门槛的采样实例上生成（md/27 阶段二容量采样）。

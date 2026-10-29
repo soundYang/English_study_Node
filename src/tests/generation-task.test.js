@@ -273,9 +273,9 @@ describe('失败归因', () => {
     expect(await Reading.countDocuments({})).toBe(0)
   })
 
-  it('词量不足 → failed + VOCABULARY_TOO_SMALL，且标记为不可重试', async () => {
-    // 不填词：词数 0 < VOCABULARY_THRESHOLD
-    const { body } = await postTask(BODY)
+  it('词量不足 → failed + INSUFFICIENT_VOCABULARY，且标记为不可重试', async () => {
+    // 不填词 + 300 词：100 / 200 走冷启动（md/39），300 起才要求个人词库
+    const { body } = await postTask({ ...BODY, targetWords: 300 })
     const done = await waitForFinish(body.taskId)
 
     expect(done.body.status).toBe('failed')

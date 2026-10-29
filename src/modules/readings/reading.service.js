@@ -30,6 +30,7 @@ import {
   FINAL_MODE_MAX_WORDS,
   FINAL_MODE_PERSONAL_WORDS,
   baseMaxWordsFor,
+  isColdStart,
   isFinalMode,
   isFinalModeUnlocked,
   lengthLadder,
@@ -310,11 +311,11 @@ async function recordFailure(diag, error) {
  * 预算内的生词带音标与释义落进 newWords，由前端做折叠提示。
  *
  * 闸门顺序不能换（md/30 §7.3）：
- *   1. 词数 < 20 → 422 INSUFFICIENT_VOCABULARY
+ *   1. 词数 < 20 → 422 INSUFFICIENT_VOCABULARY（冷启动跳过，见 md/39）
  *   2. 解锁检查：hard 要写 601–1000 词但个人词库 < 3000 → 400 final_mode_locked
  *   3. 篇幅上限：超过本档可用上限 → 400 target_words_cap
  *   4. 最低词量：已知词 < minKnown(N) → 422 VOCABULARY_TOO_SMALL（kind=known_words）
- *   5. 候选池装不下本次篇幅 → 422 VOCABULARY_TOO_SMALL（kind=target_words，最终模式跳过）
+ *   5. 候选池装不下本次篇幅 → 422 VOCABULARY_TOO_SMALL（kind=target_words，最终模式与冷启动跳过）
  * 2–5 都在调模型之前。2 必须在 3、4 前面：还没解锁时报「词不够」，
  * 用户照着加词也过不去。判定与 /capacity 共用 `capacity-table.js` 同一套函数。
  *
@@ -399,7 +400,16 @@ async function generateReadingInner({ userId, body, signal, diag, onProgress, re
 
   // 只有 learning / mastered 算可用词汇，new 不算
   const vocabularyCount = await wordRepository.countVocabulary(userId)
-  if (vocabularyCount < config.vocabularyThreshold) {
+
+  // 冷启动（md/39）：100 / 200 词且个人词库凑不齐目标词时，允许只用基础词表写。
+  // 这道判定必须放在「至少 20 个词」之前——否则 0 词用户连冷启动都进不来。
+  const coldStart = isColdStart({
+    level: params.level,
+    targetWords: params.targetWords,
+    personalWords: vocabularyCount,
+  })
+
+  if (!coldStart && vocabularyCount < config.vocabularyThreshold) {
     throw new ApiError(
       422,
       ERROR_CODES.INSUFFICIENT_VOCABULARY,
@@ -459,7 +469,10 @@ async function generateReadingInner({ userId, body, signal, diag, onProgress, re
   const maxTargetWords = overrideMax ?? maxTargetWordsFor(params.level, personalWords)
   // 最低已知词量随篇幅走（md/30 §7.2）。最终模式不查这条：
   // 它的真实闸门是 personalWords，再用 knownWords 拦一次只会自相矛盾。
-  const minKnown = finalMode ? 0 : minKnownFor(params.targetWords, params.level)
+  // 冷启动时门槛退回基础词地板（618），300 词以上仍按 minKnown(N) 判
+  const minKnown = finalMode
+    ? 0
+    : minKnownFor(params.targetWords, params.level, { personalWords })
 
   // 先落诊断再抛错：下面三道门任意一道拦下都要能归因。
   // 旧实现把这一块放在 B 门之前、A 门之后，结果 A 门的失败样本一直没有门禁数字。
@@ -468,6 +481,7 @@ async function generateReadingInner({ userId, body, signal, diag, onProgress, re
     minKnown,
     personalWords,
     finalMode,
+    coldStart,
     unknownBudget,
   }
 
@@ -529,8 +543,9 @@ async function generateReadingInner({ userId, body, signal, diag, onProgress, re
   // A 门：候选池装不下本次篇幅所需的目标词。调一次模型要几秒和几千 token，
   // 按当前参数注定凑不齐就不该发出去。
   //
-  // 最终模式跳过：它根本不挑目标词（`selectTargets: false`），池子够不够与成文无关。
-  if (!finalMode && !selection.sufficient) {
+  // 最终模式与冷启动都跳过：它们根本不挑目标词（`selectTargets: false`），
+  // 池子够不够与成文无关——冷启动就是「没有个人词，用基础词写 100 / 200 词」。
+  if (!finalMode && !coldStart && !selection.sufficient) {
     logger.warn(
       {
         level: params.level,
@@ -560,7 +575,8 @@ async function generateReadingInner({ userId, body, signal, diag, onProgress, re
     level: params.level,
     targetWords: params.targetWords,
     // 最终模式不挑目标词：1000 词里塞 100 个必用词只会写成凑词练习
-    selectTargets: !finalMode,
+    // 冷启动同理：没有个人词可选，目标词只能从基础词里凑，等于把 the / is 当复习重点
+    selectTargets: !finalMode && !coldStart,
   })
 
   // 篇幅口径：目标 ×1.1、上限 ×1.15，提示词、校验、DTO 全从这里取
@@ -623,8 +639,10 @@ async function generateReadingInner({ userId, body, signal, diag, onProgress, re
       allowedWordCount: allowedWords.size,
       requiredWords: plan.requiredWords,
       focusCount: plan.focusWords.length,
-      // 最终模式下 requiredWords/focusCount 恒为 0，只看这两个数会以为选池坏了
+      // 最终模式与冷启动下 requiredWords/focusCount 恒为 0，
+      // 只看这两个数会以为选池坏了
       finalMode,
+      coldStart,
       minKnown,
       personalWords,
     },
@@ -1100,6 +1118,9 @@ async function generateReadingInner({ userId, body, signal, diag, onProgress, re
       personalWords,
       // true = 最终模式（hard + > 600 词 + 个人词库 ≥ 3000），没有目标词
       finalMode,
+      // true = 冷启动（≤ 200 词且个人词库凑不齐目标词，只用基础词写，没有目标词）。
+      // 与 finalMode 同走 selectTargets=false，统计覆盖度时必须先排除，否则分母对不上
+      coldStart,
       // 题目质量的非阻断提示（detail 答案与 evidence 重合不足）。
       // 与 violationsCount 不同：它们不参与失败判定，只是采样时的观察项
       questionWarnings,
@@ -1192,16 +1213,23 @@ export async function getCapacity({ userId, query }) {
       : maxTargetWordsFor(level, personalWords)
     // 本次请求是不是最终模式：hard + > 600 + 已解锁
     const finalMode = isFinalMode({ level, targetWords, personalWords })
-    const minKnown = finalMode ? 0 : minKnownFor(targetWords, level)
+    // 冷启动：100 / 200 词且个人词库凑不齐目标词——只用基础词写（md/39）
+    const coldStart = isColdStart({ level, targetWords, personalWords })
+    const minKnown = finalMode
+      ? 0
+      : minKnownFor(targetWords, level, { personalWords })
 
     available = selection.available
     knownWords = known.knownWords
     levels[level] = {
       // A 目标词门：这次参数凑不齐目标词，缩篇幅 / 换词源可解。
-      // 最终模式不挑目标词，这道门不存在——报 0 / true，免得前端显示「还差 100 个」
-      required: finalMode ? 0 : selection.neededVocab,
-      sufficient: finalMode ? true : selection.sufficient,
-      shortage: finalMode ? 0 : Math.max(0, selection.neededVocab - selection.available),
+      // 最终模式与冷启动都不挑目标词，这道门不存在——报 0 / true，
+      // 免得前端显示「还差 100 个」而把本可以点的生成按钮灰掉
+      required: finalMode || coldStart ? 0 : selection.neededVocab,
+      sufficient: finalMode || coldStart ? true : selection.sufficient,
+      shortage: finalMode || coldStart
+        ? 0
+        : Math.max(0, selection.neededVocab - selection.available),
       // 每档各自的候选池大小（English_vue/md/13 B1）：
       // 顶层 available 是循环里最后一次赋值的 hard 口径，easy 的池子更小，
       // 用 hard 的数字解释 easy 说「不够」，用户会觉得系统在骗人
@@ -1213,6 +1241,8 @@ export async function getCapacity({ userId, query }) {
       unknownBudget: unknownBudgetFor(level, config.maxUnknownWordsOverride),
       maxTargetWords,
       targetWordsAllowed: targetWords <= maxTargetWords,
+      // 本次参数是否走冷启动：前端可据此提示「这次只用基础词写，先去加词才能写更长的」
+      coldStart,
       // 解锁状态。`supported` 标明这一档有没有最终模式（只有 hard 有），
       // 前端不必把 "hard" 写进页面逻辑。
       finalMode: {

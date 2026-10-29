@@ -140,11 +140,18 @@ describe('lengthLadder', () => {
     ])
   })
 
-  it('knownWords 只够 100 词时：后面全是 known_words，601+ 是 final_mode', () => {
+  it('20 个词、638 个已知词：100/200 可用（200 走冷启动），300+ 仍是 known_words', () => {
     const ladder = lengthLadder({ level: 'hard', knownWords: 638, personalWords: 20 })
 
     expect(ladder[0]).toMatchObject({ targetWords: 100, unlocked: true, blockedBy: null })
-    expect(ladder[1]).toMatchObject({ targetWords: 200, blockedBy: 'known_words', shortage: 647 - 638 })
+    // md/39：200 词以内凑不齐目标词时退回基础词地板，20 个个人词也能写 200
+    expect(ladder[1]).toMatchObject({
+      targetWords: 200,
+      unlocked: true,
+      blockedBy: null,
+      minKnown: KNOWN_FLOOR,
+    })
+    expect(ladder[2]).toMatchObject({ targetWords: 300, blockedBy: 'known_words', shortage: 661 - 638 })
     expect(ladder[5]).toMatchObject({ targetWords: 600, blockedBy: 'known_words' })
     // 601+ 即便词够也先看解锁；这里是词不够 + 没解锁，解锁更根本
     expect(ladder[6]).toMatchObject({

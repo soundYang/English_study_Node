@@ -30,6 +30,15 @@ export const FINAL_MODE_MAX_WORDS = 1000
 /** /capacity 的篇幅阶梯步长 */
 export const LENGTH_STEP = 100
 
+/**
+ * 冷启动篇幅上限（md/39，2026-10-29 产品决定）。
+ *
+ * 个人词库为零（或凑不齐目标词）时，允许直接用基础词表写 100 / 200 词的文章：
+ * 基础词本来就是「这个用户会的基础词」，不违背「用你会过的词写」这条承诺。
+ * 300 词以上仍然要求个人词库——那已经不是「第一次试用」，而是要承担复习作用的阅读。
+ */
+export const COLD_START_MAX_TARGET_WORDS = 200
+
 const DEFAULT_LEVEL = 'easy'
 const HARD = 'hard'
 
@@ -115,12 +124,32 @@ function measuredFloorFor(targetWords, level) {
 }
 
 /**
+ * 冷启动判定（md/39）：篇幅 ≤ 200 且个人词库凑不齐这次的目标词。
+ *
+ * 这里只看个人词库条数，不看 scope 过滤后的候选池：scope 是「这次想复习哪批词」，
+ * 不是「用户会不会」。今天没有新词就要求降到冷启动门槛，等于让复习节奏左右生成资格。
+ *
+ * @param {{ level?: string, targetWords: number, personalWords?: number }} params
+ */
+export function isColdStart({ level = HARD, targetWords, personalWords = 0 }) {
+  const n = Math.max(1, Math.round(Number(targetWords) || 0))
+
+  if (n > COLD_START_MAX_TARGET_WORDS) return false
+
+  return Number(personalWords) < neededVocabulary({ targetWords: n, level })
+}
+
+/**
  * 写 `targetWords` 词的文章至少要认识多少词。
  *
  *   minKnown(N) = max(实测下限, 618 + A 门折算)
  *
  * A 门是硬地板：候选池都凑不齐目标词时，写得更长只会更糟。
  * 两项都随 N 单调不减，取 max 之后整张表也单调不减。
+ *
+ * **冷启动例外（md/39）**：`targetWords ≤ 200` 且个人词库凑不齐目标词时，
+ * 门槛退回「基础词表 ∪ 日历词」的地板（现算，当前是 618）——0 词用户也能写 100 / 200 词。
+ * 调用方要把 `personalWords` 传进来；不传（老脚本）则维持原口径。
  *
  * 超过常规上限（601–1000）分两种：
  *   · hard → 折算值 618 + 3000 = 3618。最终模式的真实闸门是 personalWords，
@@ -130,13 +159,22 @@ function measuredFloorFor(targetWords, level) {
  *
  * 写代码时不要把这个 3618 当常量用：生成链路在最终模式把 minKnown 直接置 0。
  */
-export function minKnownFor(targetWords, level = HARD) {
+export function minKnownFor(
+  targetWords,
+  level = HARD,
+  { personalWords = Number.POSITIVE_INFINITY } = {},
+) {
   const n = Math.max(1, Math.round(Number(targetWords) || 0))
 
   if (n > baseMaxWordsFor(HARD)) {
-    if (level !== HARD) return minKnownFor(baseMaxWordsFor(level), level)
+    if (level !== HARD) return minKnownFor(baseMaxWordsFor(level), level, { personalWords })
 
     return knownFloorFor(level) + FINAL_MODE_PERSONAL_WORDS
+  }
+
+  // 冷启动只放开 100 / 200：基础词表够写这么长，但没有个人词就没有复习对象
+  if (isColdStart({ level, targetWords: n, personalWords })) {
+    return knownFloorFor(level)
   }
 
   const byGate = knownFloorFor(level) + neededVocabulary({ targetWords: n, level })
@@ -170,7 +208,7 @@ export function lengthLadder({ level = HARD, knownWords = 0, personalWords = 0 }
   const ladder = []
 
   for (let targetWords = LENGTH_STEP; targetWords <= FINAL_MODE_MAX_WORDS; targetWords += LENGTH_STEP) {
-    const minKnown = minKnownFor(targetWords, level)
+    const minKnown = minKnownFor(targetWords, level, { personalWords })
     const knownOk = Number(knownWords) >= minKnown
     // 超过本档上限的两种原因要分开报：hard 601+ 是「没解锁」，easy 301+ 是「档位到头」
     const beyondFinalMode = level === HARD && targetWords > baseMaxWordsFor(HARD)
