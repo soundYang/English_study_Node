@@ -20,7 +20,8 @@ Word Reading 的 API 服务：Express 5 + MongoDB + 本地 COCA 词库 + DeepSee
 功能边界与已知限制见 [md/13_AI生成文章_功能与限制.md](md/13_AI生成文章_功能与限制.md)，
 现存缺陷台账见 [md/23_核心功能现存不足.md](md/23_核心功能现存不足.md)，
 后端缺陷与安全审查见 [md/45_后端缺陷与安全审查.md](md/45_后端缺陷与安全审查.md)，
-管理端查看「谁接入了自备 Key」见 [md/47_管理端自备Key可见性.md](md/47_管理端自备Key可见性.md)。
+管理端查看「谁接入了自备 Key」见 [md/47_管理端自备Key可见性.md](md/47_管理端自备Key可见性.md)，
+文件（Word / Excel / 图片）导入单词的方案见 [md/48_单词导入_Word_Excel_图片_方案.md](md/48_单词导入_Word_Excel_图片_方案.md)。
 
 ## 启动步骤
 
