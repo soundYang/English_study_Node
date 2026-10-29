@@ -46,6 +46,9 @@ function fingerprint(params) {
     targetWords: params?.targetWords ?? null,
     questionCount: params?.questionCount ?? null,
     vocabScope: [...(params?.vocabScope ?? [])].sort(),
+    // md/41：开关不同就是不同请求，不能复用上一个任务（否则用户打开开关后
+    // 拿到的仍是按 0 预算生成的文章）
+    allowNewWords: params?.allowNewWords === true,
   })
 }
 
@@ -76,6 +79,7 @@ export function toTaskDto(task) {
       targetWords: task.params?.targetWords ?? null,
       questionCount: task.params?.questionCount ?? null,
       vocabScope: [...(task.params?.vocabScope ?? [])],
+      allowNewWords: task.params?.allowNewWords === true,
     },
     selectedWords: (task.selectedWords ?? []).map((item) => ({
       word: item.word,
@@ -191,6 +195,9 @@ function toPlainParams(task) {
     targetWords: task.params?.targetWords,
     questionCount: task.params?.questionCount,
     vocabScope: [...(task.params?.vocabScope ?? [])],
+    // 重试必须沿用同一个开关：否则「允许生词」的任务重试后突然变严，
+    // 已收下的段与未写段的词表口径也不一致
+    allowNewWords: task.params?.allowNewWords === true,
   }
 }
 
@@ -422,6 +429,7 @@ export async function createGenerationTask({ userId, body, identity = null }) {
         targetWords: generationParams.targetWords,
         questionCount: generationParams.questionCount,
         vocabScope: generationParams.vocabScope,
+        allowNewWords: generationParams.allowNewWords === true,
       },
       model: config.deepseekModel,
       strategy: config.generationStrategy,

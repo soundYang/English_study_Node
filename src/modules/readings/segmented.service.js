@@ -114,6 +114,9 @@ async function generateOneSegment({
   // 补段模式：这次已经是同一个空槽的第二次机会，只给一轮，失败就认输——
   // 它刚走完一整条重写链，再走一遍是重复烧钱。
   singleAttempt = false,
+  // md/41：本段最多允许收下几个「真正越界」的生词。默认 0（原有零容忍）。
+  // 额度按段号静态分配，见 generateSegmented 里的说明。
+  unknownAllowance = 0,
 }) {
   // 段级篇幅硬上限：调用方按整篇预算分配好（W11 缺口 2）；
   // 单独调用本函数时退回「本段目标 × 1.15」的老口径。
@@ -131,6 +134,8 @@ async function generateOneSegment({
     overLength: false,
     accepted: false,
     unknownWords: [],
+    // 0 = 零容忍（默认）。>0 只可能出现在用户打开 allowNewWords 的请求里
+    unknownAllowance,
   }
 
   let text = ''
@@ -159,7 +164,10 @@ async function generateOneSegment({
     // 人名从任意一次尝试里认出来都收下：后面的段可能也会用到
     for (const name of vocabulary?.detectedNames ?? []) names.add(name)
 
-    const vocabularyOk = Boolean(vocabulary) && blockingOnly(vocabulary.violations).length === 0
+    // 额度内的「真生词」照收：unknownAllowance 默认 0，行为与原来完全一致。
+    // violations 已按词去重，这里数的是不同的越界词，不是出现次数。
+    const vocabularyOk =
+      Boolean(vocabulary) && blockingOnly(vocabulary.violations).length <= unknownAllowance
     lengthOk = countWords(text) <= limitWords
     violations = vocabulary?.violations ?? []
 
@@ -321,6 +329,9 @@ export async function generateSegmented({
   range,
   level,
   acceptedMax,
+  // md/41：全篇允许收下的不同生词数。0 = 原有零容忍；>0 时按段号静态分配，
+  // 见下面 unknownAllowances 的说明。
+  unknownBudget = 0,
   // 段级进度回调（md/31 §6）：每批跑完、每轮补段后各调一次，
   // 参数是单段状态 { index, status, words, text }。不传则整条链路行为不变。
   onSegment = null,
@@ -370,6 +381,12 @@ export async function generateSegmented({
     : segments.map((segment, index) => ({ ...segment, limitWords: ceilings[index] }))
   const outline = plan.map(({ id, goal }) => `${id}. ${goal}`).join('\n')
 
+  // 生词额度按段号静态分配（md/41）：前 `unknownBudget` 段各 1 个，其余 0。
+  // 段是并发生成的，没法共享「已用额度」计数器；静态分配是唯一能保证
+  // 「全篇收下的不同生词 ≤ 预算」的做法。补段沿用同一段号的额度，
+  // 续跑段本来就是上一轮按自己的额度通过的，不重新分配。
+  const unknownAllowances = plan.map((_, index) => (index < unknownBudget ? 1 : 0))
+
   if (typeof onPlan === 'function') await onPlan(plan)
 
   /** 写第 index 段。refill 时清空 mustUse：补段先保住正文，不再强求覆盖目标词。 */
@@ -389,6 +406,7 @@ export async function generateSegmented({
       userId,
       taskId,
       singleAttempt: refill,
+      unknownAllowance: unknownAllowances[index] ?? 0,
     })
 
   const indexes = segments.map((_, index) => index)
@@ -557,6 +575,11 @@ export async function generateSegmented({
       acceptedMax: Number.isFinite(acceptedMax) ? acceptedMax : null,
       limits: ceilings,
       targetRange: range.label,
+      // md/41：预算与「实际收下的不同生词」。开着开关但模型没用生词时这里是 0
+      unknownBudget,
+      acceptedUnknownWords: [
+        ...new Set(stats.filter((item) => item.accepted).flatMap((item) => item.unknownWords)),
+      ].length,
       attempts: stats.map(({ id, attempts }) => ({ id, attempts })),
     },
     'segmented generation assembled',

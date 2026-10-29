@@ -436,11 +436,11 @@ describe('POST /api/readings/generate · 结构校验与修正轮', () => {
 })
 
 describe('POST /api/readings/generate · 词汇校验', () => {
-  it('表外词不超过预算时直接放行，不进入修正轮（medium 预算 3）', async () => {
+  it('打开 allowNewWords 后，表外词不超过预算直接放行（medium 预算 3）', async () => {
     await seedWords(1300)
     chatJson.mockResolvedValue(reply(makePayload({ article: `${ARTICLE} Quizzical.` })))
 
-    const res = await generate(MEDIUM_BODY)
+    const res = await generate({ ...MEDIUM_BODY, allowNewWords: true })
 
     expect(res.status).toBe(201)
     // 预算是承诺不是配额：预算内的生词不值得再花一轮调用
@@ -475,7 +475,7 @@ describe('POST /api/readings/generate · 词汇校验', () => {
     // loud 的 rank 是 3120，在 §4.2 扩表后的放行范围之外，才测得到「生词」分支
     chatJson.mockResolvedValue(reply(makePayload({ article: `${ARTICLE} Loud.` })))
 
-    const res = await generate(MEDIUM_BODY)
+    const res = await generate({ ...MEDIUM_BODY, allowNewWords: true })
 
     expect(res.status).toBe(201)
     expect(res.body.newWords[0]).toMatchObject({ word: 'loud', source: 'dictionary' })
@@ -562,7 +562,7 @@ describe('POST /api/readings/generate · 词汇校验', () => {
     await seedWords(1300)
     chatJson.mockResolvedValue(reply(makePayload({ article: `${ARTICLE} Lina.` })))
 
-    const res = await generate(MEDIUM_BODY)
+    const res = await generate({ ...MEDIUM_BODY, allowNewWords: true })
 
     // 不能被句首/大写规则悄悄放行：它进了 newWords，说明确实按普通词校验过
     expect(res.status).toBe(201)

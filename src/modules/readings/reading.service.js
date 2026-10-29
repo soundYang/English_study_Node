@@ -285,6 +285,7 @@ async function recordFailure(diag, error) {
     minKnown: diag.known?.minKnown,
     personalWords: diag.known?.personalWords,
     finalMode: diag.known?.finalMode,
+    allowNewWords: diag.known?.allowNewWords,
     unknownBudget: diag.known?.unknownBudget,
     codeVersion,
   }
@@ -307,8 +308,9 @@ async function recordFailure(diag, error) {
  *       → 结构校验 → 用词校验 → 篇幅校验 →（最多 2 轮修正，三者共用）
  *       → 落库 → 返回安全 DTO。
  *
- * 放行规则：用词校验的预算是**按难度**给的（easy 0 / medium 3 / hard 5），
- * 预算内的生词带音标与释义落进 newWords，由前端做折叠提示。
+ * 放行规则（md/41）：用词预算默认 **0**，用户显式打开 `allowNewWords` 时才按难度给
+ * （easy 永远 0 / medium 3 / hard 5）；预算内的生词带音标与释义落进 newWords，
+ * 由前端做折叠提示。打开开关只是「允许」，模型全用熟词同样合法。
  *
  * 闸门顺序不能换（md/30 §7.3）：
  *   1. 词数 < 20 → 422 INSUFFICIENT_VOCABULARY（冷启动跳过，见 md/39）
@@ -393,8 +395,14 @@ async function generateReadingInner({ userId, body, signal, diag, onProgress, re
   // （hard 攒够 3000 词才能写到 1000），只能挪到读完词库之后，
   // 和「解锁检查 → 篇幅上限 → 最低词量」那道顺序一起排在下面。
 
-  // 生词预算：按难度取，显式 MAX_UNKNOWN_WORDS 时全局覆盖
-  const unknownBudget = unknownBudgetFor(params.level, config.maxUnknownWordsOverride)
+  // 生词预算（md/41）：默认 **0**——只有 medium / hard 且用户显式打开
+  // `allowNewWords` 时，才按难度给 3 / 5（显式 MAX_UNKNOWN_WORDS 时全局覆盖）。
+  // schema 已经拦下 easy + true；这里再兜一次，防止内部调用绕过 parse。
+  // 语义是「允许」不是「保证」：模型全用熟词同样合法。
+  const allowNewWords = params.level !== 'easy' && params.allowNewWords === true
+  const unknownBudget = allowNewWords
+    ? unknownBudgetFor(params.level, config.maxUnknownWordsOverride)
+    : 0
 
   const rounds = diag.rounds
 
@@ -482,6 +490,7 @@ async function generateReadingInner({ userId, body, signal, diag, onProgress, re
     personalWords,
     finalMode,
     coldStart,
+    allowNewWords,
     unknownBudget,
   }
 
@@ -751,6 +760,8 @@ async function generateReadingInner({ userId, body, signal, diag, onProgress, re
       level: params.level,
       // 整篇硬上限：各段上限之和被它约束，保证「每段合格 ⇒ 全篇不超长」（W11 缺口 2）
       acceptedMax: planAcceptedRange(params.targetWords).max,
+      // 生词预算（md/41）：分段路径按段号静态分配，保证全篇收下的生词 ≤ 预算
+      unknownBudget,
     })
 
     segmentStats = generated.stats
@@ -818,6 +829,8 @@ async function generateReadingInner({ userId, body, signal, diag, onProgress, re
         segments: segmentStats.length,
         accepted: segmentStats.filter((item) => item.accepted).length,
         segmentRepairCount,
+        allowNewWords,
+        unknownBudget,
         finishReason,
       },
       'segmented generation finished',
@@ -1070,6 +1083,8 @@ async function generateReadingInner({ userId, body, signal, diag, onProgress, re
       difficultyScore: difficulty.score,
       // true = 篇幅额度耗尽后补查的用词，这批文章的违规数以前是假的 0
       lateVocabulary,
+      allowNewWords,
+      unknownBudget,
       finishReason,
       repairRounds,
       tokenUsage,
@@ -1121,6 +1136,8 @@ async function generateReadingInner({ userId, body, signal, diag, onProgress, re
       // true = 冷启动（≤ 200 词且个人词库凑不齐目标词，只用基础词写，没有目标词）。
       // 与 finalMode 同走 selectTargets=false，统计覆盖度时必须先排除，否则分母对不上
       coldStart,
+      // md/41：用户是否打开了「允许少量生词」。easy 恒为 false
+      allowNewWords,
       // 题目质量的非阻断提示（detail 答案与 evidence 重合不足）。
       // 与 violationsCount 不同：它们不参与失败判定，只是采样时的观察项
       questionWarnings,

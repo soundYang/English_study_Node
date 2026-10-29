@@ -120,6 +120,8 @@ const generationTaskSchema = new Schema(
       targetWords: Number,
       questionCount: Number,
       vocabScope: { type: [String], default: [] },
+      // md/41：老任务没有这个字段，读取时一律按 false 处理
+      allowNewWords: { type: Boolean, default: false },
     },
 
     // done / total 都是「段」为单位，整篇路径没有段，恒为 0/0

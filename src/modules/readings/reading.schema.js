@@ -35,7 +35,11 @@ const targetWordsRules = z
   .max(1000, 'targetWords 最大为 1000')
   .refine((value) => value % 10 === 0, 'targetWords 必须是 10 的倍数')
 
-export const generateReadingSchema = z.object({
+/**
+ * 生成参数的公共字段。`generateReadingSchema` / `createTaskSchema` /
+ * `capacityQuerySchema` 共用这一份，避免三处手抄分叉。
+ */
+const readingShape = {
   level: z.enum(LEVELS, { error: 'level 只能是 easy / medium / hard' }),
   targetWords: targetWordsRules,
   // 词源多选。default 只兜 undefined，显式传 [] 仍会被 min(1) 拦成 400——
@@ -56,7 +60,30 @@ export const generateReadingSchema = z.object({
       (value) => QUESTION_COUNTS.includes(value),
       'questionCount 只能是 3 / 5 / 8',
     ),
-})
+  /**
+   * 是否允许偶尔出现少量生词（md/41）。
+   *
+   * easy 的「0 生词」是卖点，固定不允许；medium / hard 默认关，
+   * 打开后最多放行该难度的 `unknownBudget`（3 / 5）个表外词。
+   * 语义是「允许」不是「保证」：模型全用熟词也完全合法。
+   */
+  allowNewWords: z
+    .boolean({ error: 'allowNewWords 必须是布尔值' })
+    .optional()
+    .default(false),
+}
+
+/** easy 不能开生词容忍：这是难度承诺的一部分，不是参数偏好 */
+const allowNewWordsRule = (value) => !(value.allowNewWords && value.level === 'easy')
+
+const ALLOW_NEW_WORDS_MESSAGE = 'easy 难度不支持生词，allowNewWords 只能用于 medium / hard'
+
+export const generateReadingSchema = z
+  .object(readingShape)
+  .refine(allowNewWordsRule, {
+    message: ALLOW_NEW_WORDS_MESSAGE,
+    path: ['allowNewWords'],
+  })
 
 /**
  * POST /api/readings/generate/tasks 的请求体（md/31 §3.1）。
@@ -68,15 +95,20 @@ export const generateReadingSchema = z.object({
  * 同一个 token 重复提交只跑一次（双击、网络重发）。故意不设成必填：
  * 没有它也能用「同参数复用」兜住绝大部分重复。
  */
-export const createTaskSchema = z.object({
-  ...generateReadingSchema.shape,
-  clientToken: z
-    .string({ error: 'clientToken 必须是字符串' })
-    .trim()
-    .min(8, 'clientToken 至少 8 个字符')
-    .max(128, 'clientToken 最多 128 个字符')
-    .optional(),
-})
+export const createTaskSchema = z
+  .object({
+    ...readingShape,
+    clientToken: z
+      .string({ error: 'clientToken 必须是字符串' })
+      .trim()
+      .min(8, 'clientToken 至少 8 个字符')
+      .max(128, 'clientToken 最多 128 个字符')
+      .optional(),
+  })
+  .refine(allowNewWordsRule, {
+    message: ALLOW_NEW_WORDS_MESSAGE,
+    path: ['allowNewWords'],
+  })
 
 /**
  * GET /api/readings/capacity 的查询参数。
@@ -91,7 +123,7 @@ export const capacityQuerySchema = z.object({
     .pipe(targetWordsRules),
   vocabScope: z.preprocess(
     (value) => (value === undefined ? undefined : [].concat(value)),
-    generateReadingSchema.shape.vocabScope,
+    readingShape.vocabScope,
   ),
 })
 

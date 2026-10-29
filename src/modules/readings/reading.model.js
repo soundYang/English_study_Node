@@ -143,6 +143,9 @@ const segmentMetaSchema = new Schema(
     // 这段是否走过补段（md/27 §3.2 M1）：首轮被丢、第二轮又写了一次。
     // 用它算补段命中率，才知道 M1 到底救回了多少篇幅。
     refilled: Boolean,
+    // md/41：这一段分到的生词额度（0 = 零容忍）。与 unknownWords 一起看，
+    // 才知道某个生词是「被放行的」还是「校验漏了」
+    unknownAllowance: Number,
     unknownWords: { type: [String], default: [] },
   },
   { _id: false },
@@ -246,6 +249,7 @@ const readingSchema = new Schema(
       personalWords: Number, // 个人词库条数（learning + mastered），最终模式的解锁口径
       finalMode: Boolean, // true = 最终模式（无目标词）
       coldStart: Boolean, // true = 冷启动（≤ 200 词只用基础词，无目标词，md/39）
+      allowNewWords: Boolean, // true = 用户打开「允许少量生词」（仅 medium / hard，md/41）
       // 题目质量的非阻断提示；`[]` = 检查过没问题，undefined = 老文档未检查
       questionWarnings: { type: [questionWarningSchema] },
       // true = 在跳过已知词门槛的采样实例上生成（md/27 阶段二容量采样）。

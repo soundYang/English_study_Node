@@ -72,6 +72,9 @@ const generationFailureSchema = new Schema(
     minKnown: Number,
     personalWords: Number,
     finalMode: Boolean,
+    // md/41：用户是否打开了「允许少量生词」。与 unknownBudget 一起看，
+    // 才知道 0 预算是因为难度还是因为没开开关
+    allowNewWords: Boolean,
     unknownBudget: Number,
     codeVersion: String,
   },
