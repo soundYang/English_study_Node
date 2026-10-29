@@ -36,8 +36,6 @@
     "mongoose": "8.24.7",
     "multer": "2.5.0",
     "openai": "7.45.0",
-    "pino": "10.4.0",
-    "pino-http": "11.0.0",
     "tesseract.js": "7.0.0",
     "zod": "4.6.7"
   },

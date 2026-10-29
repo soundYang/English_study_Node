@@ -1,7 +1,6 @@
 import cors from 'cors'
 import express from 'express'
 import helmet from 'helmet'
-import pinoHttp from 'pino-http'
 
 import { config } from './config/index.js'
 import adminRoutes from './modules/admin/admin.routes.js'
@@ -18,9 +17,9 @@ import quotaRoutes from './modules/quota/quota.routes.js'
 import readingRoutes from './modules/readings/reading.routes.js'
 import wordRoutes from './modules/words/word.routes.js'
 import { ERROR_CODES } from './shared/errors.js'
-import { logger } from './shared/logger.js'
 import { currentUser } from './shared/middleware/currentUser.js'
 import { errorHandler } from './shared/middleware/errorHandler.js'
+import { requestLogger } from './shared/middleware/requestLogger.js'
 
 /**
  * 组装 Express 应用（不监听端口）。
@@ -55,19 +54,9 @@ export function createApp() {
   )
   app.use(express.json({ limit: '64kb' }))
 
-  // pino-http 自带 req.log 和 req.id，不再另写 requestId 中间件（两套会打架）
-  app.use(
-    pinoHttp({
-      logger,
-      // 健康检查会被探活工具高频调用，日志里全是它没有价值
-      autoLogging: { ignore: (req) => req.url === '/api/health' },
-      customLogLevel: (req, res, err) => {
-        if (err || res.statusCode >= 500) return 'error'
-        if (res.statusCode >= 400) return 'warn'
-        return 'info'
-      },
-    }),
-  )
+  // 请求日志：一个请求一行可读文本，同时提供 req.id / req.log（md/13 C3）。
+  // 替换 pino-http 的原因是它默认打整个 req / res 的 JSON，终端里看不出前端调了什么。
+  app.use(requestLogger)
 
   // 解析令牌 → req.userId（md/33 §7.1）。只解析不拦截，见 currentUser.js
   app.use(currentUser)
