@@ -35,14 +35,13 @@ afterEach(() => {
 })
 
 describe('GET /api/health', () => {
-  it('mongo 已连接 → 200，词库数字是过滤后的可检索条数', async () => {
+  // md/45 L7：这个接口未认证就能打，所以只回「活着 / 连上库了没有」。
+  // 词库条数与生成队列、熔断状态都挪到了 GET /api/admin/runtime
+  it('mongo 已连接 → 200，响应体只有状态', async () => {
     const res = await request(app).get('/api/health')
 
     expect(res.status).toBe(200)
-    expect(res.body).toMatchObject({ status: 'ok', mongo: 'connected' })
-    // 17436 是可检索条数；17648 是原始条数，写错这个数会让「健康」看起来正常但检索缺词
-    expect(res.body.dictionary.words).toBe(17436)
-    expect(typeof res.body.dictionary.loadedAt).toBe('string')
+    expect(res.body).toEqual({ status: 'ok', mongo: 'connected' })
   })
 
   it('mongo 未连接 → 503 + degraded', async () => {
@@ -52,22 +51,7 @@ describe('GET /api/health', () => {
       const res = await request(app).get('/api/health')
 
       expect(res.status).toBe(503)
-      expect(res.body).toEqual({
-        status: 'degraded',
-        mongo: 'disconnected',
-        dictionary: { words: 17436, loadedAt: expect.any(String) },
-        // md/55 §7.2：健康检查的纯 additive 字段；测试环境两个闸门都关闭
-        generation: {
-          active: 0,
-          queued: 0,
-          pending: 0,
-          maxActive: 0,
-          maxQueue: 0,
-          upstreamActive: 0,
-          upstreamWaiting: 0,
-          circuit: 'closed',
-        },
-      })
+      expect(res.body).toEqual({ status: 'degraded', mongo: 'disconnected' })
     } finally {
       restore()
     }

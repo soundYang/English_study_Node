@@ -6,6 +6,7 @@ import { AppMeta } from '../modules/auth/appmeta.model.js'
 import { parseBearer } from '../modules/auth/auth.middleware.js'
 import {
   LEGACY_DATA_KEY,
+  mayClaimLegacyDataKey,
   resetLoginFailures,
   resolveSession,
   SESSION_TTL_SECONDS,
@@ -111,7 +112,7 @@ describe('POST /api/auth/register', () => {
     expect(sessions[0].tokenHash).not.toBe(body.token)
   })
 
-  it('第一个注册的用户接管 local-user 的历史数据，第二个拿到独立数据域', async () => {
+  it('白名单内的账号接管 local-user 的历史数据，其余账号拿到独立数据域（md/45 M1）', async () => {
     await registerUser({ username: 'FirstUser' })
     await registerUser({ username: 'SecondUser' })
 
@@ -122,6 +123,30 @@ describe('POST /api/auth/register', () => {
     expect(second.dataKey).toMatch(/^u_/)
     expect(second.dataKey).not.toBe(first.dataKey)
     expect(await AppMeta.countDocuments({ _id: 'legacy-owner' })).toBe(1)
+  })
+
+  it('白名单外的账号即使先注册，也抢不到 local-user 的历史数据（md/45 M1）', async () => {
+    await Word.create({ userId: LEGACY_DATA_KEY, word: 'abandon', meaning: '放弃', source: 'manual' })
+
+    const intruder = await registerUser({ username: 'Intruder' })
+    const user = await User.findOne({ usernameLower: 'intruder' })
+
+    expect(user.dataKey).toMatch(/^u_/)
+    // 名额没被消耗：真正的站主之后注册仍能接管
+    expect(await AppMeta.countDocuments({ _id: 'legacy-owner' })).toBe(0)
+
+    const words = await request(app)
+      .get('/api/words')
+      .set('Authorization', `Bearer ${intruder.token}`)
+
+    expect(words.body.total).toBe(0)
+  })
+
+  it('白名单判定：空名单谁都不许，忽略大小写与首尾空格', () => {
+    expect(mayClaimLegacyDataKey('SoundYang', [])).toBe(false)
+    expect(mayClaimLegacyDataKey('', [''])).toBe(false)
+    expect(mayClaimLegacyDataKey('SoundYang', ['soundyang'])).toBe(true)
+    expect(mayClaimLegacyDataKey(' soundyang ', ['soundyang'])).toBe(true)
   })
 
   it('验证码错误 → 400 CAPTCHA_INVALID，不建用户也不占 legacy 名额', async () => {

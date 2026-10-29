@@ -382,6 +382,24 @@ describe('GET /api/admin/users/:dataKey', () => {
   })
 })
 
+describe('GET /api/admin/runtime', () => {
+  it('运行态只在管理端：词库条数与生成队列（md/45 L7）', async () => {
+    const res = await authedGet('/api/admin/runtime')
+
+    expect(res.status).toBe(200)
+    // 17436 是可检索条数；17648 是原始条数，写错这个数会让「健康」看起来正常但检索缺词
+    expect(res.body.dictionary.words).toBe(17436)
+    expect(typeof res.body.dictionary.loadedAt).toBe('string')
+    expect(res.body.generation).toMatchObject({ active: 0, queued: 0, circuit: 'closed' })
+  })
+
+  it('未认证 → 401，与其它管理端接口一致', async () => {
+    const res = await request(app).get('/api/admin/runtime')
+
+    expect(res.status).toBe(401)
+  })
+})
+
 describe('GET /api/admin/overview', () => {
   it('用户数 / 文章数 / 反馈计数 / 全局免费池都在', async () => {
     await seedUserA()

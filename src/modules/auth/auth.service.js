@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 
+import { config } from '../../config/index.js'
 import {
   captchaRequired,
   invalidCredentials,
@@ -119,13 +120,30 @@ function mapDuplicateKeyError(err) {
 }
 
 /**
- * 让第一个注册成功的用户接管 `local-user` 的历史数据。
+ * 这个用户名是否被允许接管 legacy 数据（md/45 M1）。
+ *
+ * `allowed` 参数只为测试：生产永远读配置里的白名单。
+ */
+export function mayClaimLegacyDataKey(username, allowed = config.legacyClaimUsers) {
+  const name = String(username ?? '').trim().toLowerCase()
+
+  return name !== '' && allowed.includes(name)
+}
+
+/**
+ * 让**白名单内**的用户接管 `local-user` 的历史数据。
+ *
+ * 修复前是「谁先注册谁拿」——先注册的未必是站主，一次抢跑就把全部历史数据
+ * 交给陌生人。现在按身份授权：`LEGACY_CLAIM_USER` 没配就谁都不接管，
+ * 历史数据留在原处等人工迁移。
  *
  * 必须**在用户建好之后**再抢：反过来的话，一次「用户名已被占用」的注册
- * 也会把这个名额消耗掉，真正的第一个用户反而拿不到数据。
+ * 也会把这个名额消耗掉，真正的白名单用户反而拿不到数据。
  * 用户此时还没有任何业务数据，改 dataKey 是安全的。
  */
 async function claimLegacyDataKey(user) {
+  if (!mayClaimLegacyDataKey(user.username)) return
+
   try {
     await AppMeta.create({ _id: LEGACY_META_ID, claimedBy: user._id, claimedAt: new Date() })
   } catch (err) {

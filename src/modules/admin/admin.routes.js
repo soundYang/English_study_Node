@@ -9,7 +9,10 @@ import {
   listFeedback,
   updateFeedback,
 } from '../feedback/feedback.service.js'
+import { dictionary, loadedAt } from '../dictionary/dictionary.loader.js'
 import logRoutes from '../logs/log.routes.js'
+import { getAiRuntimeSnapshot } from '../readings/ai.client.js'
+import { getGenerationRuntimeSnapshot } from '../readings/generation-task.service.js'
 import { recordAdminAudit } from './admin-audit.service.js'
 import { requireAdmin } from './admin.middleware.js'
 import {
@@ -72,6 +75,31 @@ router.use('/logs', logRoutes)
 
 router.get('/overview', async (req, res) => {
   res.json(await getOverview())
+})
+
+/**
+ * 运行态（md/45 L7）：原先是 `/api/health` 的一部分，但那个接口未认证即可访问。
+ * 词库条数、生成队列、上游熔断都是「服务有多满」的信息，只该给管理员看；
+ * 探活只需要知道「活着 + 连上库了」。
+ */
+router.get('/runtime', (req, res) => {
+  const generation = getGenerationRuntimeSnapshot()
+  const ai = getAiRuntimeSnapshot()
+
+  res.json({
+    dictionary: { words: dictionary.size, loadedAt },
+    // 不暴露 key、用户或任务 id；这些都是计数与阈值
+    generation: {
+      active: generation.active,
+      queued: generation.queued,
+      pending: generation.pending,
+      maxActive: generation.maxActive,
+      maxQueue: generation.maxQueue,
+      upstreamActive: ai.upstreamActive,
+      upstreamWaiting: ai.upstreamWaiting,
+      circuit: ai.circuit,
+    },
+  })
 })
 
 router.get('/users', async (req, res) => {

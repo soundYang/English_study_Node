@@ -97,6 +97,15 @@ async function main() {
     )
   }
 
+  // legacy 接管白名单（md/45 M1）：没配 = 谁都不接管，历史数据留在 DEFAULT_USER_ID 名下。
+  // 这条 warn 只在没配的时候打，因为只有这种情况需要人做决定：
+  // 要么确认没有历史数据，要么配上站主用户名，要么接受它不再可达。
+  if (config.legacyClaimUsers.length === 0) {
+    logger.warn(
+      `LEGACY_CLAIM_USER 未配置：不会有账号自动接管 ${config.defaultUserId} 的历史数据。若库里有登录体系之前的数据需要保留，配置该变量后再注册对应用户`,
+    )
+  }
+
   // 队列心跳必须在开始接任务之前启动，否则正常排队的任务会被巡检误杀
   startGenerationScheduler()
 

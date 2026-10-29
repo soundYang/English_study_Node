@@ -69,6 +69,23 @@ function readEnum(key, allowed, fallback) {
 }
 
 /**
+ * legacy 数据接管白名单（md/45 M1），逗号分隔、忽略大小写。
+ *
+ * 只有这里列出的用户名在**注册时**会把 `dataKey` 改成 DEFAULT_USER_ID，
+ * 从而继承登录体系上线前的历史数据。留空 = 谁都不接管。
+ *
+ * 原来按「谁先注册谁拿」授权：先注册的未必是站主，一次抢跑就等于
+ * 把全部词库、阅读记录和 token 流水交给陌生人。改成按身份授权后，
+ * 抢跑最多只是占掉一个用户名，历史数据还在原处等人工迁移。
+ */
+function readLegacyClaimUsers() {
+  return (process.env.LEGACY_CLAIM_USER ?? '')
+    .split(',')
+    .map((item) => item.trim().toLowerCase())
+    .filter(Boolean)
+}
+
+/**
  * 允许的浏览器来源（CORS），逗号分隔。
  *
  * 支持多源是为了局域网联调：本机用 `http://localhost:5173`、手机用
@@ -155,6 +172,8 @@ export const config = Object.freeze({
 
   // 用户（MVP 无登录，所有请求都归属这一个用户）
   defaultUserId: process.env.DEFAULT_USER_ID || 'local-user',
+  // 能接管 DEFAULT_USER_ID 历史数据的用户名；空数组 = 不接管（见 readLegacyClaimUsers）
+  legacyClaimUsers: readLegacyClaimUsers(),
 
   // DeepSeek
   deepseekApiKey: process.env.DEEPSEEK_API_KEY || '',

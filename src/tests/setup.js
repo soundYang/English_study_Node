@@ -33,6 +33,9 @@ process.env.RATE_LIMIT_ENABLED = 'false'
 // 开发机 .env 里若已打开，所有不带令牌的用例会集体变成 401，失败位置还看不出原因。
 // 要验证强制鉴权的用例（auth-enforced.test.js）在文件顶部自己改 true 再动态 import。
 process.env.AUTH_ENFORCED = 'false'
+// legacy 接管（md/45 M1）改为白名单：默认谁都不接管，这里显式给两个用例名字。
+// 其余用例注册的用户名都不在名单里，行为与生产默认（不接管）一致
+process.env.LEGACY_CLAIM_USER = 'FirstUser,LegacyOwner'
 // 每日额度总开关默认关闭（md/35 §10.1）：绝大多数用例不关心额度，
 // 开着会让「连着建 4 个不同任务」的老用例莫名其妙 429。
 // 要验证额度的用例在文件顶部自己改成 true 再动态 import（同 auth-enforced.test.js）。
