@@ -10,6 +10,8 @@ import { Session } from './modules/auth/session.model.js'
 import { User } from './modules/auth/user.model.js'
 import { loadDictionary } from './modules/dictionary/dictionary.loader.js'
 import { Feedback } from './modules/feedback/feedback.model.js'
+import { AccessLog } from './modules/logs/access-log.model.js'
+import { ErrorLog } from './modules/logs/error-log.model.js'
 import { Quota } from './modules/quota/quota.model.js'
 import { basicWordsByLevel } from './modules/readings/basic-words.js'
 import { GenerationTask } from './modules/readings/generation-task.model.js'
@@ -54,6 +56,10 @@ async function main() {
     // 自备 Key 的去重靠 { userId, provider } 唯一索引（md/43 §4.4）；
     // 漏建时并发 PUT 会留下两条，解密时取哪条都不对
     UserApiKey.syncIndexes(),
+    // 日志表的 TTL 索引是「不会无限增长」的唯一保证（md/53 §4）；
+    // 漏建时表会一直长，最后撑爆磁盘
+    AccessLog.syncIndexes(),
+    ErrorLog.syncIndexes(),
   ])
   logger.info('indexes synced')
 

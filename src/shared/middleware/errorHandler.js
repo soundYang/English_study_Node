@@ -1,4 +1,38 @@
+import { recordError } from '../../modules/logs/log.service.js'
 import { ApiError, ERROR_CODES } from '../errors.js'
+
+/**
+ * 落库用的错误码。`err.code` 优先（mongoose 的 11000 这类最有信息量），
+ * 没有再用 `err.name`；但普通 `new Error()` 的 name 恒为 'Error'，
+ * 按它分组等于没分组，统一归到 INTERNAL_ERROR。
+ */
+function errorCodeOf(err) {
+  if (typeof err?.code === 'string' || typeof err?.code === 'number') {
+    return String(err.code)
+  }
+
+  const name = typeof err?.name === 'string' ? err.name : ''
+  return name && name !== 'Error' ? name : ERROR_CODES.INTERNAL_ERROR
+}
+
+/**
+ * 把没被业务接住的异常落库（md/53）。只记 5xx：4xx 是预期内的分支，
+ * 答案在访问日志的 statusCode 里，混进来只会把真正的异常淹掉。
+ */
+function persistServerError(req, { statusCode = 500, code, message, stack }) {
+  recordError({
+    requestId: String(req.id ?? ''),
+    method: String(req.method ?? ''),
+    path: String(req.originalUrl ?? '').slice(0, 400),
+    statusCode,
+    code: String(code ?? '').slice(0, 100),
+    message: String(message ?? '').slice(0, 1000),
+    stack: String(stack ?? '').slice(0, 8000),
+    ip: String(req.ip ?? ''),
+    userId: String(req.userId ?? ''),
+    userAgent: String(req.get?.('user-agent') ?? '').slice(0, 300),
+  })
+}
 
 /**
  * 统一错误出口。必须是 4 个参数，且注册在所有路由之后——
@@ -10,6 +44,16 @@ export function errorHandler(err, req, res, _next) {
 
   // 已经归一化的业务异常 → 按原样返回
   if (err instanceof ApiError) {
+    // 5xx 的 ApiError 仍然是「意外」，需要留痕；4xx 是预期分支，不写
+    if (err.status >= 500) {
+      persistServerError(req, {
+        statusCode: err.status,
+        code: err.code,
+        message: err.message,
+        stack: err.stack,
+      })
+    }
+
     // 每日额度是「等明天」，必须给标准 Retry-After（md/35 §7.2）。
     // 秒数按 resetAt 现算而不是缓存在 details 里：从扣额度到响应发出可能隔了几秒
     if (err.code === ERROR_CODES.QUOTA_EXCEEDED && err.details?.resetAt) {
@@ -52,6 +96,11 @@ export function errorHandler(err, req, res, _next) {
   // 其余一律 500：日志留全栈，响应只给固定文案。
   // 红线：绝不能把 err.message 或堆栈返回给前端。
   req.log?.error({ err }, 'unhandled error')
+  persistServerError(req, {
+    code: errorCodeOf(err),
+    message: err?.message,
+    stack: err?.stack,
+  })
   res.status(500).json({
     error: { code: ERROR_CODES.INTERNAL_ERROR, message: '服务器内部错误' },
     // 500 最需要这个号：用户只能提供「什么时候点的」，有 id 才能对上日志

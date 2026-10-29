@@ -10,6 +10,7 @@ import {
   listFeedback,
   updateFeedback,
 } from '../feedback/feedback.service.js'
+import logRoutes from '../logs/log.routes.js'
 import { requireAdmin } from './admin.middleware.js'
 import {
   adminFeedbackPatchSchema,
@@ -65,6 +66,9 @@ router.get('/auth/me', requireAdmin, (req, res) => {
 
 // ——— 以下全部需要管理员令牌 ———
 router.use(requireAdmin)
+
+// 访问 / 报错日志查询（md/53）：里面有 IP，只能挂在 requireAdmin 后面
+router.use('/logs', logRoutes)
 
 router.get('/overview', async (req, res) => {
   res.json(await getOverview())

@@ -201,6 +201,15 @@ export const config = Object.freeze({
   taskHeartbeatMs: toNumber('TASK_HEARTBEAT_MS', 15_000),
   taskStaleMs: toNumber('TASK_STALE_MS', 60_000),
 
+  // ——— 日志落库（md/53）———
+  // 访问日志：一次请求一条，含 IP，默认保留 30 天。
+  // 测试环境默认关闭：900+ 个用例每个都发请求，开着会让测试多出几万次写库。
+  accessLogEnabled: readBoolean('ACCESS_LOG_ENABLED', nodeEnv !== 'test'),
+  accessLogRetentionDays: toNumber('ACCESS_LOG_RETENTION_DAYS', 30),
+  // 报错日志：只记 5xx，比访问日志少得多，默认留 90 天
+  errorLogEnabled: readBoolean('ERROR_LOG_ENABLED', nodeEnv !== 'test'),
+  errorLogRetentionDays: toNumber('ERROR_LOG_RETENTION_DAYS', 90),
+
   // 限流（次 / 分钟）
   // 总开关：测试环境默认关闭。开着的话一个 50 次预检的验收用例会把后面的用例
   // 一起打成 429，且失败位置看起来跟限流毫无关系。要验证限流本身的用例
