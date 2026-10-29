@@ -60,6 +60,10 @@ const CJK_PATTERN = /[㐀-鿿豈-﫿]/
 const ASCII_PATTERN = /^[\x20-\x7e]+$/
 
 function looksLikeMeaning(text) {
+  // U+FFFD 是解码失败留下的替换符；正常的释义不会包含它，
+  // 哪怕同一串里恰好蒙对了一个汉字（如「�糿」）
+  if (text.includes('�')) return false
+
   return CJK_PATTERN.test(text) || ASCII_PATTERN.test(text)
 }
 
@@ -167,7 +171,7 @@ try {
     `${write ? '已写入' : 'DRY-RUN（加 --yes 才写库）'}\n` +
       `扫描 manual ${scanned} 条，可补全 ${candidates} 条` +
       (write ? `，实际写入 ${written} 条` : '') +
-      (dropped ? `；丢弃乱码释义 ${dropped} 条（既无汉字也不是英文）` : ''),
+      (dropped ? `；丢弃乱码释义 ${dropped} 条（含替换符或既无汉字也不是英文）` : ''),
   )
 
   for (const sample of samples) {
