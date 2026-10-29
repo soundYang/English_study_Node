@@ -28,6 +28,7 @@ export function usageDay(now = new Date()) {
  *   promptTokens?: number,
  *   completionTokens?: number,
  *   totalTokens: number,
+ *   keySource?: 'free'|'user',
  *   now?: Date,
  * }} payload
  */
@@ -39,6 +40,8 @@ export async function recordUsageEvent({
   promptTokens = 0,
   completionTokens = 0,
   totalTokens,
+  // md/43：默认 free，兼容所有老调用点
+  keySource = 'free',
   now = new Date(),
 }) {
   // 没有归属就不记：宁可少一条流水，也不要把账记到别人头上
@@ -54,6 +57,7 @@ export async function recordUsageEvent({
       promptTokens,
       completionTokens,
       totalTokens,
+      keySource,
       day: usageDay(now),
     })
   } catch (error) {
@@ -82,13 +86,20 @@ export function emptyTokenBuckets() {
  * @param {string[]} userIds dataKey 列表
  * @param {Array<{_id: any, status: string}>} [taskRows] 调用方已知的任务状态；
  *   不传则按流水里出现的 taskId 自行查询
+ * @param {{includeUserKey?: boolean}} [options] 管理端统计传 false（md/43 §7.2）：
+ *   花自备 Key 的调用不占平台成本，混进后台报表会让「平台花了多少」虚高
  */
-export async function tokenBreakdownByUsers(userIds, taskRows = null) {
+export async function tokenBreakdownByUsers(userIds, taskRows = null, { includeUserKey = true } = {}) {
   const result = new Map()
   if (!Array.isArray(userIds) || userIds.length === 0) return result
 
+  // 老流水没有 keySource 字段（md/43 之前的文档）：`$ne: 'user'` 会把缺字段的
+  // 文档一起算进来，等价于「按 free 处理」（$in 则会把它们漏掉）
+  const match = { userId: { $in: userIds } }
+  if (!includeUserKey) match.keySource = { $ne: 'user' }
+
   const rows = await TokenUsage.aggregate([
-    { $match: { userId: { $in: userIds } } },
+    { $match: match },
     {
       $group: {
         _id: { userId: '$userId', taskId: '$taskId', kind: '$kind' },
@@ -144,9 +155,10 @@ export async function tokenBreakdownByUsers(userIds, taskRows = null) {
  *
  * @param {string} userId dataKey
  * @param {Array<{_id: any, status: string}>} [taskRows] 调用方先查好的任务状态
+ * @param {{includeUserKey?: boolean}} [options]
  */
-export async function tokenBreakdownForUser(userId, taskRows = null) {
-  const map = await tokenBreakdownByUsers([userId], taskRows)
+export async function tokenBreakdownForUser(userId, taskRows = null, options = undefined) {
+  const map = await tokenBreakdownByUsers([userId], taskRows, options)
 
   return map.get(userId) ?? emptyTokenBuckets()
 }

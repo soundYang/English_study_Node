@@ -1,4 +1,6 @@
 import { config } from '../../config/index.js'
+import { ERROR_CODES } from '../../shared/errors.js'
+import { freeAiKey, markUserApiKeyInvalid } from '../ai-keys/ai-key.service.js'
 import { recordTokenUsage } from '../budget/budget.service.js'
 import { recordUsageEvent } from '../usage/token-usage.service.js'
 import { chatJson } from './ai.client.js'
@@ -22,6 +24,7 @@ import { chatJson } from './ai.client.js'
  *   temperature?: number,
  *   userId?: string,
  *   taskId?: string|object|null,
+ *   aiKey?: { source: 'free'|'user', apiKey: string, keyId: string|null },
  * }} params
  */
 export async function callModel({
@@ -33,14 +36,28 @@ export async function callModel({
   temperature = 0.8,
   userId = '',
   taskId = null,
+  // md/43：默认免费 Key。生成入口解析一次后一路传下来，不在每次调用里查库
+  aiKey = freeAiKey(),
 }) {
   const startedAt = Date.now()
-  const response = await chatJson({
-    messages,
-    signal,
-    maxTokens: config.maxOutputTokens,
-    temperature,
-  })
+  let response
+
+  try {
+    response = await chatJson({
+      messages,
+      signal,
+      maxTokens: config.maxOutputTokens,
+      temperature,
+      apiKey: aiKey.apiKey,
+      keySource: aiKey.source,
+    })
+  } catch (error) {
+    // 上游明确拒绝自备 Key：标记失效，下次设置页能直接提示「已失效」
+    if (error?.code === ERROR_CODES.USER_API_KEY_INVALID) {
+      void markUserApiKeyInvalid(aiKey.keyId)
+    }
+    throw error
+  }
   const usage = response.usage ?? {}
   const promptTokens = usage.prompt_tokens ?? 0
   const completionTokens = usage.completion_tokens ?? 0
@@ -62,10 +79,10 @@ export async function callModel({
     repairFor,
   })
 
-  // 全局免费池按**每一次真实调用**累计（md/36）：失败的文章、被取消的任务、
-  // 补段重试花掉的钱都是账单上的钱。不 await：记账不该拖慢生成，
-  // 也不该在写库失败时把一次已经付过钱的调用再搞失败
-  void recordTokenUsage(totalTokens)
+  // 全局免费池只累计**免费 Key**的花费（md/43 §7.1）：自备 Key 花的是用户的钱，
+  // 计进全站免费池会让「还剩多少免费额度」直接失真。
+  // 不 await：记账不该拖慢生成，也不该在写库失败时把一次已经付过钱的调用再搞失败
+  if (aiKey.source === 'free') void recordTokenUsage(totalTokens)
 
   // 同一次调用再记一条**归属到用户**的流水（md/37 §3.5）。任务触发的带 taskId，
   // 同步 /generate 没有任务所以为 null。两条都 `void`，失败只打日志
@@ -77,6 +94,7 @@ export async function callModel({
     promptTokens,
     completionTokens,
     totalTokens,
+    keySource: aiKey.source,
   })
 
   return response

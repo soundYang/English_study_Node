@@ -40,6 +40,12 @@ process.env.DAILY_QUOTA_ENABLED = 'false'
 // 全局免费池（md/36）同样默认关闭：否则每个打桩的模型调用都要写一次计数器，
 // 整个套件会多出成千上万次与断言无关的写库。要验证预算的用例自己开。
 process.env.TOKEN_BUDGET_ENABLED = 'false'
+// 自备 Key（md/43）默认关闭：开发机 .env 里配了 Secret 的话，所有生成用例都会
+// 多一次 UserApiKey 查询（功能上仍是免费路径，但没必要）。要测的用例自己开。
+// 显式留空 Secret，挡住 dotenv 从 .env 读进来的值——空 Secret 等于功能关闭
+process.env.USER_API_KEY_ENABLED = 'false'
+process.env.USER_API_KEY_SECRET = ''
+process.env.USER_API_KEY_SECRET_PREVIOUS = ''
 
 // 绝大多数用例测的是整篇路径的行为（修正轮、结构错误、失败样本），
 // 打桩也只认识「一次返回整篇文章」的形状。生产默认是 segmented，
@@ -51,6 +57,7 @@ process.env.SEGMENT_MAX_ATTEMPTS = '2'
 process.env.SEGMENT_TEMPERATURE = '0.5'
 
 const { AdminSession } = await import('../modules/admin/admin.model.js')
+const { UserApiKey } = await import('../modules/ai-keys/ai-key.model.js')
 const { AppMeta } = await import('../modules/auth/appmeta.model.js')
 const { Captcha } = await import('../modules/auth/captcha.model.js')
 const { Feedback } = await import('../modules/feedback/feedback.model.js')
@@ -85,6 +92,8 @@ beforeAll(async () => {
     AdminSession.syncIndexes(),
     Feedback.syncIndexes(),
     TokenUsage.syncIndexes(),
+    // { userId, provider } 唯一索引是「并发 PUT 只有一条」的最终保险
+    UserApiKey.syncIndexes(),
   ])
 })
 

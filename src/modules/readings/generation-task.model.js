@@ -171,6 +171,17 @@ const generationTaskSchema = new Schema(
       refundedAt: { type: Date, default: null },
     },
 
+    /**
+     * 这个任务用哪把 Key 付钱（md/43 §7.3）。
+     *
+     * 创建时定，重试时按当时的状态更新：
+     *   user —— 用户自备 Key，不占每日额度、不占免费池
+     *   free —— 全站免费 Key
+     *
+     * 老任务没有这个字段，读取时按 free 处理。
+     */
+    aiKeySource: { type: String, enum: ['free', 'user'], default: 'free' },
+
     readingId: { type: Schema.Types.ObjectId, default: null },
     error: {
       code: String,

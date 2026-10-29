@@ -81,6 +81,13 @@ export const ERROR_CODES = Object.freeze({
   // 与 QUOTA_EXCEEDED 分开：那个是「你个人今天用完了」，等 0 点就恢复；
   // 这个是「全站免费额度到顶了」，等到明天也不会恢复，必须换自己的 API Key
   FREE_BUDGET_EXHAUSTED: 'FREE_BUDGET_EXHAUSTED',
+  // ——— 用户自备 API Key（md/43）———
+  // 四个码分别对应：功能没开 / Key 被拒 / 暂时验证不了 / 任务执行时 Key 没了。
+  // 生成时的「Key 失效」用 403 而不是 401：前端见到 401 会清 token 并踢回登录页
+  USER_API_KEY_DISABLED: 'USER_API_KEY_DISABLED',
+  USER_API_KEY_INVALID: 'USER_API_KEY_INVALID',
+  USER_API_KEY_VERIFY_FAILED: 'USER_API_KEY_VERIFY_FAILED',
+  USER_API_KEY_MISSING: 'USER_API_KEY_MISSING',
   // ——— 管理员后台（md/37）———
   // 与 AUTH_REQUIRED 分开：前端拿用户令牌打管理端时必须能分辨
   // 「没登录」和「登的是用户、不是管理员」，否则会静默跳转到登录页而不是报错
@@ -406,6 +413,54 @@ export const freeBudgetExhausted = ({ limitTokens, usedTokens }) =>
     '免费生成额度已用完，请接入自己的 API Key 后继续使用',
     '',
     { limitTokens, usedTokens },
+  )
+
+// ——— 用户自备 API Key（md/43）———
+
+/** 503：服务端没开功能（开关关闭 / 没配 USER_API_KEY_SECRET） */
+export const userApiKeyDisabled = () =>
+  new ApiError(503, ERROR_CODES.USER_API_KEY_DISABLED, '自备 API Key 功能暂未开启')
+
+/**
+ * 400：导入 / 校验时被上游拒绝。
+ * 挂 `apiKey` 字段，前端能把提示写在输入框下面。
+ */
+export const userApiKeyInvalid = () =>
+  new ApiError(
+    400,
+    ERROR_CODES.USER_API_KEY_INVALID,
+    '这把 API Key 无效或已过期，请检查后重新导入',
+    'apiKey',
+  )
+
+/**
+ * 403：生成过程中上游拒绝了用户自己的 Key。
+ *
+ * **不能用 401**：前端 `request.js` 见到 401 会清 token、踢回登录页，
+ * 而这里登录状态完全正常，只是 Key 失效。也不能用 400——
+ * 生成页没有 `apiKey` 输入框，字段错误会被挂到不存在的表单上。
+ */
+export const userApiKeyExpired = () =>
+  new ApiError(
+    403,
+    ERROR_CODES.USER_API_KEY_INVALID,
+    '你的 API Key 已失效，请到个人中心重新导入',
+  )
+
+/** 502：校验时网络 / 上游 5xx，无法判断 Key 是否有效 */
+export const userApiKeyVerifyFailed = () =>
+  new ApiError(
+    502,
+    ERROR_CODES.USER_API_KEY_VERIFY_FAILED,
+    '暂时无法验证这把 API Key，请稍后再试',
+  )
+
+/** 409：任务创建时用的是自备 Key，执行时已经找不到（被删 / 解不开） */
+export const userApiKeyMissing = () =>
+  new ApiError(
+    409,
+    ERROR_CODES.USER_API_KEY_MISSING,
+    '生成任务使用的 API Key 已不存在，请到个人中心重新导入后再试',
   )
 
 // ——— 管理员后台（md/37）———

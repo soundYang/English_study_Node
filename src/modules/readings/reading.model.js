@@ -218,6 +218,8 @@ const readingSchema = new Schema(
 
       // ——— W4：生成路径与分段明细 ———
       strategy: String, // whole / segmented；老文档为 undefined
+      // md/43：free = 花全站免费池，user = 用户自备 Key。老文档为 undefined，按 free 读
+      keySource: String,
       segments: { type: [segmentMetaSchema], default: [] }, // 整篇路径为空数组
 
       // ——— P1 扩展：P3 的覆盖度指标，也是 P6 回归对比的观察项 ———

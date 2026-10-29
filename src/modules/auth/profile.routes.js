@@ -2,6 +2,12 @@ import { Router } from 'express'
 
 import { config } from '../../config/index.js'
 import { createIpLimiter } from '../../shared/middleware/rateLimit.js'
+import {
+  getApiKeyView,
+  removeApiKey,
+  saveApiKey,
+  verifyStoredApiKey,
+} from '../ai-keys/ai-key.service.js'
 import { changePassword, getProfile, updateProfile } from './profile.service.js'
 import { getProfileStats } from './profile.stats.js'
 
@@ -23,6 +29,17 @@ const passwordLimiter = createIpLimiter({
   message: '修改密码太频繁，请稍后再试。',
 })
 
+/**
+ * 自备 Key 的写操作共用一个桶（md/43 §5）：PUT / DELETE / verify 都算一次。
+ * 一次 verify 会向上游发请求，不挂限流等于给了一个免费探活 / 撞 Key 的入口。
+ * GET 不挂：只读自己的文档，与 /stats 同理。
+ */
+const apiKeyLimiter = createIpLimiter({
+  windowMs: 60_000,
+  limit: config.rateLimitApiKey,
+  message: '操作太频繁，请稍后再试。',
+})
+
 router.get('/', (req, res) => {
   res.json(getProfile({ user: req.auth.user }))
 })
@@ -38,6 +55,28 @@ router.patch('/', async (req, res) => {
 router.get('/stats', async (req, res) => {
   // 统计的是业务数据，归属看 dataKey（不是 users._id）
   res.json(await getProfileStats({ userId: req.auth.user.dataKey }))
+})
+
+/**
+ * 用户自备 API Key（md/43）。
+ *
+ * 功能关闭时 GET 仍返回 200 + `enabled: false`（前端整块隐藏），
+ * 写操作返回 503 USER_API_KEY_DISABLED。
+ */
+router.get('/api-key', async (req, res) => {
+  res.json(await getApiKeyView({ userId: req.auth.user.dataKey }))
+})
+
+router.put('/api-key', apiKeyLimiter, async (req, res) => {
+  res.json(await saveApiKey({ userId: req.auth.user.dataKey, body: req.body ?? {} }))
+})
+
+router.delete('/api-key', apiKeyLimiter, async (req, res) => {
+  res.json(await removeApiKey({ userId: req.auth.user.dataKey }))
+})
+
+router.post('/api-key/verify', apiKeyLimiter, async (req, res) => {
+  res.json(await verifyStoredApiKey({ userId: req.auth.user.dataKey }))
 })
 
 router.post('/password', passwordLimiter, async (req, res) => {

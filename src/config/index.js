@@ -231,6 +231,19 @@ export const config = Object.freeze({
   // 共享出口（宿舍 / 公司）会按人头叠加，调小时注意误伤
   dailyQuotaNetwork: toNumber('DAILY_QUOTA_NETWORK', 10),
 
+  // ——— 用户自备 API Key（md/43）———
+  // 有效开关 = 这个布尔 && secret 非空。缺 secret 时按关闭处理：
+  // 存量密文无法解密，继续用只会让每次生成都白跑一次解密
+  userApiKeyEnabled: readBoolean('USER_API_KEY_ENABLED', true),
+  // AES-256-GCM 主密钥，用 scripts/gen-user-key-secret.mjs 生成，仓库里永远没有
+  userApiKeySecret: (process.env.USER_API_KEY_SECRET ?? '').trim(),
+  // 轮换时只用于解密：先配 PREVIOUS，确认所有用户重新导入后再删旧值
+  userApiKeySecretPrevious: (process.env.USER_API_KEY_SECRET_PREVIOUS ?? '').trim(),
+  // 导入时校验 /models 的超时；比生成超时短得多，导入是同步接口
+  userApiKeyVerifyTimeoutMs: toNumber('USER_API_KEY_VERIFY_TIMEOUT_MS', 8000),
+  // 导入 / 删除 / 校验共用的按 IP 限流（次 / 分钟）
+  rateLimitApiKey: toNumber('RATE_LIMIT_API_KEY', 5),
+
   // ——— 全局免费 token 预算（md/36）———
   // 与每日额度是两层限制：上面管「一个人一天几次」，这里管「全站还能花多少」。
   // 计数发生在每一次模型调用（含失败 / 重试 / 取消），不是每篇成功文章。

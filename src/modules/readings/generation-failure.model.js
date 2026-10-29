@@ -60,6 +60,8 @@ const generationFailureSchema = new Schema(
     model: String,
     // W8：whole / segmented。不分策略，两批样本的成功率会被混成一个数
     strategy: String,
+    // md/43：这次失败花的是谁的 Key。自备 Key 的失败不占平台成本，采样时要能分开
+    keySource: String,
 
     // ——— 生成快照（§3.3）：失败样本和成功样本必须记同一套版本，否则没法同框对比 ———
     basicWordsVersion: String,

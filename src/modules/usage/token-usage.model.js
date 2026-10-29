@@ -26,6 +26,9 @@ const tokenUsageSchema = new Schema(
     promptTokens: { type: Number, default: 0 },
     completionTokens: { type: Number, default: 0 },
     totalTokens: { type: Number, required: true, min: 0 },
+    // 这次调用花的是谁的额度（md/43 §7.1）：free = 全站免费池，user = 用户自备 Key。
+    // 老文档没有这个字段，聚合时按 free 处理——那时还没有自备 Key
+    keySource: { type: String, enum: ['free', 'user'], default: 'free' },
     // 北京时间 YYYY-MM-DD；按天聚合不依赖服务器时区
     day: { type: String, required: true },
   },

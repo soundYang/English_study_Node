@@ -20,6 +20,7 @@ process.env.DAILY_QUOTA_ENABLED = 'true'
 
 const { createApp } = await import('../app.js')
 const { config } = await import('../config/index.js')
+const { UserApiKey } = await import('../modules/ai-keys/ai-key.model.js')
 const { GenerationFailure } = await import('../modules/readings/generation-failure.model.js')
 const { GenerationTask } = await import('../modules/readings/generation-task.model.js')
 const { Reading } = await import('../modules/readings/reading.model.js')
@@ -264,6 +265,42 @@ describe('GET /api/admin/users/:dataKey', () => {
         { code: 'VOCABULARY_TOO_SMALL', count: 1 },
       ],
     })
+  })
+
+  it('自备 Key：只给摘要，token 台账不把用户自己花的钱算进平台成本（md/43 §7.2 / §7.4）', async () => {
+    const user = await seedUserA()
+    await UserApiKey.create({
+      userId: user.dataKey,
+      provider: 'deepseek',
+      cipher: 'v1.deadbeef.iv.tag.ct',
+      last4: '1234',
+      fingerprint: 'fingerprint123',
+    })
+    await TokenUsage.create({ userId: user.dataKey, totalTokens: 100, day: quotaDay() })
+    await TokenUsage.create({
+      userId: user.dataKey,
+      totalTokens: 900,
+      keySource: 'user',
+      day: quotaDay(),
+    })
+
+    const res = await authedGet(`/api/admin/users/${user.dataKey}`)
+
+    expect(res.status).toBe(200)
+    // seedUserA 本身的 370（300 + 50 + 20）+ 这里的 100；900 属于用户自付，不算平台成本
+    expect(res.body.tokens.total).toBe(470)
+    expect(res.body.apiKey).toMatchObject({
+      hasKey: true,
+      provider: 'deepseek',
+      status: 'active',
+    })
+
+    // cipher / fingerprint / 掩码 任何管理接口都不返回（§7.4）
+    const raw = JSON.stringify(res.body)
+    for (const secret of ['v1.deadbeef', 'fingerprint123', 'sk-****']) {
+      expect(raw).not.toContain(secret)
+    }
+    expect(res.body.apiKey).not.toHaveProperty('maskedKey')
   })
 
   it('不存在的 dataKey → 404 ADMIN_USER_NOT_FOUND', async () => {

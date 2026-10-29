@@ -92,6 +92,11 @@ Mongo 断开时返回 **503** + `status: "degraded"`，这是唯一的健康判�
 | `FREE_TOKEN_BUDGET` | 200000000 | 免费池总量（token）。到顶是**永久停服**，不是每日恢复 |
 | `ADMIN_USERNAME` | 空 | 管理员账号（只有一个）。留空则 `/api/admin/*` 整体 404（md/37） |
 | `ADMIN_PASSWORD_HASH` | 空 | scrypt 哈希，用 `node scripts/hash-admin-password.mjs '密码'` 生成；明文永不入库 |
+| `USER_API_KEY_ENABLED` | true | 自备 Key 总开关；**生效还需要 `USER_API_KEY_SECRET`**，缺任一项时 `GET /api/profile/api-key` 返回 `enabled: false`（md/43） |
+| `USER_API_KEY_SECRET` | 空 | 加密主密钥，`node scripts/gen-user-key-secret.mjs` 生成；丢失后存量 Key 全部无法解密 |
+| `USER_API_KEY_SECRET_PREVIOUS` | 空 | 轮换期间保留的旧主密钥；两张表都匹配不上时按免费路径处理 |
+| `USER_API_KEY_VERIFY_TIMEOUT_MS` | 8000 | 导入时请求上游 `/models` 的超时，不重试 |
+| `RATE_LIMIT_API_KEY` | 5 次/分钟 | `PUT` / `DELETE` / `verify` 共用同一个桶（按 IP） |
 
 `MAX_UNKNOWN_WORDS` 默认留空：只有生词容忍生效时，预算才按难度取
 （medium 3 / hard 5；easy 恒为 0，md/41）。生词容忍不传时为「自动」：
@@ -198,6 +203,10 @@ md/                     设计、实施、限制与缺陷文档
 | 生成 429 `QUOTA_EXCEEDED` | 当天额度用完（账号、设备或网络指纹任一档） | 等北京时间 0 点；`details.scope` 说明是哪一档，`Retry-After` 是到重置的秒数 |
 | 生成 503 `FREE_BUDGET_EXHAUSTED` | 全局免费池（`FREE_TOKEN_BUDGET`）用完了 | **不会自己恢复**：加预算（改 `.env` 或调计数器）后重启；`details` 里有上限与已用量 |
 | `/api/admin/*` 一律 404 | 没配 `ADMIN_USERNAME` 或 `ADMIN_PASSWORD_HASH` | 生成哈希写进 `.env` 后**重启**；改密码同样要重启（md/37 §2.1） |
+| 自备 Key 接口 503 `USER_API_KEY_DISABLED` | `USER_API_KEY_ENABLED=false` 或 `USER_API_KEY_SECRET` 为空 | 跑 `node scripts/gen-user-key-secret.mjs` 填进 `.env` 后重启（md/43 §8） |
+| 生成 403 `USER_API_KEY_INVALID` | 生成中途上游拒绝了用户的自备 Key（余额 / 吊销） | 不是登录问题，不会踢回登录页：引导用户去个人中心重新导入；该 Key 已自动标为 `invalid` |
+| 任务 `failed` + `USER_API_KEY_MISSING` | 创建时用了自备 Key，执行前被删 / 解不开 | 重新导入 Key 后 `retry`；**不会**悄悄改花免费池（md/43 §6.3） |
+| 个人中心显示 `unreadable` | 主密钥换过且旧值没留在 `_PREVIOUS` | 把旧值补到 `USER_API_KEY_SECRET_PREVIOUS` 并重启，或让用户重新导入 |
 | 管理端 401 `ADMIN_AUTH_REQUIRED` | 没带管理员令牌 / 过期（12 小时）/ 登出过 | 重新登录；用户令牌与管理端令牌不通用 |
 | 管理端登录 429 | 15 分钟内失败 5 次 / 同一 IP | 等窗口结束；成功登录不占配额 |
 | 用户反馈 429 `RATE_LIMITED`（`scope=feedback`） | 同一设备当天已提交 5 条 | 明天再来；计数按北京时间自然日 |

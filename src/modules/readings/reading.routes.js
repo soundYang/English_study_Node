@@ -2,6 +2,7 @@ import { Router } from 'express'
 
 import { generateRateLimit } from '../../shared/middleware/rateLimit.js'
 import { parseOrThrow } from '../../shared/utils/validation.js'
+import { resolveAiKey } from '../ai-keys/ai-key.service.js'
 import { assertBudgetAvailable } from '../budget/budget.service.js'
 import {
   quotaIdentityFromRequest,
@@ -36,17 +37,28 @@ router.post('/generate', generateRateLimit, async (req, res) => {
     if (!res.writableEnded) controller.abort()
   })
 
-  // 免费池到顶就停（md/36）。放在预扣之前：被预算挡下不该扣当天的额度
-  await assertBudgetAvailable()
+  // md/43：本次生成用哪把 Key。入口解析一次，整条链路共用
+  const aiKey = await resolveAiKey(req.userId)
 
-  // 同步路径没有任务文档可挂，额度用一个局部变量记住，失败时原路退回（md/35 §8.3）
-  const reservation = await reserveQuota({ identity: quotaIdentityFromRequest(req) })
+  // 两道闸只对免费 Key 生效（md/43 §6.2）：自备 Key 花的是用户自己的钱，
+  // 不该挤占全站免费池，也不该消耗他自己的每日次数
+  if (aiKey.source === 'free') {
+    // 免费池到顶就停（md/36）。放在预扣之前：被预算挡下不该扣当天的额度
+    await assertBudgetAvailable()
+  }
+
+  // 同步路径没有任务文档可挂，额度用一个局部变量记住，失败时原路退回（md/35 §8.3）。
+  // 自备 Key 不预扣，reservation 为 null，release 是 no-op
+  const reservation = aiKey.source === 'free'
+    ? await reserveQuota({ identity: quotaIdentityFromRequest(req) })
+    : null
 
   try {
     const dto = await generateReading({
       userId: req.userId,
       body: req.body ?? {},
       signal: controller.signal,
+      aiKey,
     })
 
     res.status(201).json(dto)

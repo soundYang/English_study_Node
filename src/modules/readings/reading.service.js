@@ -13,6 +13,7 @@ import {
 } from '../../shared/errors.js'
 import { logger } from '../../shared/logger.js'
 import { parseOrThrow } from '../../shared/utils/validation.js'
+import { freeAiKey } from '../ai-keys/ai-key.service.js'
 import { wordRepository } from '../words/word.repository.js'
 import { ABBREVIATION_WORDS } from './abbreviations.js'
 import {
@@ -274,6 +275,8 @@ async function recordFailure(diag, error) {
     repairRounds: diag.repairRounds ?? 0,
     totalTokens: diag.totalTokens ?? 0,
     durationMs: diag.durationMs,
+    // md/43 §7.3：失败样本也要能归因到「这次花的是谁的 Key」
+    keySource: diag.aiKey?.source ?? 'free',
 
     // 快照要和成功样本记同一套，否则两类数据没法同框对比
     model: config.deepseekModel,
@@ -327,8 +330,23 @@ async function recordFailure(diag, error) {
  * 想统计「违规词长什么样、属于哪一类」时既没有分母也没法回查。
  * 薄壳保证任何业务异常都落一条 GenerationFailure，同时原错误原样抛给调用方。
  */
-export async function generateReading({ userId, taskId = null, body, signal, onProgress, resume }) {
-  const diag = { userId, taskId, startedAt: Date.now(), rounds: [] }
+export async function generateReading({
+  userId,
+  taskId = null,
+  body,
+  signal,
+  onProgress,
+  resume,
+  // md/43：入口解析一次，整条链路共用。不传时按免费 Key（老调用方 / 测试）
+  aiKey = freeAiKey(),
+}) {
+  const diag = {
+    userId,
+    taskId,
+    aiKey,
+    startedAt: Date.now(),
+    rounds: [],
+  }
 
   try {
     return await generateReadingInner({ userId, body, signal, diag, onProgress, resume })
@@ -711,6 +729,7 @@ async function generateReadingInner({ userId, body, signal, diag, onProgress, re
         temperature: config.segmentTemperature,
         userId: diag.userId,
         taskId: diag.taskId,
+        aiKey: diag.aiKey,
       })
 
       // 计划不合法由代码补齐（md/20 §5.3），不为此再调一次模型
@@ -757,6 +776,8 @@ async function generateReadingInner({ userId, body, signal, diag, onProgress, re
       // token 流水的归属（md/37）：分段路径的每次调用都记到这个人 / 这个任务头上
       userId: diag.userId,
       taskId: diag.taskId,
+      // md/43：同一把 Key 贯穿段生成与收尾
+      aiKey: diag.aiKey,
       questionCount: params.questionCount,
       range,
       // 收尾生成题目时要按难度执行题型配额（W7）
@@ -809,6 +830,7 @@ async function generateReadingInner({ userId, body, signal, diag, onProgress, re
         rounds,
         userId: diag.userId,
         taskId: diag.taskId,
+        aiKey: diag.aiKey,
       })
 
       // 收尾的 JSON 里没有 article（正文是分段拼出来的），不能直接拿它当整篇校验。
@@ -857,6 +879,7 @@ async function generateReadingInner({ userId, body, signal, diag, onProgress, re
       rounds,
       userId: diag.userId,
       taskId: diag.taskId,
+      aiKey: diag.aiKey,
     })
 
     content = first.content
@@ -920,6 +943,7 @@ async function generateReadingInner({ userId, body, signal, diag, onProgress, re
         rounds,
         userId: diag.userId,
         taskId: diag.taskId,
+        aiKey: diag.aiKey,
       })
 
       content = repaired.content
@@ -1123,6 +1147,8 @@ async function generateReadingInner({ userId, body, signal, diag, onProgress, re
       model: config.deepseekModel,
       // 哪条路径产出的：跨策略采样不能混在一起比（md/21 W4）
       strategy: config.generationStrategy,
+      // md/43：这篇花的是谁的 Key。事后才能解释「为什么这篇没扣免费池」
+      keySource: diag.aiKey?.source ?? 'free',
       // 分段明细：哪一段重写了几次、是否被丢弃。整篇路径为空数组
       segments: segmentStats ?? [],
       // 词表与代码的版本号：跨版本采样不能放在一起比。

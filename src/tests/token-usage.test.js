@@ -58,6 +58,15 @@ describe('recordUsageEvent', () => {
     })
   })
 
+  it('keySource 缺省为 free，显式传 user 会落库（md/43 §7.1）', async () => {
+    await recordUsageEvent({ userId: 'u_a', totalTokens: 10 })
+    await recordUsageEvent({ userId: 'u_a', totalTokens: 20, keySource: 'user' })
+
+    const rows = await TokenUsage.find({ userId: 'u_a' }).sort({ totalTokens: 1 }).lean()
+
+    expect(rows.map((row) => row.keySource)).toEqual(['free', 'user'])
+  })
+
   it('没有归属或 token 不为正数时不写（宁可少一条，也不要记到别人头上）', async () => {
     await recordUsageEvent({ userId: '', totalTokens: 100 })
     await recordUsageEvent({ userId: 'u_a', totalTokens: 0 })
@@ -116,6 +125,19 @@ describe('tokenBreakdownByUsers', () => {
     expect(result.get('u_b')).toMatchObject({ total: 20, failed: 20 })
     // 没有流水的用户不进 Map，调用方用空桶兜底
     expect(result.has('u_c')).toBe(false)
+  })
+
+  it('includeUserKey=false 时排除自备 Key 的流水，老文档按 free 计入（md/43 §7.2）', async () => {
+    await recordUsageEvent({ userId: 'u_a', totalTokens: 10 })
+    await recordUsageEvent({ userId: 'u_a', totalTokens: 20, keySource: 'user' })
+    // md/43 之前写入的文档没有这个字段
+    await TokenUsage.collection.insertOne({ userId: 'u_a', totalTokens: 5, day: '2026-10-29' })
+
+    const withUser = await tokenBreakdownByUsers(['u_a'])
+    const platformOnly = await tokenBreakdownByUsers(['u_a'], null, { includeUserKey: false })
+
+    expect(withUser.get('u_a').total).toBe(35)
+    expect(platformOnly.get('u_a').total).toBe(15)
   })
 
   it('空输入不发查询', async () => {

@@ -3,6 +3,7 @@ import mongoose from 'mongoose'
 import { createApp } from './app.js'
 import { config } from './config/index.js'
 import { AdminSession } from './modules/admin/admin.model.js'
+import { UserApiKey } from './modules/ai-keys/ai-key.model.js'
 import { AppMeta } from './modules/auth/appmeta.model.js'
 import { Captcha } from './modules/auth/captcha.model.js'
 import { Session } from './modules/auth/session.model.js'
@@ -50,6 +51,9 @@ async function main() {
     Feedback.syncIndexes(),
     // token 流水是只追加的账本，只是性能索引，但漏建会让台账页随数据量变慢
     TokenUsage.syncIndexes(),
+    // 自备 Key 的去重靠 { userId, provider } 唯一索引（md/43 §4.4）；
+    // 漏建时并发 PUT 会留下两条，解密时取哪条都不对
+    UserApiKey.syncIndexes(),
   ])
   logger.info('indexes synced')
 

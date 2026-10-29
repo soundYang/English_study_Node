@@ -6,6 +6,7 @@ import { config } from '../../config/index.js'
 import { ERROR_CODES, taskInProgress, taskNotFound } from '../../shared/errors.js'
 import { logger } from '../../shared/logger.js'
 import { parseOrThrow } from '../../shared/utils/validation.js'
+import { resolveAiKey } from '../ai-keys/ai-key.service.js'
 import { assertBudgetAvailable } from '../budget/budget.service.js'
 import { releaseQuota, releaseReservation, reserveQuota } from '../quota/quota.service.js'
 import { generationTaskRepository as repo } from './generation-task.repository.js'
@@ -330,6 +331,44 @@ async function runTask({ taskId, userId, body, resume = null }) {
       return
     }
 
+    // md/43 §6.3：执行时重新解析一次——任务可能在队列里等了一会儿，
+    // 期间 Key 可能被删 / 被替换。创建时按哪种方式付钱，任务上记着
+    const aiKey = await resolveAiKey(userId)
+
+    // 创建时选了自备 Key、执行时却解不出来：**不能**悄悄改花免费池。
+    // 那既是未经用户同意的扣费，也绕过了每日额度与免费池两道闸。
+    if (claimed.aiKeySource === 'user' && aiKey.source !== 'user') {
+      const finishedAt = new Date()
+
+      await finishTask(taskId, {
+        status: 'failed',
+        stage: 'done',
+        finishedAt,
+        durationMs: finishedAt - startedAt,
+        owner: null,
+        heartbeatAt: null,
+        error: {
+          code: ERROR_CODES.USER_API_KEY_MISSING,
+          message: '自备 API Key 已不可用，请重新导入后再重试。',
+          details: null,
+        },
+      })
+      // 用户什么都没拿到，每日额度原路退回（quota 为空时是 no-op）
+      await refundTaskQuota(taskId, 'failed')
+
+      logger.warn({ taskId }, 'generation task failed: user api key missing')
+      return
+    }
+
+    // 创建时还没 Key、执行时已经有了：尊重用户当前的选择改用自备 Key，
+    // 并把创建时占的每日额度退回（md/43 §6.3）
+    if (claimed.aiKeySource !== 'user' && aiKey.source === 'user') {
+      await refundTaskQuota(taskId)
+      await repo.setAiKeySource(taskId, 'user').catch((error) => {
+        logger.warn({ err: error, taskId }, 'generation task key source write failed')
+      })
+    }
+
     heartbeat = setInterval(() => {
       void heartbeatOnce(taskId, controller)
     }, config.taskHeartbeatMs)
@@ -346,6 +385,7 @@ async function runTask({ taskId, userId, body, resume = null }) {
       signal: controller.signal,
       onProgress,
       resume,
+      aiKey,
     })
 
     const finishedAt = new Date()
@@ -421,13 +461,20 @@ export async function createGenerationTask({ userId, body, identity = null }) {
     throw taskInProgress({ taskId: String(active._id) })
   }
 
-  // 免费池到顶就停（md/36）。放在幂等判断之后：已经建好的任务照样能复用 / 轮询，
-  // 放在预扣之前：被预算挡下的请求不该扣掉用户当天的额度
-  await assertBudgetAvailable()
+  // md/43 §6.3：自备 Key 不过每日额度 / 免费池这两道闸——花的是用户自己的钱
+  const aiKey = await resolveAiKey(userId)
+
+  if (aiKey.source === 'free') {
+    // 免费池到顶就停（md/36）。放在幂等判断之后：已经建好的任务照样能复用 / 轮询，
+    // 放在预扣之前：被预算挡下的请求不该扣掉用户当天的额度
+    await assertBudgetAvailable()
+  }
 
   // 预扣必须排在三道幂等判断之后（md/35 §4.2）：双击的第二次点击、
   // 同参复用、409 都不扣；放在前面会让一次点击白掉两次额度
-  const reservation = await reserveQuota({ identity: identity ?? {} })
+  const reservation = aiKey.source === 'free'
+    ? await reserveQuota({ identity: identity ?? {} })
+    : null
 
   let task
   try {
@@ -446,6 +493,8 @@ export async function createGenerationTask({ userId, body, identity = null }) {
       },
       model: config.deepseekModel,
       strategy: config.generationStrategy,
+      // 这次按哪种方式付钱（md/43 §7.3）。执行时据此判断要不要重新解析 Key
+      aiKeySource: aiKey.source,
       // 开关关闭时 reservation 是 null，任务文档上不留 quota 字段（与老任务同形）
       ...(reservation && { quota: { keys: reservation.keys, day: reservation.day } }),
     })
@@ -547,16 +596,31 @@ export async function retryGenerationTask({ userId, id, identity = null }) {
   const active = await repo.findActive(userId)
   if (active) throw taskInProgress({ taskId: String(active._id) })
 
-  // 重试会真的再调模型，同样受全局预算约束（md/36）
-  await assertBudgetAvailable()
+  // md/43 §6.3：重试与创建同一套——重新解析 Key、按当前状态决定要不要过闸
+  const aiKey = await resolveAiKey(userId)
+  const useUserKey = aiKey.source === 'user'
+
+  if (!useUserKey) {
+    // 重试会真的再调模型，同样受全局预算约束（md/36）
+    await assertBudgetAvailable()
+  }
+
+  // 上次的额度还没退、这次改用自备 Key：先退回，免得白占一天（md/43 §6.3）
+  if (useUserKey) await refundTaskQuota(task._id)
 
   const body = toPlainParams(task)
   // 计划只在分段路径落库；整篇路径没有续跑的依据，退回整篇重跑
   const resume = config.generationStrategy === 'segmented' ? toResumePlan(task) : null
 
   // 上次是「失败」或「零产出取消」→ 额度已经退过，这次要重新占一次。
-  // 有产出的取消（已收下段落）没有退过，重试沿用原占用，不再扣（md/35 §4.3）
-  const reservation = task.quota?.refundedAt ? await reserveQuota({ identity: identity ?? {} }) : null
+  // 有产出的取消（已收下段落）没有退过，重试沿用原占用，不再扣（md/35 §4.3）。
+  // 上次用自备 Key 的任务没占过额度，这次回到免费路径要占一次（md/43 §6.3）。
+  // 自备 Key 本身永远不占每日额度
+  const needsReservation = !useUserKey
+    && (Boolean(task.quota?.refundedAt) || task.aiKeySource === 'user')
+  const reservation = needsReservation
+    ? await reserveQuota({ identity: identity ?? {} })
+    : null
 
   const reopened = await repo.reopen(id, {
     status: 'queued',
@@ -574,10 +638,14 @@ export async function retryGenerationTask({ userId, id, identity = null }) {
     // TTL 建在 createdAt 上，这里一并重置：否则一个快过期的任务重试到一半
     // 会被 TTL 删掉，轮询直接 404，而模型调用已经花出去了
     createdAt: new Date(),
-    // 重新占用的结果写回任务；refundedAt 归零，下一次失败才能再退
-    ...(reservation && {
-      quota: { keys: reservation.keys, day: reservation.day, refundedAt: null },
-    }),
+    // 本次的支付路径，runTask 据此判断要不要重新解析 Key（md/43 §6.3）
+    aiKeySource: aiKey.source,
+    // 自备 Key：旧的占用已经在上面退掉，清空 quota，免得取消/失败时再退一次
+    ...(useUserKey
+      ? { quota: { keys: [], day: null, refundedAt: null } }
+      : reservation && {
+          quota: { keys: reservation.keys, day: reservation.day, refundedAt: null },
+        }),
   })
 
   if (!reopened) {

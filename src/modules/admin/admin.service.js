@@ -3,6 +3,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { config } from '../../config/index.js'
 import { adminAuthFailed, adminUserNotFound } from '../../shared/errors.js'
 import { logger } from '../../shared/logger.js'
+import { UserApiKey } from '../ai-keys/ai-key.model.js'
 import { hashToken } from '../auth/auth.service.js'
 import { getDummyHash, verifyPassword } from '../auth/password.js'
 import { getProfileStats } from '../auth/profile.stats.js'
@@ -154,8 +155,13 @@ function sortSpecFor(sort) {
  * 全表聚合一次（几千用户，毫秒级）比给 users 加冗余计数字段更不容易出错。
  */
 async function rankDataKeysBy(sort) {
+  // 按 token 排序的口径必须与列表里显示的 tokens 一致（md/43 §7.2）：
+  // 自备 Key 的调用不算平台成本，排序时也得排除，否则「排名第 1 但显示 0」
   const group = sort === 'tokens'
-    ? [{ $group: { _id: '$userId', value: { $sum: '$totalTokens' } } }]
+    ? [
+        { $match: { keySource: { $ne: 'user' } } },
+        { $group: { _id: '$userId', value: { $sum: '$totalTokens' } } },
+      ]
     : [{ $group: { _id: '$userId', value: { $sum: 1 } } }]
 
   const model = sort === 'tokens' ? TokenUsage : Reading
@@ -209,7 +215,9 @@ async function attachMetrics(users, now = new Date()) {
         },
       },
     ]),
-    tokenBreakdownByUsers(keys),
+    // 管理员台账只回答「平台为他花了多少」：自备 Key 的调用虽然也有流水，
+    // 但花的是用户的钱，算进来会让平台成本虚高（md/43 §7.2）
+    tokenBreakdownByUsers(keys, null, { includeUserKey: false }),
     Quota.find({ key: { $in: keys.map((key) => `acct:${key}`) }, day }).lean(),
     GenerationFailure.aggregate([
       { $match: { userId: { $in: keys } } },
@@ -316,27 +324,38 @@ export async function getUserDetail({ dataKey, now = new Date() }) {
   const user = await User.findOne({ dataKey }).lean()
   if (!user) throw adminUserNotFound()
 
-  const [words, newWords, stats, quotaDoc, recent, failures, todayCount, failureTotal] =
-    await Promise.all([
-      wordRepository.findVocabulary(dataKey),
-      wordRepository.findNewWords(dataKey),
-      getProfileStats({ userId: dataKey, now }),
-      Quota.findOne({ key: `acct:${dataKey}`, day: quotaDay(now) }).lean(),
-      Reading.find({ userId: dataKey })
-        .sort({ createdAt: -1, _id: -1 })
-        .limit(20)
-        // 单篇的 aiMeta.totalTokens 只用于诊断，不参与用户总额（§12 第 4 条）
-        .select('level targetWords actualWords status score correctCount questions aiMeta.totalTokens createdAt submittedAt')
-        .lean(),
-      GenerationFailure.aggregate([
-        { $match: { userId: dataKey } },
-        { $group: { _id: '$errorCode', count: { $sum: 1 } } },
-        { $sort: { count: -1 } },
-        { $limit: 3 },
-      ]),
-      Reading.countDocuments({ userId: dataKey, createdAt: { $gte: startOfToday(now) } }),
-      GenerationFailure.countDocuments({ userId: dataKey }),
-    ])
+  const [
+    words,
+    newWords,
+    stats,
+    quotaDoc,
+    recent,
+    failures,
+    todayCount,
+    failureTotal,
+    apiKeyDoc,
+  ] = await Promise.all([
+    wordRepository.findVocabulary(dataKey),
+    wordRepository.findNewWords(dataKey),
+    getProfileStats({ userId: dataKey, now }),
+    Quota.findOne({ key: `acct:${dataKey}`, day: quotaDay(now) }).lean(),
+    Reading.find({ userId: dataKey })
+      .sort({ createdAt: -1, _id: -1 })
+      .limit(20)
+      // 单篇的 aiMeta.totalTokens 只用于诊断，不参与用户总额（§12 第 4 条）
+      .select('level targetWords actualWords status score correctCount questions aiMeta.totalTokens createdAt submittedAt')
+      .lean(),
+    GenerationFailure.aggregate([
+      { $match: { userId: dataKey } },
+      { $group: { _id: '$errorCode', count: { $sum: 1 } } },
+      { $sort: { count: -1 } },
+      { $limit: 3 },
+    ]),
+    Reading.countDocuments({ userId: dataKey, createdAt: { $gte: startOfToday(now) } }),
+    GenerationFailure.countDocuments({ userId: dataKey }),
+    // md/43 §7.4：只给摘要；cipher / last4 / fingerprint 任何管理接口都不返回
+    UserApiKey.findOne({ userId: dataKey }).select('provider status updatedAt').lean(),
+  ])
 
   const learnedWords = words.map((word) => word.word)
   const removedBasicWords = newWords.map((word) => word.word)
@@ -350,7 +369,8 @@ export async function getUserDetail({ dataKey, now = new Date() }) {
     }).knownWords
   }
 
-  const tokens = await tokenBreakdownForUser(dataKey)
+  // 同列表口径：详情里的 token 也只算平台出的钱（md/43 §7.2）
+  const tokens = await tokenBreakdownForUser(dataKey, null, { includeUserKey: false })
   const used = config.dailyQuotaEnabled ? (quotaDoc?.used ?? 0) : null
 
   return {
@@ -376,6 +396,9 @@ export async function getUserDetail({ dataKey, now = new Date() }) {
     },
     questions: stats.questions,
     tokens,
+    apiKey: apiKeyDoc
+      ? { hasKey: true, provider: apiKeyDoc.provider, status: apiKeyDoc.status, updatedAt: apiKeyDoc.updatedAt }
+      : { hasKey: false },
     quota: {
       enabled: config.dailyQuotaEnabled,
       limit: config.dailyQuotaEnabled ? config.dailyQuotaAccount : null,

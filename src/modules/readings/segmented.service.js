@@ -1,6 +1,7 @@
 import { ApiError, ERROR_CODES, articleTooIncomplete } from '../../shared/errors.js'
 import { logger } from '../../shared/logger.js'
 import { config } from '../../config/index.js'
+import { freeAiKey } from '../ai-keys/ai-key.service.js'
 import { parseAiContent } from './ai.schema.js'
 import {
   buildFinishMessages,
@@ -111,6 +112,8 @@ async function generateOneSegment({
   // 不往这里传的话，分段路径的流水会落到空用户上，后台少掉一半费用
   userId = '',
   taskId = null,
+  // md/43：本次生成用哪把 Key。由入口解析一次后一路传下来，段内不查库
+  aiKey = freeAiKey(),
   // 补段模式：这次已经是同一个空槽的第二次机会，只给一轮，失败就认输——
   // 它刚走完一整条重写链，再走一遍是重复烧钱。
   singleAttempt = false,
@@ -154,6 +157,7 @@ async function generateOneSegment({
       temperature: config.segmentTemperature,
       userId,
       taskId,
+      aiKey,
     })
 
     text = parseSegmentText(response.content)
@@ -325,6 +329,8 @@ export async function generateSegmented({
   // 否则后台看到的费用会少掉分段那一半
   userId = '',
   taskId = null,
+  // md/43：本次生成用哪把 Key（'free' 全站池 / 'user' 自备）
+  aiKey = freeAiKey(),
   questionCount,
   range,
   level,
@@ -405,6 +411,7 @@ export async function generateSegmented({
       rounds,
       userId,
       taskId,
+      aiKey,
       singleAttempt: refill,
       unknownAllowance: unknownAllowances[index] ?? 0,
     })
@@ -546,6 +553,7 @@ export async function generateSegmented({
     temperature: config.segmentTemperature,
     userId,
     taskId,
+    aiKey,
   })
 
   const parsed = parseFinish(finish.content)

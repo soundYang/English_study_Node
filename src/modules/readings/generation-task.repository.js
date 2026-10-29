@@ -92,6 +92,14 @@ export const generationTaskRepository = {
     )
   },
 
+  /**
+   * 改支付路径（md/43 §6.3）：创建时按免费记账，执行时发现用户已经有自备 Key。
+   * 只是诊断字段，不参与鉴权；写失败最多让任务表少一个标签，不该影响生成
+   */
+  setAiKeySource(id, source) {
+    return GenerationTask.updateOne({ _id: id }, { $set: { aiKeySource: source } })
+  },
+
   /** 终态写入：允许覆盖 running，但只在还没到终态时才接受 */
   finish(id, data) {
     return GenerationTask.findOneAndUpdate(
