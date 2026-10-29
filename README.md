@@ -84,7 +84,7 @@ Mongo 断开时返回 **503** + `status: "degraded"`，这是唯一的健康判�
 | `MAX_EXPAND_ROUNDS` | 0 | 偏短时的补写轮；默认关闭，只记录 `lengthStatus` |
 | `RATE_LIMIT_ENABLED` | 非 test 环境为 true | 只影响 `POST /readings/generate` |
 | `RATE_LIMIT_GENERATE` | 20 次/分钟 | 按 IP 计 |
-| `DAILY_QUOTA_ENABLED` | false | 打开每日额度。**等前端上线 `X-Device-Id` 后再开**，否则只按网络指纹限 |
+| `DAILY_QUOTA_ENABLED` | true | 每日额度总开关。前端 `X-Device-Id` 已上线，默认打开；**批量采样实例要显式设 false**，否则网络指纹桶（10 次/天）会把 3100–3102 打成 429 |
 | `DAILY_QUOTA_ACCOUNT` / `_DEVICE` / `_NETWORK` | 3 / 3 / 10 | 账号 / 设备 / 网络指纹的每日次数（md/35） |
 | `TRUST_PROXY` | false | 部署在 nginx / CDN 后面时必须配（`1` 或 `loopback`），否则 `req.ip` 全是反代地址 |
 | `TOKEN_BUDGET_ENABLED` | true | 全局免费池总开关；到顶后所有生成返回 503（md/36） |

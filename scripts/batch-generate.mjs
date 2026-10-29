@@ -7,12 +7,14 @@
  *
  * 前置：
  *   node scripts/seed-test-fixtures.mjs --fixture all
- *   DEFAULT_USER_ID=fixture-rich PORT=3100 node src/server.js
- *   DEFAULT_USER_ID=fixture-thin PORT=3101 node src/server.js
- *   DEFAULT_USER_ID=fixture-full PORT=3102 node src/server.js
+ *   DAILY_QUOTA_ENABLED=false DEFAULT_USER_ID=fixture-rich PORT=3100 node src/server.js
+ *   DAILY_QUOTA_ENABLED=false DEFAULT_USER_ID=fixture-thin PORT=3101 node src/server.js
+ *   DAILY_QUOTA_ENABLED=false DEFAULT_USER_ID=fixture-full PORT=3102 node src/server.js
  *
  * 采样时把限流关掉（`RATE_LIMIT_ENABLED=false`）：一次跑 20+ 个请求会撞上
  * 每分钟 20 次的配额，429 会混进成功率的分母。限流本身已有单测覆盖。
+ * 每日额度（md/35）同理要关：3100–3102 与本机共用 `.env`，网络指纹桶
+ * 10 次/天会把同一出口的采样全部打成 429（`DAILY_QUOTA_ENABLED` 默认已打开）。
  *
  * 用法：
  *   node scripts/batch-generate.mjs --fixture rich --base http://127.0.0.1:3100

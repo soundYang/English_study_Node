@@ -223,7 +223,9 @@ export const config = Object.freeze({
   // ——— 每日额度（md/35）———
   // 总开关默认 false：设备 ID 要等前端上线。在那之前打开，所有请求都没有 dev: 键，
   // 只剩 net: 桶，同一个出口（家庭 / 校园网）的人会互相挤占。
-  dailyQuotaEnabled: readBoolean('DAILY_QUOTA_ENABLED', false),
+  // md/35 Q4：前端 X-Device-Id 已上线，默认打开；测试由 setup.js 固定为 false，
+  // 批量采样实例启动时显式 `DAILY_QUOTA_ENABLED=false`（网络桶 10 次/天会打成 429）
+  dailyQuotaEnabled: readBoolean('DAILY_QUOTA_ENABLED', true),
   // 账号与设备都是 3 次/天：换账号会被设备挡住，换浏览器会被账号挡住
   dailyQuotaAccount: toNumber('DAILY_QUOTA_ACCOUNT', 3),
   dailyQuotaDevice: toNumber('DAILY_QUOTA_DEVICE', 3),
