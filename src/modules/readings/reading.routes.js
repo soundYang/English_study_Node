@@ -3,8 +3,10 @@ import { Router } from 'express'
 import { config } from '../../config/index.js'
 import { generationTimeout } from '../../shared/errors.js'
 import {
+  createIpLimiter,
   generateIpRateLimit,
   generateRateLimit,
+  generateRateLimitKey,
 } from '../../shared/middleware/rateLimit.js'
 import { parseOrThrow } from '../../shared/utils/validation.js'
 import { resolveAiKey } from '../ai-keys/ai-key.service.js'
@@ -32,6 +34,41 @@ import {
 } from './reading.service.js'
 
 const router = Router()
+
+/**
+ * 任务进度轮询（md/45 M5）：前端 1 秒一次，正常量就有 60 次/分钟。
+ *
+ * 按**身份**分组（账号 → 设备 → IP），不按 IP：宿舍 / 公司的 NAT 后面
+ * 几个人同时生成，IP 桶会先把正常用户打出 429。180 次/分钟 = 3 次/秒，
+ * 给「切换页面时多打几个请求」留了余量，脚本想靠轮询放大请求量则会被截住。
+ */
+const taskPollLimiter = createIpLimiter({
+  windowMs: 60_000,
+  limit: 180,
+  keyGenerator: generateRateLimitKey,
+  message: '任务进度查询太频繁，请稍后再试',
+})
+
+/**
+ * 取消任务（md/45 M5）：一次写。同样按身份分组——
+ * 「多设备同时取消」不该被合成一个桶，但也不能让人无限刷。
+ */
+const cancelLimiter = createIpLimiter({
+  windowMs: 60_000,
+  limit: 20,
+  keyGenerator: generateRateLimitKey,
+  message: '操作太频繁：每分钟最多 20 次，请稍后再试',
+})
+
+/**
+ * 交卷（md/45 M5）：一次读 + 一次写，重复提交会被拒绝，但拒绝也是一次 DB 读。
+ * 按 IP 计——正常作答一次只交一卷，20 次/分钟不可能是人手点出来的。
+ */
+const submitLimiter = createIpLimiter({
+  windowMs: 60_000,
+  limit: 20,
+  message: '提交太频繁：每分钟最多 20 次，请稍后再试',
+})
 
 // 限流只挂生成三条（md/21 W9）：挂到 router 上会把 /capacity 一起限掉。
 // 顺序是先 IP 安全桶、再身份桶（md/55 §4.9）：设备 ID 是客户端可控的，
@@ -126,12 +163,12 @@ router.post('/generate/tasks', generateIpRateLimit, generateRateLimit, async (re
   })
 })
 
-router.get('/generate/tasks/:taskId', async (req, res) => {
+router.get('/generate/tasks/:taskId', taskPollLimiter, async (req, res) => {
   res.json(await getGenerationTask({ userId: req.userId, id: req.params.taskId }))
 })
 
 /** 取消：只是不再继续付费，已收下的段留着，之后还能 retry 接着写 */
-router.post('/generate/tasks/:taskId/cancel', async (req, res) => {
+router.post('/generate/tasks/:taskId/cancel', cancelLimiter, async (req, res) => {
   res.json(await cancelGenerationTask({ userId: req.userId, id: req.params.taskId }))
 })
 
@@ -167,7 +204,7 @@ router.get('/history', async (req, res) => {
   res.json(await listHistory({ userId: req.userId, query }))
 })
 
-router.post('/:id/submit', async (req, res) => {
+router.post('/:id/submit', submitLimiter, async (req, res) => {
   const dto = await submitReading({
     userId: req.userId,
     id: req.params.id,

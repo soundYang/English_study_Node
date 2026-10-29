@@ -32,6 +32,16 @@ const loginLimiter = createIpLimiter({
   message: '登录尝试太频繁，请稍后再试。',
 })
 
+/**
+ * 退出（md/45 M5）：一次删会话的写操作，成本很低但不该无上限——
+ * 用一个宽松的桶（30 次/分钟/IP）挡住「带垃圾令牌空转」的脚本即可。
+ */
+const logoutLimiter = createIpLimiter({
+  windowMs: 60_000,
+  limit: 30,
+  message: '操作太频繁：每分钟最多 30 次，请稍后再试',
+})
+
 /** 下发图形验证码。答案只存在于服务端，返回的 SVG 里没有可读文字（md/33 §5） */
 router.post('/captcha', captchaLimiter, async (req, res) => {
   res.json(await createCaptcha({ ip: req.ip ?? '' }))
@@ -58,11 +68,11 @@ router.post('/login', loginLimiter, async (req, res) => {
 })
 
 /**
- * 退出：不挂限流，也不要求令牌有效。
+ * 退出：不要求令牌有效，但挂一个宽松的限流。
  *
  * 幂等的意义在于前端：令牌过期后用户点「退出」，不该收到 401 再弹一次「登录已过期」。
  */
-router.post('/logout', async (req, res) => {
+router.post('/logout', logoutLimiter, async (req, res) => {
   res.json(await logoutUser({ token: parseBearer(req.headers.authorization) }))
 })
 

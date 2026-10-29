@@ -63,6 +63,28 @@ export function createIpLimiter({
 }
 
 /**
+ * 全局兜底限流（md/45 M5）。
+ *
+ * 挂在**所有路由之前**，只回答一个问题：这个 IP 是不是在机器式地狂打？
+ * 所以额度必须宽松到「正常用户的峰值 + NAT 后面几台设备」都碰不到：
+ * 任务进度是 1 秒一次的轮询，一个人就是 60 次/分钟。
+ *
+ * 它不能代替具体接口的桶——真正防刷的是那些（生成 20/min、反馈 60/h、
+ * 写接口各自一条）；全局桶的价值是给「还没想到要限流的接口」兜一层底。
+ */
+export function createGlobalLimiter({
+  limit = config.rateLimitGlobal,
+  enabled = config.rateLimitEnabled,
+} = {}) {
+  return createIpLimiter({
+    windowMs: 60_000,
+    limit,
+    enabled,
+    message: `请求太频繁：同一网络每分钟最多 ${limit} 次，请稍后再试。`,
+  })
+}
+
+/**
  * 身份桶的键：账号 → 设备 → IP（md/55 §4.9）。
  *
  * 只用 `req.auth.user.dataKey`，不用 `req.userId`：后者在未强制鉴权时

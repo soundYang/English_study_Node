@@ -273,9 +273,10 @@ export const config = Object.freeze({
   // 一起打成 429，且失败位置看起来跟限流毫无关系。要验证限流本身的用例
   // 在文件顶部把 RATE_LIMIT_ENABLED 设成 true 再动态 import 即可。
   rateLimitEnabled: readBoolean('RATE_LIMIT_ENABLED', nodeEnv !== 'test'),
-  // 只有生成接口挂限流（W9）：词库检索是纯读内存、不花钱，全局限流会顺带限掉
-  // 前端每拖一次滑块就要调一次的 /capacity。dictionary / global 两个旋钮没有
-  // 任何中间件在读，已于 2026-10-28 删除——留着只会让人以为它们生效。
+  // 全局兜底（次 / 分钟 / IP，md/45 M5）：只做「明显异常流量」的粗筛，
+  // 挂在整个应用最前面。**不能设紧**——任务轮询是前端 1 秒一次，
+  // 正常用户加上 NAT 共享出口，几百次/分钟是常态；真正需要紧的桶挂在具体路由上
+  rateLimitGlobal: toNumber('RATE_LIMIT_GLOBAL', 300),
   rateLimitGenerate: toNumber('RATE_LIMIT_GENERATE', 20),
   // IP 安全桶：始终按 IP，挡住「轮换设备 ID / 换账号」绕过身份桶。
   rateLimitGenerateIp: toNumber('RATE_LIMIT_GENERATE_IP', 60),

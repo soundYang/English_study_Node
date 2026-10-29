@@ -117,12 +117,13 @@ describe('POST /api/feedback', () => {
     expect(doc).toMatchObject({
       userId: user.dataKey,
       username: 'FeedbackUser',
-      phone: '13800000000',
       category: 'bug',
       status: 'open',
       contact: '微信 xxx',
       page: '/generating',
     })
+    // md/45 §10.4：手机号只存 users 一处，反馈里不留快照
+    expect(doc.phone).toBeUndefined()
   })
 
   it('同一设备一天第 6 条 → 429', async () => {
@@ -242,6 +243,32 @@ describe('管理端反馈接口', () => {
     // 详情是客服真正联系用户的入口，给完整值
     expect(detail.body.phone).toBe('13800000000')
     expect(detail.body.contact).toBe('13800000000')
+  })
+
+  it('手机号现查：用户改号后详情跟着变，文档里没有副本（md/45 §10.4）', async () => {
+    const { token, user } = await registerAndGetToken({ phone: '13800000000' })
+    const created = await submit(validBody('改号用例：提交后把手机号换掉'), { token })
+
+    await User.updateOne({ dataKey: user.dataKey }, { $set: { phone: '13900001111' } })
+
+    const detail = await adminRequest('get', `/api/admin/feedback/${created.body.id}`)
+
+    expect(detail.body.phone).toBe('13900001111')
+    // 快照会让管理端一直看到旧号，所以这张表里根本不该有 phone
+    expect((await Feedback.findById(created.body.id).lean()).phone).toBeUndefined()
+  })
+
+  it('用户注销后，反馈里查不到手机号（不残留 PII）', async () => {
+    const { token, user } = await registerAndGetToken({ phone: '13800000000' })
+    const created = await submit(validBody('注销用例：删号后不应再有手机号'), { token })
+
+    await User.deleteOne({ dataKey: user.dataKey })
+
+    const detail = await adminRequest('get', `/api/admin/feedback/${created.body.id}`)
+    const list = await adminRequest('get', '/api/admin/feedback')
+
+    expect(detail.body.phone).toBeNull()
+    expect(list.body.items.find((row) => row.id === created.body.id).phone).toBeNull()
   })
 
   it('回复后 status=replied，repliedAt / repliedBy 写入', async () => {

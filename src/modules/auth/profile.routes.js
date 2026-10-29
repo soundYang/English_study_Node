@@ -40,11 +40,21 @@ const apiKeyLimiter = createIpLimiter({
   message: '操作太频繁，请稍后再试。',
 })
 
+/**
+ * 改资料（md/45 M5）：一次写。正常人是「改完点保存」，
+ * 30 次/分钟已经够反复试昵称 / 签名的长度边界。
+ */
+const profileWriteLimiter = createIpLimiter({
+  windowMs: 60_000,
+  limit: 30,
+  message: '操作太频繁：每分钟最多 30 次，请稍后再试',
+})
+
 router.get('/', (req, res) => {
   res.json(getProfile({ user: req.auth.user }))
 })
 
-router.patch('/', async (req, res) => {
+router.patch('/', profileWriteLimiter, async (req, res) => {
   res.json(await updateProfile({ user: req.auth.user, body: req.body ?? {} }))
 })
 

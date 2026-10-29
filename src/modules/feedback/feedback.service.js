@@ -54,11 +54,42 @@ function excerptOf(content) {
 
 /** 取用户快照；用户不存在（未登录 / 已删号）时返回空快照，不报错 */
 async function snapshotOf(dataKey) {
-  if (!dataKey || dataKey === ANONYMOUS_DATA_KEY) return { username: '', phone: null }
+  if (!dataKey || dataKey === ANONYMOUS_DATA_KEY) return { username: '' }
 
-  const user = await User.findOne({ dataKey }).select('username phone').lean()
+  const user = await User.findOne({ dataKey }).select('username').lean()
 
-  return { username: user?.username ?? '', phone: user?.phone ?? null }
+  return { username: user?.username ?? '' }
+}
+
+/**
+ * 手机号不存快照，读的时候现查（md/45 §10.4）。
+ *
+ * 三件事因为这一处改动同时成立：用户换了号，管理端看到的是新号；
+ * 用户注销后反馈里不残留联系方式；手机号在库里只有 `users` 一处。
+ */
+async function phoneOf(dataKey) {
+  if (!dataKey || dataKey === ANONYMOUS_DATA_KEY) return null
+
+  const user = await User.findOne({ dataKey }).select('phone').lean()
+
+  return user?.phone ?? null
+}
+
+/** 列表用：一次查出这一页所有用户的手机号，避免 20 次单查 */
+async function phoneMapOf(rows) {
+  const keys = [
+    ...new Set(
+      rows
+        .map((row) => row.userId)
+        .filter((key) => key && key !== ANONYMOUS_DATA_KEY),
+    ),
+  ]
+
+  if (keys.length === 0) return new Map()
+
+  const users = await User.find({ dataKey: { $in: keys } }).select('dataKey phone').lean()
+
+  return new Map(users.map((user) => [user.dataKey, user.phone ?? null]))
 }
 
 /**
@@ -110,7 +141,6 @@ export async function createFeedback({
   const feedback = await Feedback.create({
     userId: dataKey,
     username: snapshot.username,
-    phone: snapshot.phone,
     category: body.category,
     content,
     contact: String(body.contact ?? '').trim(),
@@ -142,13 +172,15 @@ export async function createFeedback({
  * `reveal` 默认 false：**列表一律打码**（md/45 M6）。完整手机号与联系方式
  * 只在详情里给，详情有管理端审计点；列表没有——一次翻页 20 条，管理员账号
  * 被借用就能批量导出，而且查不到痕迹。
+ *
+ * `phone` 由调用方传入（现查 users），文档里没有这个字段（md/45 §10.4）。
  */
-function toListItem(doc, { reveal = false } = {}) {
+function toListItem(doc, { reveal = false, phone = null } = {}) {
   return {
     id: String(doc._id),
     userId: doc.userId,
     username: doc.username || (doc.userId === ANONYMOUS_DATA_KEY ? '未登录用户' : ''),
-    phone: reveal ? (doc.phone ?? null) : maskPhone(doc.phone),
+    phone: reveal ? (phone ?? null) : maskPhone(phone),
     category: doc.category,
     excerpt: excerptOf(doc.content),
     status: doc.status,
@@ -160,10 +192,10 @@ function toListItem(doc, { reveal = false } = {}) {
   }
 }
 
-function toDetail(doc) {
+function toDetail(doc, phone = null) {
   return {
     // 详情给完整值：客服要打电话 / 加微信，打码等于把这条路堵死
-    ...toListItem(doc, { reveal: true }),
+    ...toListItem(doc, { reveal: true, phone }),
     content: doc.content,
     reply: doc.reply,
     repliedBy: doc.repliedBy,
@@ -185,12 +217,19 @@ export async function listFeedback({ status, category, page = 1, size = 20 } = {
       .skip((page - 1) * size)
       .limit(size)
       // 不取 content 全文：列表可能很长，正文里有用户个人信息
-      .select('userId username phone category status contact page repliedAt createdAt updatedAt content')
+      .select('userId username category status contact page repliedAt createdAt updatedAt content')
       .lean(),
     Feedback.countDocuments(filter),
   ])
 
-  return { total, page, size, items: rows.map(toListItem) }
+  const phones = await phoneMapOf(rows)
+
+  return {
+    total,
+    page,
+    size,
+    items: rows.map((row) => toListItem(row, { phone: phones.get(row.userId) ?? null })),
+  }
 }
 
 export async function getFeedbackDetail(id) {
@@ -199,7 +238,7 @@ export async function getFeedbackDetail(id) {
   const doc = await Feedback.findById(id).lean()
   if (!doc) throw feedbackNotFound()
 
-  return toDetail(doc)
+  return toDetail(doc, await phoneOf(doc.userId))
 }
 
 /**
@@ -239,5 +278,5 @@ export async function updateFeedback({ id, status, reply, admin = '' }) {
     'admin action',
   )
 
-  return toDetail(doc.toObject())
+  return toDetail(doc.toObject(), await phoneOf(doc.userId))
 }

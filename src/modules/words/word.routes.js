@@ -40,6 +40,26 @@ const importLimiter = createIpLimiter({
 })
 
 /**
+ * 批量落库（md/45 M5）：一次最多 200 个词，是词库相关最贵的写接口。
+ * 正常录入是「解析完一次导入」，10 次/分钟已经够「选错文件再试一次」。
+ */
+const batchLimiter = createIpLimiter({
+  windowMs: 60_000,
+  limit: 10,
+  message: '批量导入太频繁：每分钟最多 10 次，请稍后再试',
+})
+
+/**
+ * 单词级写操作（新增 / 修改 / 删除，md/45 M5）：单次成本只有 1 写，
+ * 但脚本可以无限循环。60 次/分钟对「手动一个个补词」绰绰有余。
+ */
+const writeLimiter = createIpLimiter({
+  windowMs: 60_000,
+  limit: 60,
+  message: '操作太频繁：每分钟最多 60 次，请稍后再试',
+})
+
+/**
  * multer 的内存存储：文件最大 5MB，处理完立刻随 buffer 释放，**不落盘**。
  * 落盘会带来「临时文件没删干净」和「磁盘被刷满」两个新问题，
  * 而 5MB 以内的内存占用完全可以接受。
@@ -82,7 +102,7 @@ function readFileName(file) {
 
 // 批量与预检必须放在 /:id 之前（md/44 §9.2）：
 // 现在虽然没有 POST /:id，但保持「静态路径先挂」的惯例，以后加也不会踩坑
-router.post('/batch', async (req, res) => {
+router.post('/batch', batchLimiter, async (req, res) => {
   res.json(await importWords({ userId: req.userId, body: req.body ?? {} }))
 })
 
@@ -131,7 +151,7 @@ router.get('/', async (req, res) => {
   res.json(await listWords({ userId: req.userId, query }))
 })
 
-router.post('/', async (req, res) => {
+router.post('/', writeLimiter, async (req, res) => {
   const { dto, created } = await createWord({
     userId: req.userId,
     body: req.body ?? {},
@@ -141,7 +161,7 @@ router.post('/', async (req, res) => {
   res.status(created ? 201 : 200).json(dto)
 })
 
-router.patch('/:id', async (req, res) => {
+router.patch('/:id', writeLimiter, async (req, res) => {
   const dto = await updateWord({
     userId: req.userId,
     id: req.params.id,
@@ -150,7 +170,7 @@ router.patch('/:id', async (req, res) => {
   res.json(dto)
 })
 
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', writeLimiter, async (req, res) => {
   res.json(await deleteWord({ userId: req.userId, id: req.params.id }))
 })
 

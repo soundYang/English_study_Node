@@ -20,7 +20,17 @@ import { ERROR_CODES } from './shared/errors.js'
 import { accessLogger } from './shared/middleware/accessLog.js'
 import { currentUser } from './shared/middleware/currentUser.js'
 import { errorHandler } from './shared/middleware/errorHandler.js'
+import { createGlobalLimiter } from './shared/middleware/rateLimit.js'
 import { requestLogger } from './shared/middleware/requestLogger.js'
+
+/**
+ * 全局兜底限流（md/45 M5）：按 IP、300 次/分钟，只拦明显的机器流量。
+ *
+ * 放在模块作用域而不是 createApp 里，是因为每个测试都会 createApp 一次，
+ * 各自建一份计数器会让「同一个测试进程里的 429」变得不可预测。
+ * 计数按 IP 分组，跨 app 实例共用同一个 store 也不会串号。
+ */
+const globalLimiter = createGlobalLimiter()
 
 /**
  * 组装 Express 应用（不监听端口）。
@@ -62,6 +72,10 @@ export function createApp() {
   app.use(requestLogger)
   // 访问日志落库（md/53）：终端日志重启即丢，这里按 IP / 用户 / 路径可回查
   app.use(accessLogger)
+
+  // 全局兜底限流（md/45 M5）：放在 json 解析之前——被拦的请求既不解析 body、
+  // 也不查会话，代价只有一次内存计数。放在日志之后是为了 429 也带 req.id 并进访问日志
+  app.use(globalLimiter)
 
   // 放在日志之后：解析失败时 req.id 已经存在，400/413 才能带上 requestId
   app.use(express.json({ limit: '64kb' }))

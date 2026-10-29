@@ -19,15 +19,18 @@ export const FEEDBACK_STATUSES = Object.freeze(['open', 'replied', 'closed'])
  * **不做软删除**：这是客服记录，删了就查不到「用户提过什么」。
  * 用户侧只能新增，状态只能由管理员推进（open → replied / closed）。
  *
- * `username` / `phone` 是提交当时的**快照**：用户之后改名，反馈里仍然看得出
- * 是谁；而且未登录用户提交时这两项为空，也能正常入库。
+ * `username` 是提交当时的**快照**：用户之后改名，反馈里仍然看得出是谁；
+ * 未登录用户提交时为空，也能正常入库。
+ *
+ * **不存 `phone`**（md/45 §10.4）：手机号属于会变、且删号后必须一起消失的数据。
+ * 管理端要显示时按 `userId` 关联 users 现查——用户换了号，反馈里跟着变；
+ * 用户注销了，这里也不会残留一份联系方式的副本。
  */
 const feedbackSchema = new Schema(
   {
     // dataKey；未登录提交时是 'anonymous'（见 feedback.service.js）
     userId: { type: String, required: true, index: true },
     username: { type: String, default: '' },
-    phone: { type: String, default: null },
 
     category: { type: String, enum: FEEDBACK_CATEGORIES, required: true },
     content: { type: String, required: true, maxlength: 2000 },
