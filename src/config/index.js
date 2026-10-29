@@ -212,6 +212,12 @@ export const config = Object.freeze({
   // 登录记录：成功与失败都记，量很小；留 180 天是为了「半年前谁从哪登录过」也能查
   loginLogEnabled: readBoolean('LOGIN_LOG_ENABLED', nodeEnv !== 'test'),
   loginLogRetentionDays: toNumber('LOGIN_LOG_RETENTION_DAYS', 180),
+  // 容量上限（行数）。TTL 只按时间删，挡不住「短时间被打进几百万条」：
+  // 达到上限后停止写入并打一行 warn，宁可丢新日志也不能把磁盘写满。
+  // 0 或负数 = 不限（不建议：攻击时没有任何保护）
+  accessLogMaxRows: toNumber('ACCESS_LOG_MAX_ROWS', 1_000_000),
+  errorLogMaxRows: toNumber('ERROR_LOG_MAX_ROWS', 200_000),
+  loginLogMaxRows: toNumber('LOGIN_LOG_MAX_ROWS', 100_000),
 
   // 限流（次 / 分钟）
   // 总开关：测试环境默认关闭。开着的话一个 50 次预检的验收用例会把后面的用例

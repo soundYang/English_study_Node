@@ -12,22 +12,76 @@ import { LoginRecord } from './login-log.model.js'
  * 失败只再打一行终端 warn。读操作只给管理端用。
  */
 
+/**
+ * 容量守卫（md/53 §11）。
+ *
+ * TTL 只按时间删：被打进 100 万条请求时，30 天后才清，磁盘早就满了。
+ * 所以再加一道「行数上限」——达到上限后**停止写入**并每分钟打一行 warn。
+ * 用 estimatedDocumentCount（读元数据，不扫表），每个集合每分钟最多查一次。
+ *
+ * 状态按 model 缓存在进程内：多实例部署时每个实例各自判断，
+ * 上限会按实例数放大，但仍是有限值——比完全不设防好。
+ */
+const CAP_CHECK_INTERVAL_MS = 60 * 1000
+const capState = new Map()
+
+async function isOverCap(model, maxRows) {
+  if (!(maxRows > 0)) return false
+
+  const state = capState.get(model.modelName) ?? { checkedAt: 0, full: false }
+  capState.set(model.modelName, state)
+
+  if (Date.now() - state.checkedAt < CAP_CHECK_INTERVAL_MS) return state.full
+
+  // 先占位再 await：第一个请求去查，其余请求直接用上一次的结论
+  state.checkedAt = Date.now()
+
+  try {
+    const count = await model.estimatedDocumentCount()
+    state.full = count >= maxRows
+
+    if (state.full) {
+      logger.warn(
+        { collection: model.collection.name, count, maxRows },
+        'log storage cap reached, dropping new entries',
+      )
+    }
+  } catch (err) {
+    // 数不出来时放行：丢日志比丢业务请求更糟；下次检查会再试
+    logger.warn({ err }, 'log cap check failed')
+    state.full = false
+  }
+
+  return state.full
+}
+
+/**
+ * 所有日志共用的写入口。
+ *
+ * 调用方一律 fire-and-forget（不 await）：日志写失败 / 达到上限都不能
+ * 影响请求本身。`void` 是给读代码的人一个明确信号。
+ */
+function writeLog(model, maxRows, entry) {
+  void (async () => {
+    try {
+      if (await isOverCap(model, maxRows)) return
+      await model.create(entry)
+    } catch (err) {
+      logger.warn({ err, collection: model.collection.name }, 'log write failed')
+    }
+  })()
+}
+
 /** 一次请求一条；由 accessLog 中间件在响应结束时调用 */
 export function recordAccess(entry) {
   if (!config.accessLogEnabled) return
-
-  AccessLog.create(entry).catch((err) => {
-    logger.warn({ err }, 'access log write failed')
-  })
+  writeLog(AccessLog, config.accessLogMaxRows, entry)
 }
 
 /** 未处理异常（5xx）；由 errorHandler 调用 */
 export function recordError(entry) {
   if (!config.errorLogEnabled) return
-
-  ErrorLog.create(entry).catch((err) => {
-    logger.warn({ err }, 'error log write failed')
-  })
+  writeLog(ErrorLog, config.errorLogMaxRows, entry)
 }
 
 /**
@@ -46,15 +100,13 @@ export function recordLogin({
 }) {
   if (!config.loginLogEnabled) return
 
-  LoginRecord.create({
+  writeLog(LoginRecord, config.loginLogMaxRows, {
     userId: String(userId ?? '').slice(0, 100),
     username: String(username ?? '').slice(0, 100),
     role,
     success: Boolean(success),
     ip: String(ip ?? '').slice(0, 64),
     userAgent: String(userAgent ?? '').slice(0, 300),
-  }).catch((err) => {
-    logger.warn({ err }, 'login log write failed')
   })
 }
 
