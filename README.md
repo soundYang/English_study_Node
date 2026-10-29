@@ -223,6 +223,7 @@ md/                     设计、实施、限制与缺陷文档
 | 用户反馈 429 `RATE_LIMITED`（`scope=feedback`） | 同一设备当天已提交 5 条 | 明天再来；计数按北京时间自然日 |
 | 文件导入 422 `OCR_FAILED`「图片识别未就绪」 | `data/ocr/` 里没有对应语言的模型 | `npm run fetch:ocr`（或按提示设 `OCR_LANG_PATH`）；Word / Excel 不受影响 |
 | 文件导入 422 `OCR_FAILED`「图片识别暂时不可用」 | 上一次起 worker 失败，60 秒冷却中 | 等一分钟；持续失败看日志里的 `ocr worker error` |
+| 文件导入 422 `OCR_FAILED`「图片尺寸太大」 | 超过 4000 万像素或单边 3 万；文件可能只有几百 KB | 压缩 / 裁剪后再传。这是**解码前**的拦截：一张 20000×20000 的纯白 PNG 只有 380KB，解码却要 1.2GB（md/48 §16） |
 | 文件导入 415 `UNSUPPORTED_MEDIA_TYPE` | `.doc` / `.xls` / `.pdf` 等旧格式，或不是 Office 文件 | 按提示另存为 `.docx` / `.xlsx`；txt / csv 直接传 |
 | 生成 422 `VOCABULARY_TOO_SMALL` | 已知词不够写这么长（门槛随篇幅走，见 `capacity-table.js` 的 `minKnownFor`） | 缩篇幅或加词；这是预期拦截，不是故障 |
 | 任务变成 `failed` + `TASK_INTERRUPTED` | 执行实例失联（重启 / kill -9 / OOM），心跳过期后被回收 | 调 `POST /generate/tasks/:id/retry`：已收下的段会复用，只补失败的段（md/31 §11） |

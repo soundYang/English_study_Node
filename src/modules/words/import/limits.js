@@ -23,3 +23,13 @@ export const MAX_COMPRESSION_RATIO = 100
 
 /** 前 N 字节里出现 0x00 就当二进制，不再尝试按文本解析 */
 export const TEXT_SNIFF_BYTES = 8192
+
+/**
+ * 图片像素上限。**与文件大小是两个维度**：5MB 的纯白 PNG 可以解压成 4 亿像素，
+ * 解码时要按像素分配内存，爆的是整个进程（见 image-size.js）。
+ * 4000 万像素 ≈ 6300×6300，手机原图 / 4K 截图 / 万像素长截图都在线内。
+ */
+export const MAX_IMAGE_PIXELS = 40_000_000
+
+/** 单边上限：挡住 1080×50000 这种「像素没超但长到离谱」的图 */
+export const MAX_IMAGE_SIDE = 30_000

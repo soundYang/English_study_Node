@@ -1,5 +1,6 @@
 import { ocrFailed } from '../../../../shared/errors.js'
 import { parseWordText } from '../../word-import.js'
+import { isTooLarge, readImageSize } from '../image-size.js'
 import { recognizeImage } from '../ocr.js'
 
 /**
@@ -17,6 +18,15 @@ import { recognizeImage } from '../ocr.js'
  * @returns {Promise<{ rows: Array<{index:number, word:string, meaning:string}>, warnings: Array }>}
  */
 export async function extractImage(buffer) {
+  // 必须在 OCR 之前拦：解码超大的图会直接吃掉几个 GB，崩的是整个进程而不是这次请求
+  const tooLarge = isTooLarge(readImageSize(buffer))
+
+  if (tooLarge) {
+    throw ocrFailed(
+      `图片尺寸太大（${tooLarge.width}×${tooLarge.height}），请压缩或裁剪后再传，也可以直接粘贴文本`,
+    )
+  }
+
   const text = await recognizeImage(buffer)
 
   const rows = []

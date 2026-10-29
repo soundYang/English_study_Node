@@ -26,6 +26,21 @@ const extract = (buffer, filename, contentType = 'application/octet-stream') =>
 /** 最小 PNG：只有文件头，够嗅探用；OCR 已经 mock，不会真的解码 */
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00])
 
+/** 带 IHDR 的 PNG 头，尺寸可指定——用来验证解码前的像素上限 */
+function makePngHeader(width, height) {
+  const buffer = Buffer.alloc(33)
+
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(buffer, 0)
+  buffer.writeUInt32BE(13, 8)
+  buffer.write('IHDR', 12, 'latin1')
+  buffer.writeUInt32BE(width, 16)
+  buffer.writeUInt32BE(height, 20)
+  buffer[24] = 8 // bit depth
+  buffer[25] = 6 // color type
+
+  return buffer
+}
+
 async function makeXlsx(rows, extraSheets = []) {
   const workbook = new ExcelJS.Workbook()
   const sheet = workbook.addWorksheet('Unit 1')
@@ -126,6 +141,19 @@ describe('POST /api/words/import/extract', () => {
     expect(res.body.rows.map((row) => row.word)).toEqual(['abandon', 'ability', 'able', 'to'])
     expect(res.body.rows.every((row) => row.meaning === '')).toBe(true)
     expect(res.body.warnings.map((item) => item.code)).toContain('OCR_LOW_CONFIDENCE')
+  })
+
+  it('尺寸超过上限的图片在 OCR 之前就被拒（防解码 OOM）', async () => {
+    const { recognizeImage } = await import('../modules/words/import/ocr.js')
+    recognizeImage.mockClear()
+
+    const res = await extract(makePngHeader(20000, 20000), 'huge.png', 'image/png')
+
+    expect(res.status).toBe(422)
+    expect(res.body.error.code).toBe('OCR_FAILED')
+    expect(res.body.error.message).toContain('20000×20000')
+    // 关键断言：没有进 OCR。进了就等于让 leptonica 去分配 1.6GB
+    expect(recognizeImage).not.toHaveBeenCalled()
   })
 
   it('非法词照常返回 200，标 valid:false 并给出原因', async () => {
