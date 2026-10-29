@@ -1,7 +1,6 @@
 import { Router } from 'express'
 
 import { config } from '../../config/index.js'
-import { logger } from '../../shared/logger.js'
 import { createIpLimiter } from '../../shared/middleware/rateLimit.js'
 import { parseOrThrow } from '../../shared/utils/validation.js'
 import { parseBearer } from '../auth/auth.middleware.js'
@@ -11,6 +10,7 @@ import {
   updateFeedback,
 } from '../feedback/feedback.service.js'
 import logRoutes from '../logs/log.routes.js'
+import { recordAdminAudit } from './admin-audit.service.js'
 import { requireAdmin } from './admin.middleware.js'
 import {
   adminFeedbackPatchSchema,
@@ -83,11 +83,17 @@ router.get('/users', async (req, res) => {
 router.get('/users/:dataKey', async (req, res) => {
   const { dataKey } = req.params
 
-  // 详情页给全量手机号，属于隐私访问：必须留痕（§6）
-  logger.info(
-    { admin: req.admin.username, action: 'user.detail', target: dataKey, ip: req.ip ?? '' },
-    'admin action',
-  )
+  // 详情页给全量手机号，属于隐私访问：必须留痕（§6）。
+  // 落库而不是只打 stdout——进程一重启终端日志就没了，
+  // 出事时既证明不了看过、也证明不了没看过（md/45 §10.1）
+  await recordAdminAudit({
+    admin: req.admin.username,
+    action: 'user.detail',
+    target: dataKey,
+    ip: req.ip ?? '',
+    userAgent: req.get('user-agent') ?? '',
+    requestId: req.id ?? '',
+  })
 
   res.json(await getUserDetail({ dataKey }))
 })
@@ -99,6 +105,16 @@ router.get('/feedback', async (req, res) => {
 })
 
 router.get('/feedback/:id', async (req, res) => {
+  // 详情带完整手机号与联系方式，跟用户详情同一性质，同样要留痕（md/45 §10.1）
+  await recordAdminAudit({
+    admin: req.admin.username,
+    action: 'feedback.detail',
+    target: req.params.id,
+    ip: req.ip ?? '',
+    userAgent: req.get('user-agent') ?? '',
+    requestId: req.id ?? '',
+  })
+
   res.json(await getFeedbackDetail(req.params.id))
 })
 

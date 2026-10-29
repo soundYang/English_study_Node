@@ -26,6 +26,10 @@ export function accessLogger(req, res, next) {
   // 这时再读 req.path 拿到的不是用户请求的那条路径（跳过的判断会失效）
   const pathname = req.path
   const originalUrl = req.originalUrl
+  // 落库只留路径，去掉 query（md/45 §10.3）：query 里是关键字、手机号、
+  // 甚至是别人贴进链接里的令牌，查日志的人不该顺手看到这些。
+  // 长度上限跟模型里的 path.maxlength 一致，超长 query 已被切掉，这里只需防超长路径
+  const storedPath = originalUrl.split('?')[0].slice(0, 400)
   let logged = false
 
   const write = () => {
@@ -44,7 +48,7 @@ export function accessLogger(req, res, next) {
 
     recordAccess({
       method: req.method,
-      path: originalUrl,
+      path: storedPath,
       statusCode: res.statusCode,
       durationMs: Math.round(Number(process.hrtime.bigint() - startedAt) / 1e6),
       ip: req.ip ?? '',

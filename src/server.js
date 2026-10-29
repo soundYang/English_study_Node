@@ -2,6 +2,7 @@ import mongoose from 'mongoose'
 
 import { createApp } from './app.js'
 import { config } from './config/index.js'
+import { AdminAudit } from './modules/admin/admin-audit.model.js'
 import { AdminSession } from './modules/admin/admin.model.js'
 import { UserApiKey } from './modules/ai-keys/ai-key.model.js'
 import { AppMeta } from './modules/auth/appmeta.model.js'
@@ -53,6 +54,8 @@ async function main() {
     Quota.syncIndexes(),
     // 管理端会话靠 tokenHash 唯一索引与过期 TTL；反馈靠状态/设备索引
     AdminSession.syncIndexes(),
+    // 管理端审计表的 TTL 是「看过谁的手机号」只留 90 天而不是永久堆积的唯一保证
+    AdminAudit.syncIndexes(),
     Feedback.syncIndexes(),
     // token 流水是只追加的账本，只是性能索引，但漏建会让台账页随数据量变慢
     TokenUsage.syncIndexes(),
@@ -100,6 +103,17 @@ async function main() {
   const server = app.listen(config.port, () => {
     logger.info(`api listening on http://localhost:${config.port}`)
   })
+
+  // HTTP 超时（md/45 L6）。Node 默认 requestTimeout=300s、headersTimeout=60s，
+  // 一个慢速客户端就能把连接挂五分多钟；反代后面这些默认值还和 nginx 对不上：
+  //   · requestTimeout  整个请求（含 body）的硬上限。没有哪个接口该跑两分钟——
+  //     文章生成是后台任务，请求只负责入队；上传也远小于这个数
+  //   · headersTimeout  只等请求头。必须 > keepAliveTimeout，否则 Node 会拒绝启动
+  //   · keepAliveTimeout 空闲长连接。要比反代侧的 idle 超时（nginx 默认 60s）
+  //     略长，短了会出现「代理复用了一条 Node 已经关掉的连接」→ 偶发 502
+  server.requestTimeout = 120_000
+  server.headersTimeout = 66_000
+  server.keepAliveTimeout = 65_000
 
   // 周期回收失联实例的任务：kill -9 / OOM 不会走任何清理逻辑
   const stopTaskSweeper = startTaskSweeper()

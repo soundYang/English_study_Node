@@ -20,7 +20,8 @@ const { Schema } = mongoose
 const accessLogSchema = new Schema(
   {
     method: { type: String, required: true, maxlength: 10 },
-    // originalUrl：带 query。搜索词、分页这些都在里面，排查时有用
+    // 只存路径，**不带 query**（md/45 §10.3）：query 里可能有搜索词、手机号，
+    // 甚至是别人贴进链接里的令牌，而能查这张表的人不应该顺带看到这些
     path: { type: String, required: true, maxlength: 400 },
     statusCode: { type: Number, required: true },
     durationMs: { type: Number, default: 0 },

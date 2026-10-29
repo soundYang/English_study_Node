@@ -103,7 +103,7 @@ describe('访问日志', () => {
     // supertest 走 loopback，地址本身不重要，重要的是「非空且是请求来源」
     expect(access.ip).toBeTruthy()
     expect(access.userAgent).toBe('vitest-access-log')
-    expect(access.requestId).toMatch(/^req-\d+$/)
+    expect(access.requestId).toMatch(/^req-[0-9a-z]+-\d+$/)
     expect(access.durationMs).toBeGreaterThanOrEqual(0)
     // currentUser 在 accessLogger 之后执行，但写库发生在响应结束时，
     // 所以这里必须已经拿到回落用户——同时验证了中间件顺序
@@ -112,6 +112,22 @@ describe('访问日志', () => {
     // 等一小会儿再确认：4xx 不应该出现在报错表里
     await sleep(100)
     expect(await ErrorLog.countDocuments({ path: '/api/definitely-not-a-route' })).toBe(0)
+  })
+
+  it('落库只留路径，query 不落库（md/45 §10.3）', async () => {
+    const res = await request(app)
+      .get('/api/definitely-not-a-route?phone=13800000000&q=secret')
+      .set('User-Agent', 'vitest-access-log')
+
+    expect(res.status).toBe(404)
+
+    const access = await waitFor(() =>
+      AccessLog.findOne({ path: '/api/definitely-not-a-route' }).lean(),
+    )
+    expect(access).not.toBeNull()
+    expect(access.path).toBe('/api/definitely-not-a-route')
+    // 终端日志仍然带 query（排查要看），但能被人翻查的那张表不带
+    expect(JSON.stringify(access)).not.toContain('13800000000')
   })
 
   it('健康检查不落库（探活轮询高频且没有信息量）', async () => {

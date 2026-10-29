@@ -13,8 +13,14 @@ import { logRequest, logger } from '../logger.js'
 
 let sequence = 0
 
+// 进程启动时间戳做前缀（md/45 §10.2）：只靠自增序号的话，重启后 sequence 归零，
+// `req-1` 会反复出现；用户报上来的 requestId 对不上唯一一条日志，
+// 而「用户报了一串 id、运维按它查日志」正是这个字段存在的理由。
+// base36 的毫秒时间戳是 9 位，加序号总长仍在 AccessLog.requestId 的 40 以内。
+const bootId = Date.now().toString(36)
+
 export function requestLogger(req, res, next) {
-  req.id = `req-${++sequence}`
+  req.id = `req-${bootId}-${++sequence}`
   req.log = logger
 
   const startedAt = process.hrtime.bigint()

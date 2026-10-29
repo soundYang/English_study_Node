@@ -19,6 +19,7 @@ process.env.ADMIN_USERNAME = ADMIN_USERNAME
 process.env.ADMIN_PASSWORD_HASH = await hashPassword(ADMIN_PASSWORD)
 
 const { createApp } = await import('../app.js')
+const { AdminAudit } = await import('../modules/admin/admin-audit.model.js')
 const { createCaptcha } = await import('../modules/auth/captcha.service.js')
 const { Feedback } = await import('../modules/feedback/feedback.model.js')
 const { FEEDBACK_IP_DAILY_LIMIT } = await import('../modules/feedback/feedback.service.js')
@@ -202,6 +203,18 @@ describe('管理端反馈接口', () => {
 
     expect(res.status).toBe(200)
     expect(res.body.content).toContain('这篇文章太难了')
+  })
+
+  it('看反馈详情同样留审计（md/45 §10.1）：详情里有完整手机号', async () => {
+    const { id } = await seedFeedback()
+
+    await adminRequest('get', `/api/admin/feedback/${id}`)
+
+    const audit = await AdminAudit.findOne({ action: 'feedback.detail', target: id }).lean()
+
+    expect(audit).not.toBeNull()
+    expect(audit.admin).toBe(ADMIN_USERNAME)
+    expect(audit.requestId).toMatch(/^req-[0-9a-z]+-\d+$/)
   })
 
   it('列表打码手机号与联系方式，详情才给完整值（md/45 M6）', async () => {

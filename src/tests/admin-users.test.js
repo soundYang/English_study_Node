@@ -20,6 +20,7 @@ process.env.DAILY_QUOTA_ENABLED = 'true'
 
 const { createApp } = await import('../app.js')
 const { config } = await import('../config/index.js')
+const { AdminAudit } = await import('../modules/admin/admin-audit.model.js')
 const { UserApiKey } = await import('../modules/ai-keys/ai-key.model.js')
 const { GenerationFailure } = await import('../modules/readings/generation-failure.model.js')
 const { GenerationTask } = await import('../modules/readings/generation-task.model.js')
@@ -316,6 +317,25 @@ describe('GET /api/admin/users/:dataKey', () => {
         { code: 'VOCABULARY_TOO_SMALL', count: 1 },
       ],
     })
+  })
+
+  it('查看详情留一条审计：谁、对谁、从哪来（md/45 §10.1）', async () => {
+    const user = await seedUserA()
+
+    const res = await authedGet(`/api/admin/users/${user.dataKey}`)
+    expect(res.status).toBe(200)
+
+    const audit = await AdminAudit.findOne({
+      action: 'user.detail',
+      target: user.dataKey,
+    }).lean()
+
+    expect(audit).not.toBeNull()
+    expect(audit.admin).toBe(ADMIN_USERNAME)
+    expect(audit.requestId).toMatch(/^req-[0-9a-z]+-\d+$/)
+    expect(audit.ip).toBeTruthy()
+    // 审计只记「看过」，不把手机号再抄一份：抄了等于另开一个泄露面
+    expect(JSON.stringify(audit)).not.toContain('13800000000')
   })
 
   it('自备 Key：只给摘要，token 台账不把用户自己花的钱算进平台成本（md/43 §7.2 / §7.4）', async () => {

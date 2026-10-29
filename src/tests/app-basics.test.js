@@ -82,8 +82,9 @@ describe('未知路由', () => {
     expect(res.headers['content-type']).toMatch(/application\/json/)
     expect(res.body).toEqual({
       error: { code: 'NOT_FOUND', message: '接口不存在' },
-      // 404 也要带 requestId，否则前端报障对不上日志（md/45 L4）
-      requestId: expect.stringMatching(/^req-\d+$/),
+      // 404 也要带 requestId，否则前端报障对不上日志（md/45 L4）；
+      // 形如 req-<启动时间 base36>-<序号>，重启后不会与前一次进程撞号（§10.2）
+      requestId: expect.stringMatching(/^req-[0-9a-z]+-\d+$/),
     })
   })
 })
@@ -100,7 +101,7 @@ describe('请求体解析失败', () => {
       code: 'INVALID_REQUEST',
       message: '请求体不是合法 JSON',
     })
-    expect(res.body.requestId).toMatch(/^req-\d+$/)
+    expect(res.body.requestId).toMatch(/^req-[0-9a-z]+-\d+$/)
   })
 
   it('超过 64kb → 413，而不是 500', async () => {
@@ -115,7 +116,7 @@ describe('请求体解析失败', () => {
       code: 'INVALID_REQUEST',
       message: '请求体过大',
     })
-    expect(res.body.requestId).toMatch(/^req-\d+$/)
+    expect(res.body.requestId).toMatch(/^req-[0-9a-z]+-\d+$/)
   })
 })
 
