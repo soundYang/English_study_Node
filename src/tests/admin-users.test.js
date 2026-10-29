@@ -188,6 +188,57 @@ describe('GET /api/admin/users', () => {
     })
   })
 
+  it('列表直接给出自备 Key 接入状态，且可按 hasApiKey 过滤', async () => {
+    const alice = await makeUser({ username: 'Alice' })
+    const bob = await makeUser({ username: 'Bob' })
+
+    await UserApiKey.create({
+      userId: alice.dataKey,
+      provider: 'deepseek',
+      cipher: 'v1.deadbeef.iv.tag.ct',
+      last4: '1234',
+      fingerprint: 'fingerprint123',
+    })
+
+    const all = await authedGet('/api/admin/users')
+
+    expect(all.status).toBe(200)
+    const aliceRow = all.body.items.find((row) => row.dataKey === alice.dataKey)
+    const bobRow = all.body.items.find((row) => row.dataKey === bob.dataKey)
+
+    expect(aliceRow.apiKey).toMatchObject({
+      hasKey: true,
+      provider: 'deepseek',
+      status: 'active',
+    })
+    // 没接入时只给 hasKey，前端不用再去判 provider 存不存在
+    expect(bobRow.apiKey).toEqual({ hasKey: false })
+
+    // cipher / last4 / fingerprint 任何管理接口都不返回（md/43 §7.4）
+    const raw = JSON.stringify(all.body)
+    for (const secret of ['v1.deadbeef', 'fingerprint123']) {
+      expect(raw).not.toContain(secret)
+    }
+    expect(aliceRow.apiKey).not.toHaveProperty('last4')
+    expect(aliceRow.apiKey).not.toHaveProperty('maskedKey')
+
+    const onlyWithKey = await authedGet('/api/admin/users?hasApiKey=true')
+    expect(onlyWithKey.body.total).toBe(1)
+    expect(onlyWithKey.body.items[0].dataKey).toBe(alice.dataKey)
+
+    const onlyWithout = await authedGet('/api/admin/users?hasApiKey=false')
+    expect(onlyWithout.body.total).toBe(1)
+    expect(onlyWithout.body.items[0].dataKey).toBe(bob.dataKey)
+  })
+
+  it('hasApiKey 只接受 true / false', async () => {
+    // 写成「没接的人」这种自然语言会被 zod 拒掉，不会静默当成 false
+    const res = await authedGet('/api/admin/users?hasApiKey=yes')
+
+    expect(res.status).toBe(400)
+    expect(res.body.error.code).toBe('INVALID_REQUEST')
+  })
+
   it('手机号列表脱敏，但搜索用明文能命中', async () => {
     const user = await seedUserA()
 
@@ -326,5 +377,32 @@ describe('GET /api/admin/overview', () => {
       limitTokens: expect.any(Number),
       usedTokens: expect.any(Number),
     })
+  })
+
+  it('概览给出自备 Key 的接入数（active / invalid 分开）', async () => {
+    await seedUserA()
+    const bob = await makeUser({ username: 'Bob' })
+
+    await UserApiKey.create({
+      userId: 'dk_alice',
+      provider: 'deepseek',
+      cipher: 'v1.deadbeef.iv.tag.ct',
+      last4: '1234',
+      fingerprint: 'fp-alice',
+    })
+    // invalid 不是「没接入」：接了但上游 401/403 过，得单独数出来
+    await UserApiKey.create({
+      userId: bob.dataKey,
+      provider: 'deepseek',
+      cipher: 'v1.cafebabe.iv.tag.ct',
+      last4: '5678',
+      fingerprint: 'fp-bob',
+      status: 'invalid',
+    })
+
+    const res = await authedGet('/api/admin/overview')
+
+    expect(res.status).toBe(200)
+    expect(res.body.apiKeys).toEqual({ total: 2, active: 1, invalid: 1 })
   })
 })

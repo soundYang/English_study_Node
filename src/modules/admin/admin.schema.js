@@ -36,6 +36,12 @@ export const adminUsersQuerySchema = z.object({
   sort: z.enum(['createdAt', 'lastLoginAt', 'tokens', 'readings'], {
     error: '排序方式不正确',
   }).default('createdAt'),
+  // 只筛「接了自备 Key / 没接」的人。不传 = 不过滤（不要默认 false，
+  // 那会把默认列表变成「全都没接」，看起来像功能坏了）
+  hasApiKey: z
+    .enum(['true', 'false'], { error: 'hasApiKey 只能是 true 或 false' })
+    .optional()
+    .transform((value) => (value === undefined ? undefined : value === 'true')),
 })
 
 export const adminFeedbackQuerySchema = z.object({

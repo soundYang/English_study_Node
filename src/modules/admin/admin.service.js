@@ -133,6 +133,24 @@ export function maskPhone(phone) {
   return `${value.slice(0, 3)}****${value.slice(-4)}`
 }
 
+/**
+ * 管理端能看到的自备 Key 摘要（md/43 §7.4）。
+ *
+ * 只有「有没有 / 哪个厂商 / 能不能用 / 最近改过」——不含任何能还原或比对 Key
+ * 的字段（cipher / last4 / fingerprint 一个都不取）。列表与详情共用这一个函数，
+ * 两处字段名一旦分叉，前端就得写两套判断。
+ */
+function toApiKeySummary(doc) {
+  if (!doc) return { hasKey: false }
+
+  return {
+    hasKey: true,
+    provider: doc.provider,
+    status: doc.status,
+    updatedAt: doc.updatedAt,
+  }
+}
+
 function buildUserFilter(q) {
   if (!q?.trim()) return {}
 
@@ -178,7 +196,7 @@ async function attachMetrics(users, now = new Date()) {
   const day = quotaDay(now)
   const today = startOfToday(now)
 
-  const [wordRows, readingRows, tokenMap, quotaRows, failureRows] = await Promise.all([
+  const [wordRows, readingRows, tokenMap, quotaRows, failureRows, apiKeyRows] = await Promise.all([
     // 与 wordRepository.countVocabulary 同口径：只算 learning / mastered。
     // basic-removed 是 status=new 的占位行，天然被排除
     Word.aggregate([
@@ -223,8 +241,15 @@ async function attachMetrics(users, now = new Date()) {
       { $match: { userId: { $in: keys } } },
       { $group: { _id: '$userId', count: { $sum: 1 } } },
     ]),
+    // 自备 Key 的「有没有接入」必须在列表上就能看见：管理员判断一条反馈 / 一次
+    // 报障时，先要知道这人走的是平台免费池还是自己的 Key（md/43 §7.4 只列了
+    // 允许暴露的摘要字段，cipher / last4 / fingerprint 一律不取）
+    UserApiKey.find({ userId: { $in: keys } })
+      .select('userId provider status updatedAt')
+      .lean(),
   ])
 
+  const apiKeys = new Map(apiKeyRows.map((row) => [row.userId, row]))
   const words = new Map(wordRows.map((row) => [row._id, row.count]))
   const readings = new Map(readingRows.map((row) => [row._id, row]))
   const quotas = new Map(
@@ -261,6 +286,8 @@ async function attachMetrics(users, now = new Date()) {
       questions: { answered: stats.answered, correct: stats.correct, accuracy },
       tokens: tokenMap.get(user.dataKey) ?? emptyTokenBuckets(),
       failures: { count: failures.get(user.dataKey) ?? 0 },
+      // 与详情接口同形：hasKey=false 时只给这一个字段，前端不必判 provider 是否存在
+      apiKey: toApiKeySummary(apiKeys.get(user.dataKey)),
       quota: {
         enabled: config.dailyQuotaEnabled,
         limit: config.dailyQuotaEnabled ? config.dailyQuotaAccount : null,
@@ -277,8 +304,18 @@ async function attachMetrics(users, now = new Date()) {
  *
  * 按 token / 文章数排序时走「先排名再取页」；其余排序交给 Mongo。
  */
-export async function listUsers({ q = '', page = 1, size = 20, sort = 'createdAt' } = {}) {
-  const filter = buildUserFilter(q)
+export async function listUsers({ q = '', page = 1, size = 20, sort = 'createdAt', hasApiKey } = {}) {
+  const clauses = [buildUserFilter(q)]
+
+  // 「只看接了自备 Key 的人 / 只看没接的人」：UserApiKey 是独立集合，没有能直接
+  // 塞进 users 查询的字段，先取一次 dataKey 集合。几千用户量级下是毫秒级；
+  // 真到几十万再改成 $lookup 聚合，现在不值得为它牺牲可读性
+  if (hasApiKey !== undefined) {
+    const withKey = await UserApiKey.distinct('userId')
+    clauses.push({ dataKey: hasApiKey ? { $in: withKey } : { $nin: withKey } })
+  }
+
+  const filter = clauses.length === 1 ? clauses[0] : { $and: clauses }
   const skip = (page - 1) * size
 
   if (sort === 'tokens' || sort === 'readings') {
@@ -396,9 +433,7 @@ export async function getUserDetail({ dataKey, now = new Date() }) {
     },
     questions: stats.questions,
     tokens,
-    apiKey: apiKeyDoc
-      ? { hasKey: true, provider: apiKeyDoc.provider, status: apiKeyDoc.status, updatedAt: apiKeyDoc.updatedAt }
-      : { hasKey: false },
+    apiKey: toApiKeySummary(apiKeyDoc),
     quota: {
       enabled: config.dailyQuotaEnabled,
       limit: config.dailyQuotaEnabled ? config.dailyQuotaAccount : null,
@@ -450,6 +485,7 @@ export async function getOverview({ now = new Date() } = {}) {
     readingsTotal,
     feedbackRows,
     freeBudget,
+    apiKeyRows,
   ] = await Promise.all([
     User.countDocuments({}),
     User.countDocuments({ lastLoginAt: { $gte: today } }),
@@ -457,6 +493,9 @@ export async function getOverview({ now = new Date() } = {}) {
     Reading.countDocuments({}),
     Feedback.aggregate([{ $group: { _id: '$status', count: { $sum: 1 } } }]),
     getBudgetStatus(),
+    // 自备 Key 的接入情况。invalid 不是「没接入」，是「接了但上游拒绝了」——
+    // 单独列出来，管理员看到它涨就能联想到有一批人正在吃 403
+    UserApiKey.aggregate([{ $group: { _id: '$status', count: { $sum: 1 } } }]),
   ])
 
   const feedback = { open: 0, replied: 0, closed: 0 }
@@ -464,10 +503,17 @@ export async function getOverview({ now = new Date() } = {}) {
     if (row._id in feedback) feedback[row._id] = row.count
   }
 
+  const apiKeys = { total: 0, active: 0, invalid: 0 }
+  for (const row of apiKeyRows) {
+    apiKeys.total += row.count
+    if (row._id in apiKeys) apiKeys[row._id] = row.count
+  }
+
   return {
     users: { total: totalUsers, activeToday },
     readings: { today: readingsToday, total: readingsTotal },
     tokens: { freeBudget },
     feedback,
+    apiKeys,
   }
 }
