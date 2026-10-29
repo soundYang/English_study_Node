@@ -1,6 +1,7 @@
-import rateLimit from 'express-rate-limit'
+import rateLimit, { ipKeyGenerator } from 'express-rate-limit'
 
 import { config } from '../../config/index.js'
+import { readDeviceId } from '../../modules/quota/quota.service.js'
 import { ApiError, ERROR_CODES } from '../errors.js'
 
 /**
@@ -28,6 +29,7 @@ import { ApiError, ERROR_CODES } from '../errors.js'
  *   message: string,
  *   enabled?: boolean,
  *   skipSuccessfulRequests?: boolean,
+ *   keyGenerator?: (req) => string,
  * }} options
  */
 export function createIpLimiter({
@@ -38,6 +40,8 @@ export function createIpLimiter({
   // 管理员登录用：只数失败次数。成功登录不占配额，
   // 否则同一个人一天登几次就会被自己的正常操作锁住
   skipSuccessfulRequests = false,
+  // 默认不传 = express-rate-limit 的按 IP 分组；生成接口用身份桶时再传
+  keyGenerator = null,
 }) {
   return rateLimit({
     windowMs,
@@ -46,6 +50,7 @@ export function createIpLimiter({
     legacyHeaders: false,
     skip: () => !enabled,
     skipSuccessfulRequests,
+    ...(keyGenerator ? { keyGenerator } : {}),
     handler: (req, res, next) => {
       next(
         new ApiError(429, ERROR_CODES.RATE_LIMITED, message, '', {
@@ -55,6 +60,23 @@ export function createIpLimiter({
       )
     },
   })
+}
+
+/**
+ * 身份桶的键：账号 → 设备 → IP（md/55 §4.9）。
+ *
+ * 只用 `req.auth.user.dataKey`，不用 `req.userId`：后者在未强制鉴权时
+ * 恒为 local-user，会把全站并成一个桶。设备 ID 可伪造，所以它只负责
+ * NAT 后的区分度，绕过它的请求由 IP 安全桶兜住。
+ */
+export function generateRateLimitKey(req) {
+  const dataKey = req.auth?.user?.dataKey
+  if (dataKey) return `acct:${dataKey}`
+
+  const deviceId = readDeviceId(req.get?.('X-Device-Id'))
+  if (deviceId) return `dev:${deviceId}`
+
+  return `ip:${ipKeyGenerator(req.ip ?? '')}`
 }
 
 export function createGenerateLimiter({
@@ -70,7 +92,25 @@ export function createGenerateLimiter({
     windowMs,
     limit,
     enabled,
+    keyGenerator: generateRateLimitKey,
     message: `生成太频繁：每分钟最多 ${limit} 次，请稍后再试。`,
+  })
+}
+
+/**
+ * IP 安全桶（md/55 §4.9）：始终按 IP，挡住轮换设备 ID / 换账号绕过身份桶。
+ * 额度比身份桶宽（默认 60/min），正常用户碰不到，只拦脚本。
+ */
+export function createGenerateIpLimiter({
+  windowMs = 60_000,
+  limit = config.rateLimitGenerateIp,
+  enabled = config.rateLimitEnabled,
+} = {}) {
+  return createIpLimiter({
+    windowMs,
+    limit,
+    enabled,
+    message: `请求太频繁：同一网络每分钟最多 ${limit} 次，请稍后再试。`,
   })
 }
 
@@ -79,3 +119,4 @@ export function createGenerateLimiter({
  * 测试要改的话按 word-expand.test.js 的做法：先在文件顶部设环境变量，再动态 import。
  */
 export const generateRateLimit = createGenerateLimiter()
+export const generateIpRateLimit = createGenerateIpLimiter()

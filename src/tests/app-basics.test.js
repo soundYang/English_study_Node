@@ -56,6 +56,17 @@ describe('GET /api/health', () => {
         status: 'degraded',
         mongo: 'disconnected',
         dictionary: { words: 17436, loadedAt: expect.any(String) },
+        // md/55 §7.2：健康检查的纯 additive 字段；测试环境两个闸门都关闭
+        generation: {
+          active: 0,
+          queued: 0,
+          pending: 0,
+          maxActive: 0,
+          maxQueue: 0,
+          upstreamActive: 0,
+          upstreamWaiting: 0,
+          circuit: 'closed',
+        },
       })
     } finally {
       restore()

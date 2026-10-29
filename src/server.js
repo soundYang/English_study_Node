@@ -18,7 +18,9 @@ import { basicWordsByLevel } from './modules/readings/basic-words.js'
 import { GenerationTask } from './modules/readings/generation-task.model.js'
 import {
   reclaimInterruptedTasks,
+  startGenerationScheduler,
   startTaskSweeper,
+  stopGenerationScheduler,
 } from './modules/readings/generation-task.service.js'
 import { Reading } from './modules/readings/reading.model.js'
 import { basicWordsVersions } from './modules/readings/versions.js'
@@ -82,6 +84,9 @@ async function main() {
     logger.info(`basic words loaded: ${level} ${list.length} (version ${basicWordsVersions[level]})`)
   }
 
+  // 队列心跳必须在开始接任务之前启动，否则正常排队的任务会被巡检误杀
+  startGenerationScheduler()
+
   const server = app.listen(config.port, () => {
     logger.info(`api listening on http://localhost:${config.port}`)
   })
@@ -91,6 +96,7 @@ async function main() {
 
   const shutdown = async (signal) => {
     logger.info(`收到 ${signal}，正在关闭`)
+    stopGenerationScheduler()
     stopTaskSweeper()
     await new Promise((resolve) => server.close(resolve))
     await mongoose.disconnect()

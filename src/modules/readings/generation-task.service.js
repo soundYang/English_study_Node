@@ -3,12 +3,18 @@ import { randomUUID } from 'node:crypto'
 import mongoose from 'mongoose'
 
 import { config } from '../../config/index.js'
-import { ERROR_CODES, taskInProgress, taskNotFound } from '../../shared/errors.js'
+import {
+  ERROR_CODES,
+  generationTimeout,
+  taskInProgress,
+  taskNotFound,
+} from '../../shared/errors.js'
 import { logger } from '../../shared/logger.js'
 import { parseOrThrow } from '../../shared/utils/validation.js'
 import { resolveAiKey } from '../ai-keys/ai-key.service.js'
 import { assertBudgetAvailable } from '../budget/budget.service.js'
 import { releaseQuota, releaseReservation, reserveQuota } from '../quota/quota.service.js'
+import { createGenerationScheduler } from './generation-scheduler.js'
 import { generationTaskRepository as repo } from './generation-task.repository.js'
 import { createTaskSchema } from './reading.schema.js'
 import { generateReading } from './reading.service.js'
@@ -314,13 +320,30 @@ async function heartbeatOnce(taskId, controller) {
 }
 
 /**
- * 真正跑一次生成。异常一律转成任务状态，不往外抛——
- * 这个函数在 setImmediate 里跑，没人 await 它。
+ * 真正跑一次生成（md/55 §4.3.0）。
+ *
+ * 调度器只传 taskId：执行参数必须从任务文档重建，这样任务才能在进程内
+ * 排队，P1 换成数据库队列后任何实例都能接手。
+ * 异常一律转成任务状态，不往外抛。
  */
-async function runTask({ taskId, userId, body, resume = null }) {
+async function runTask(taskId) {
+  const task = await repo.findById(taskId)
+
+  if (!task || !['queued', 'running'].includes(task.status)) {
+    logger.info({ taskId }, 'generation task not runnable, skipped')
+    return
+  }
+
+  const userId = task.userId
+  const body = toPlainParams(task)
+  const resume = config.generationStrategy === 'segmented' ? toResumePlan(task) : null
   const startedAt = new Date()
-  // 任务没有客户端连接可断：这个 signal 只服务于取消与丢租
+
+  // 任务没有客户端连接可断：controller 只服务于取消与丢租；
+  // timeout 是整篇 deadline，两者用 any 合成一个 signal 传给生成链路。
   const controller = new AbortController()
+  const timeout = AbortSignal.timeout(config.generationDeadlineMs)
+  const signal = AbortSignal.any([controller.signal, timeout])
 
   activeControllers.set(String(taskId), controller)
 
@@ -393,11 +416,14 @@ async function runTask({ taskId, userId, body, resume = null }) {
       // token 流水挂到任务上（md/37）：被取消的任务也要有人认账
       taskId,
       body,
-      signal: controller.signal,
+      signal,
       onProgress,
       resume,
       aiKey,
     })
+
+    // 打桩客户端可能不理会 signal：即使它跑完了，deadline 已到也不能当成功
+    if (timeout.aborted) throw generationTimeout({ deadlineMs: config.generationDeadlineMs })
 
     const finishedAt = new Date()
 
@@ -414,14 +440,18 @@ async function runTask({ taskId, userId, body, resume = null }) {
 
     logger.info({ taskId, readingId: dto.id, durationMs: finishedAt - startedAt }, 'generation task succeeded')
   } catch (error) {
-    // 取消接口已经把状态写成 cancelled，这里再写一次 failed 会把用户的取消改成失败
-    if (controller.signal.aborted || error?.name === 'AbortError') {
+    // 真正的用户取消 / 丢租：状态已经被取消接口或巡检写过，这里保持静默。
+    // 注意不能把 deadline 也归到这里——那会让超时任务永远不写终态（md/55 §4.7）
+    if (controller.signal.aborted) {
       logger.info({ taskId }, 'generation task aborted')
       return
     }
 
     const finishedAt = new Date()
-    const code = error?.code ?? ERROR_CODES.INTERNAL_ERROR
+    const timeoutError = timeout.aborted
+      ? generationTimeout({ deadlineMs: config.generationDeadlineMs })
+      : null
+    const code = timeoutError?.code ?? error?.code ?? ERROR_CODES.INTERNAL_ERROR
 
     await finishTask(taskId, {
       status: 'failed',
@@ -432,8 +462,8 @@ async function runTask({ taskId, userId, body, resume = null }) {
       heartbeatAt: null,
       error: {
         code,
-        message: error?.message ?? '生成失败，请重试',
-        details: error?.details ?? null,
+        message: timeoutError?.message ?? error?.message ?? '生成失败，请重试',
+        details: timeoutError?.details ?? error?.details ?? null,
       },
     })
 
@@ -472,26 +502,37 @@ export async function createGenerationTask({ userId, body, identity = null }) {
     throw taskInProgress({ taskId: String(active._id) })
   }
 
-  // md/43 §6.3：自备 Key 不过每日额度 / 免费池这两道闸——花的是用户自己的钱
-  const aiKey = await resolveAiKey(userId)
+  // 先占调度槽：队满在这里 503，此时还没解析 Key、没扣额度（md/55 §3.2 I1）
+  const slot = scheduler.reserve()
 
-  if (aiKey.source === 'free') {
-    // 免费池到顶就停（md/36）。放在幂等判断之后：已经建好的任务照样能复用 / 轮询，
-    // 放在预扣之前：被预算挡下的请求不该扣掉用户当天的额度
-    await assertBudgetAvailable()
-  }
+  let aiKey
+  let reservation = null
+  let task = null
 
-  // 预扣必须排在三道幂等判断之后（md/35 §4.2）：双击的第二次点击、
-  // 同参复用、409 都不扣；放在前面会让一次点击白掉两次额度
-  const reservation = aiKey.source === 'free'
-    ? await reserveQuota({ identity: identity ?? {} })
-    : null
-
-  let task
   try {
-    task = await repo.create({
+    // md/43 §6.3：自备 Key 不过每日额度 / 免费池这两道闸——花的是用户自己的钱
+    aiKey = await resolveAiKey(userId)
+
+    if (aiKey.source === 'free') {
+      // 免费池到顶就停（md/36）。放在幂等判断之后：已经建好的任务照样能复用 / 轮询，
+      // 放在预扣之前：被预算挡下的请求不该扣掉用户当天的额度
+      await assertBudgetAvailable()
+    }
+
+    // 预扣必须排在三道幂等判断之后（md/35 §4.2）：双击的第二次点击、
+    // 同参复用、409 都不扣；放在前面会让一次点击白掉两次额度
+    reservation = aiKey.source === 'free'
+      ? await reserveQuota({ identity: identity ?? {} })
+      : null
+
+    const document = {
       userId,
       clientToken: clientToken ?? null,
+      // 活跃任务唯一键；终态由 repo.finish / 巡检统一 $unset
+      activeKey: userId,
+      // 队列持有者与心跳：巡检据此区分「正常排队」和「实例失联」
+      owner: INSTANCE_ID,
+      heartbeatAt: new Date(),
       status: 'queued',
       stage: 'queued',
       params: {
@@ -510,19 +551,52 @@ export async function createGenerationTask({ userId, body, identity = null }) {
       aiKeySource: aiKey.source,
       // 开关关闭时 reservation 是 null，任务文档上不留 quota 字段（与老任务同形）
       ...(reservation && { quota: { keys: reservation.keys, day: reservation.day } }),
-    })
+    }
+
+    try {
+      task = await repo.create(document)
+    } catch (error) {
+      if (error?.code !== 11000) throw error
+
+      // 两个并发创建都通过了「先查再建」，唯一索引只放一个进来。
+      // 另一个要区分「同参复用」和「参数不同 409」（md/55 §4.3.1）
+      const current = await repo.findActive(userId)
+
+      if (current && fingerprint(current.params) === fingerprint(generationParams)) {
+        slot.release()
+        await releaseReservation(reservation)
+        reservation = null
+        return { task: current, reused: true }
+      }
+
+      // 唯一键命中了一条已经终态的脏数据：清掉后重试一次，避免用户被永久锁死
+      if (!current) {
+        const dirty = await repo.findByActiveKey(userId)
+        if (dirty) {
+          await repo.clearActiveKey(dirty._id)
+          try {
+            task = await repo.create(document)
+          } catch (retryError) {
+            // 重试仍撞唯一键：说明另一个请求刚好抢到了，按 409 处理
+            if (retryError?.code === 11000) throw taskInProgress({ taskId: '' })
+            throw retryError
+          }
+        }
+      }
+
+      if (!task) {
+        throw taskInProgress({ taskId: current ? String(current._id) : '' })
+      }
+    }
   } catch (error) {
     // 任务没建起来就不算一次使用；不退的话用户会凭空少一次
+    slot.release()
     await releaseReservation(reservation)
     throw error
   }
 
-  // setImmediate 而不是直接 await：接口要立刻回 202，
-  // 生成在下一个事件循环里开始，HTTP 响应已经写完了
-  const taskId = task._id
-  setImmediate(() => {
-    void runTask({ taskId, userId, body: generationParams })
-  })
+  // 队列只存 taskId：runTask 会从任务文档重建参数（md/55 §4.3.0）
+  scheduler.enqueue(task._id, slot)
 
   return { task, reused: false }
 }
@@ -553,8 +627,9 @@ export async function cancelGenerationTask({ userId, id }) {
 
   if (task.status !== 'queued' && task.status !== 'running') return toTaskDto(task)
 
-  // 先 abort 再写状态：生成流程看到 signal 已 abort 会直接退出，
-  // 不会反过来把 cancelled 覆盖成 failed（runTask 的 catch 里有短路）
+  // 还没开跑的任务直接从队列移除并释放槽位；已开跑的靠 AbortController。
+  // 两条路都先于终态写入，避免 runTask 把 cancelled 覆盖成 failed。
+  scheduler.cancelQueued(task._id)
   activeControllers.get(String(task._id))?.abort()
 
   const finishedAt = new Date()
@@ -609,71 +684,91 @@ export async function retryGenerationTask({ userId, id, identity = null }) {
   const active = await repo.findActive(userId)
   if (active) throw taskInProgress({ taskId: String(active._id) })
 
-  // md/43 §6.3：重试与创建同一套——重新解析 Key、按当前状态决定要不要过闸
-  const aiKey = await resolveAiKey(userId)
-  const useUserKey = aiKey.source === 'user'
+  // 重试同样要抢执行槽：队满 503，且还没动任务/额度（md/55 §4.3.2）
+  const slot = scheduler.reserve()
 
-  if (!useUserKey) {
-    // 重试会真的再调模型，同样受全局预算约束（md/36）
-    await assertBudgetAvailable()
-  }
+  let reservation = null
+  let reopened = null
 
-  // 上次的额度还没退、这次改用自备 Key：先退回，免得白占一天（md/43 §6.3）
-  if (useUserKey) await refundTaskQuota(task._id)
+  try {
+    // md/43 §6.3：重试与创建同一套——重新解析 Key、按当前状态决定要不要过闸
+    const aiKey = await resolveAiKey(userId)
+    const useUserKey = aiKey.source === 'user'
 
-  const body = toPlainParams(task)
-  // 计划只在分段路径落库；整篇路径没有续跑的依据，退回整篇重跑
-  const resume = config.generationStrategy === 'segmented' ? toResumePlan(task) : null
+    if (!useUserKey) {
+      // 重试会真的再调模型，同样受全局预算约束（md/36）
+      await assertBudgetAvailable()
+    }
 
-  // 上次是「失败」或「零产出取消」→ 额度已经退过，这次要重新占一次。
-  // 有产出的取消（已收下段落）没有退过，重试沿用原占用，不再扣（md/35 §4.3）。
-  // 上次用自备 Key 的任务没占过额度，这次回到免费路径要占一次（md/43 §6.3）。
-  // 自备 Key 本身永远不占每日额度
-  const needsReservation = !useUserKey
-    && (Boolean(task.quota?.refundedAt) || task.aiKeySource === 'user')
-  const reservation = needsReservation
-    ? await reserveQuota({ identity: identity ?? {} })
-    : null
+    // 上次的额度还没退、这次改用自备 Key：先退回，免得白占一天（md/43 §6.3）
+    if (useUserKey) await refundTaskQuota(task._id)
 
-  const reopened = await repo.reopen(id, {
-    status: 'queued',
-    stage: 'queued',
-    error: null,
-    readingId: null,
-    startedAt: null,
-    finishedAt: null,
-    durationMs: null,
-    // 租约随状态一起重置：上一次的取消标记不能带进这次尝试
-    cancelRequested: false,
-    owner: null,
-    heartbeatAt: null,
-    retryCount: (task.retryCount ?? 0) + 1,
-    // TTL 建在 createdAt 上，这里一并重置：否则一个快过期的任务重试到一半
-    // 会被 TTL 删掉，轮询直接 404，而模型调用已经花出去了
-    createdAt: new Date(),
-    // 本次的支付路径，runTask 据此判断要不要重新解析 Key（md/43 §6.3）
-    aiKeySource: aiKey.source,
-    // 自备 Key：旧的占用已经在上面退掉，清空 quota，免得取消/失败时再退一次
-    ...(useUserKey
-      ? { quota: { keys: [], day: null, refundedAt: null } }
-      : reservation && {
-          quota: { keys: reservation.keys, day: reservation.day, refundedAt: null },
-        }),
-  })
+    // 上次是「失败」或「零产出取消」→ 额度已经退过，这次要重新占一次。
+    // 有产出的取消（已收下段落）没有退过，重试沿用原占用，不再扣（md/35 §4.3）。
+    // 上次用自备 Key 的任务没占过额度，这次回到免费路径要占一次（md/43 §6.3）。
+    // 自备 Key 本身永远不占每日额度
+    const needsReservation = !useUserKey
+      && (Boolean(task.quota?.refundedAt) || task.aiKeySource === 'user')
+    reservation = needsReservation
+      ? await reserveQuota({ identity: identity ?? {} })
+      : null
 
-  if (!reopened) {
-    // 另一个重试请求刚刚把它改走了：刚占的额度要还回去，否则白扣一次
+    const now = new Date()
+
+    try {
+      reopened = await repo.reopen(id, {
+        status: 'queued',
+        stage: 'queued',
+        error: null,
+        readingId: null,
+        startedAt: null,
+        finishedAt: null,
+        durationMs: null,
+        // 租约随状态一起重置：上一次的取消标记不能带进这次尝试
+        cancelRequested: false,
+        owner: INSTANCE_ID,
+        heartbeatAt: now,
+        // 重新占住用户唯一活跃键；终态时已经被 finish / 巡检清掉
+        activeKey: userId,
+        retryCount: (task.retryCount ?? 0) + 1,
+        // TTL 建在 createdAt 上，这里一并重置：否则一个快过期的任务重试到一半
+        // 会被 TTL 删掉，轮询直接 404，而模型调用已经花出去了
+        createdAt: now,
+        // 本次的支付路径，runTask 据此判断要不要重新解析 Key（md/43 §6.3）
+        aiKeySource: aiKey.source,
+        // 自备 Key：旧的占用已经在上面退掉，清空 quota，免得取消/失败时再退一次
+        ...(useUserKey
+          ? { quota: { keys: [], day: null, refundedAt: null } }
+          : reservation && {
+              quota: { keys: reservation.keys, day: reservation.day, refundedAt: null },
+            }),
+      })
+    } catch (error) {
+      // 两个重试并发：条件更新通常只有一个成功；唯一索引是第二道保险
+      if (error?.code === 11000) {
+        const latest = await repo.findActive(userId)
+        throw taskInProgress({ taskId: latest ? String(latest._id) : '' })
+      }
+      throw error
+    }
+
+    if (!reopened) {
+      // 另一个重试请求刚刚把它改走了：刚占的额度和槽位要还回去
+      slot.release()
+      await releaseReservation(reservation)
+      reservation = null
+
+      // 返回库里现在的状态，不起第二条链路
+      const latest = await repo.findByIdAndUser(id, userId)
+      return { task: latest ?? task, reused: true }
+    }
+  } catch (error) {
+    slot.release()
     await releaseReservation(reservation)
-
-    // 返回库里现在的状态，不起第二条链路
-    const latest = await repo.findByIdAndUser(id, userId)
-    return { task: latest ?? task, reused: true }
+    throw error
   }
 
-  const taskId = reopened._id
-  setImmediate(() => {
-    void runTask({ taskId, userId, body, resume })
-  })
+  scheduler.enqueue(reopened._id, slot)
 
   return { task: reopened, reused: false }
 }
@@ -736,3 +831,32 @@ export function startTaskSweeper({ intervalMs = 60_000 } = {}) {
 
   return () => clearInterval(timer)
 }
+
+/**
+ * 任务调度器单例（md/55 §4.2）。
+ *
+ * 放在文件底部：runTask 是函数声明，会提升；创建/重试调用的是模块初始化
+ * 完成后才存在的 `scheduler`，所以不存在 TDZ 问题。
+ */
+const scheduler = createGenerationScheduler({
+  runTask,
+  heartbeat: () => repo.touchQueued(INSTANCE_ID, new Date()),
+  logger,
+})
+
+/** 服务启动时开启队列心跳；测试不启动，避免后台定时器拖住 vitest */
+export function startGenerationScheduler() {
+  scheduler.startHeartbeat()
+}
+
+/** 进程退出时停心跳；已在跑的任务交给 server.close 后的巡检处理 */
+export function stopGenerationScheduler() {
+  scheduler.stop()
+}
+
+/** health 只读快照：不暴露用户、任务 id 或 Key */
+export function getGenerationRuntimeSnapshot() {
+  return scheduler.snapshot()
+}
+
+export { scheduler }

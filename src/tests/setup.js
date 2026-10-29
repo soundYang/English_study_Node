@@ -59,6 +59,19 @@ process.env.GENERATION_STRATEGY = 'whole'
 process.env.SEGMENT_CONCURRENCY = '4'
 process.env.SEGMENT_MAX_ATTEMPTS = '2'
 process.env.SEGMENT_TEMPERATURE = '0.5'
+// 任务调度器在绝大多数用例里不需要限流：开着会让并行测试互相排队，
+// 失败位置看起来和生成逻辑无关。验证调度器本身的用例在自己文件顶部改回来。
+process.env.GENERATION_MAX_ACTIVE = '0'
+process.env.GENERATION_MAX_QUEUE = '0'
+// 上游信号量同理：打桩调用不耗网络，默认关闭；单独的信号量用例直接构造实例
+process.env.UPSTREAM_MAX_CONCURRENCY = '0'
+// 重试退避压到 1ms，避免「连续失败」用例真的等 1.5 秒；生产默认仍是 500/8000
+process.env.AI_RETRY_BASE_MS = '1'
+process.env.AI_RETRY_MAX_MS = '1'
+// 重试次数保持生产默认（1 次首轮 + 2 次重试），让 ai-client 的边界断言有意义
+process.env.AI_MAX_RETRIES = '2'
+// 熔断阈值调大，避免其它用例的偶发上游失败把整个文件熔断
+process.env.AI_CIRCUIT_FAILURES = '1000'
 
 const { AdminSession } = await import('../modules/admin/admin.model.js')
 const { UserApiKey } = await import('../modules/ai-keys/ai-key.model.js')
@@ -70,6 +83,7 @@ const { Quota } = await import('../modules/quota/quota.model.js')
 const { Session } = await import('../modules/auth/session.model.js')
 const { User } = await import('../modules/auth/user.model.js')
 const { loadDictionary } = await import('../modules/dictionary/dictionary.loader.js')
+const { GenerationTask } = await import('../modules/readings/generation-task.model.js')
 const { Reading } = await import('../modules/readings/reading.model.js')
 const { TokenUsage } = await import('../modules/usage/token-usage.model.js')
 const { Word } = await import('../modules/words/word.model.js')
@@ -87,6 +101,8 @@ beforeAll(async () => {
   await Promise.all([
     Word.syncIndexes(),
     Reading.syncIndexes(),
+    // activeKey 的 sparse 唯一索引是「同一用户只有一个活跃任务」的最终保险
+    GenerationTask.syncIndexes(),
     User.syncIndexes(),
     Session.syncIndexes(),
     Captcha.syncIndexes(),

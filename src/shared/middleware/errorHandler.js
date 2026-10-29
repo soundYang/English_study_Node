@@ -2,6 +2,22 @@ import { recordError } from '../../modules/logs/log.service.js'
 import { ApiError, ERROR_CODES } from '../errors.js'
 
 /**
+ * 高并发下必然大量出现的 5xx（md/55 §7.1）。
+ *
+ * 它们不是异常，是闸门在正常工作；写进 ErrorLog 会在一次流量高峰里
+ * 瞬间把报错表写满，真正的事故反而被淹掉。访问日志仍然会记下这次请求。
+ */
+const EXPECTED_5XX = new Set([
+  ERROR_CODES.GENERATION_SATURATED,
+  ERROR_CODES.AI_PROVIDER_BUSY,
+  ERROR_CODES.GENERATION_TIMEOUT,
+])
+
+/** 闸门日志每 5s 最多一条：高并发下逐请求打 warn 会自己制造一次日志洪峰 */
+const EXPECTED_5XX_WARN_INTERVAL_MS = 5_000
+let lastExpected5xxWarnAt = 0
+
+/**
  * 落库用的错误码。`err.code` 优先（mongoose 的 11000 这类最有信息量），
  * 没有再用 `err.name`；但普通 `new Error()` 的 name 恒为 'Error'，
  * 按它分组等于没分组，统一归到 INTERNAL_ERROR。
@@ -44,14 +60,37 @@ export function errorHandler(err, req, res, _next) {
 
   // 已经归一化的业务异常 → 按原样返回
   if (err instanceof ApiError) {
-    // 5xx 的 ApiError 仍然是「意外」，需要留痕；4xx 是预期分支，不写
-    if (err.status >= 500) {
+    // 5xx 的 ApiError 仍然是「意外」，需要留痕；4xx 是预期分支，不写。
+    // 闸门类 5xx 是预期内的容量信号，只打一条 warn，不落 ErrorLog
+    if (err.status >= 500 && EXPECTED_5XX.has(err.code)) {
+      const now = Date.now()
+      if (now - lastExpected5xxWarnAt >= EXPECTED_5XX_WARN_INTERVAL_MS) {
+        lastExpected5xxWarnAt = now
+        req.log?.warn(
+          { code: err.code, details: err.details ?? null, requestId: req.id },
+          'generation gate rejected request',
+        )
+      }
+    } else if (err.status >= 500) {
       persistServerError(req, {
         statusCode: err.status,
         code: err.code,
         message: err.message,
         stack: err.stack,
       })
+    }
+
+    // 闸门类错误的 Retry-After 由 details.retryAfter 决定。
+    // 这个请求也穿过了生成限流器，会留下分钟级的 RateLimit 头；
+    // 前端 `retryAfterOf` 优先读它，会和「等几秒」的 Retry-After 打架，必须摘掉
+    if (EXPECTED_5XX.has(err.code)) {
+      res.removeHeader('RateLimit')
+      res.removeHeader('RateLimit-Policy')
+
+      const retryAfter = Math.ceil(Number(err.details?.retryAfter))
+      if (Number.isFinite(retryAfter) && retryAfter > 0) {
+        res.set('Retry-After', String(retryAfter))
+      }
     }
 
     // 每日额度是「等明天」，必须给标准 Retry-After（md/35 §7.2）。

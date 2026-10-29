@@ -101,6 +101,14 @@ const generationTaskSchema = new Schema(
      */
     clientToken: { type: String, default: null },
 
+    /**
+     * 活跃任务唯一键（md/55 §5.1）。
+     *
+     * queued / running 时等于 userId；终态时 `$unset`。
+     * **不要写 null**：null 是一个值，多个终态文档会撞 sparse 唯一索引。
+     */
+    activeKey: { type: String },
+
     status: {
       type: String,
       // cancelled 只由取消接口写入；被中断（进程重启）走 failed + TASK_INTERRUPTED
@@ -205,6 +213,8 @@ const generationTaskSchema = new Schema(
 generationTaskSchema.index({ userId: 1, clientToken: 1 })
 // 并发闸门：找「这个用户还有没有在跑的」
 generationTaskSchema.index({ userId: 1, status: 1 })
+// 同一用户只能有一个活跃任务。sparse：终态文档没有 activeKey，不参与唯一约束
+generationTaskSchema.index({ activeKey: 1 }, { unique: true, sparse: true })
 // 巡检：扫「running 且心跳过期」的任务
 generationTaskSchema.index({ status: 1, heartbeatAt: 1 })
 // TTL：任务只是状态机，24 小时后没人需要它了

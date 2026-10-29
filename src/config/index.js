@@ -146,6 +146,29 @@ export const config = Object.freeze({
   generationStrategy: readEnum('GENERATION_STRATEGY', ['whole', 'segmented'], 'segmented'),
   // 分段并发：4 是 md/20 §5.4 的成本/延迟平衡点；再高只会让上游限流
   segmentConcurrency: toNumber('SEGMENT_CONCURRENCY', 4),
+
+  // ——— 高并发生成闸门（md/55）———
+  // 第一层：每实例同时执行的任务数。0 = 关闭任务限流（回滚开关）。
+  generationMaxActive: Math.max(0, toNumber('GENERATION_MAX_ACTIVE', 4)),
+  // 每实例排队上限。队满后创建任务直接 503 GENERATION_SATURATED，不扣额度。
+  generationMaxQueue: Math.max(0, toNumber('GENERATION_MAX_QUEUE', 16)),
+  // 同步 /generate 等执行槽的最长时间；0 = 不等，立即 503。
+  generationSyncWaitMs: Math.max(0, toNumber('GENERATION_SYNC_WAIT_MS', 10_000)),
+  // 单篇从拿到执行槽到结束的总时限。超时任务 failed + GENERATION_TIMEOUT，额度退回。
+  // 允许测试配成很小；生产不要小于 60s，且要小于反向代理的读超时。
+  generationDeadlineMs: Math.max(100, toNumber('GENERATION_DEADLINE_MS', 120_000)),
+  // 第二层：每实例同时打到 DeepSeek 的调用数。0 = 关闭信号量（回滚开关）。
+  upstreamMaxConcurrency: Math.max(0, toNumber('UPSTREAM_MAX_CONCURRENCY', 16)),
+  // 等上游槽超过这个时间就抛 AI_PROVIDER_BUSY，由段级容错接住。
+  upstreamWaitTimeoutMs: Math.max(0, toNumber('UPSTREAM_WAIT_TIMEOUT_MS', 20_000)),
+  // 单次模型调用最多重试几次（总尝试 = 1 + 这个值）。
+  aiMaxRetries: Math.max(0, toNumber('AI_MAX_RETRIES', 2)),
+  aiRetryBaseMs: Math.max(0, toNumber('AI_RETRY_BASE_MS', 500)),
+  aiRetryMaxMs: Math.max(0, toNumber('AI_RETRY_MAX_MS', 8_000)),
+  // 免费 Key 的全局熔断：窗口内连续失败达到阈值 → open；半开只放一个探针。
+  aiCircuitFailures: Math.max(1, toNumber('AI_CIRCUIT_FAILURES', 10)),
+  aiCircuitWindowMs: Math.max(1, toNumber('AI_CIRCUIT_WINDOW_MS', 30_000)),
+  aiCircuitOpenMs: Math.max(1, toNumber('AI_CIRCUIT_OPEN_MS', 30_000)),
   // 每段允许的**重写**次数（不含首轮，也不含最后那次「更简单的说法」）
   segmentMaxAttempts: toNumber('SEGMENT_MAX_ATTEMPTS', 2),
   // 分段路径的温度：约束性文本用 0.8 等于给自己制造违规（md/21 W4）
@@ -228,6 +251,8 @@ export const config = Object.freeze({
   // 前端每拖一次滑块就要调一次的 /capacity。dictionary / global 两个旋钮没有
   // 任何中间件在读，已于 2026-10-28 删除——留着只会让人以为它们生效。
   rateLimitGenerate: toNumber('RATE_LIMIT_GENERATE', 20),
+  // IP 安全桶：始终按 IP，挡住「轮换设备 ID / 换账号」绕过身份桶。
+  rateLimitGenerateIp: toNumber('RATE_LIMIT_GENERATE_IP', 60),
 
   // ——— 鉴权（md/33）———
   // 强制鉴权开关。默认 false = 行为与无登录时完全一致（回落 DEFAULT_USER_ID）。

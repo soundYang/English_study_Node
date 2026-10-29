@@ -2,6 +2,8 @@ import { Router } from 'express'
 import mongoose from 'mongoose'
 
 import { dictionary, loadedAt } from '../dictionary/dictionary.loader.js'
+import { getGenerationRuntimeSnapshot } from '../readings/generation-task.service.js'
+import { getAiRuntimeSnapshot } from '../readings/ai.client.js'
 
 const router = Router()
 
@@ -15,10 +17,25 @@ const router = Router()
 router.get('/health', (req, res) => {
   const mongoOk = mongoose.connection.readyState === 1
 
+  const generation = getGenerationRuntimeSnapshot()
+  const ai = getAiRuntimeSnapshot()
+
   res.status(mongoOk ? 200 : 503).json({
     status: mongoOk ? 'ok' : 'degraded',
     mongo: mongoOk ? 'connected' : 'disconnected',
     dictionary: { words: dictionary.size, loadedAt },
+    // 纯 additive（md/55 §7.2）：只看 Mongo 决定 200/503，队列满 / 熔断打开
+    // 只体现在数字里。不暴露 key、用户或任务 id
+    generation: {
+      active: generation.active,
+      queued: generation.queued,
+      pending: generation.pending,
+      maxActive: generation.maxActive,
+      maxQueue: generation.maxQueue,
+      upstreamActive: ai.upstreamActive,
+      upstreamWaiting: ai.upstreamWaiting,
+      circuit: ai.circuit,
+    },
   })
 })
 

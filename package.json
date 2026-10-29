@@ -23,7 +23,8 @@
     "replay:report": "node scripts/replay-suite.mjs --report",
     "replay:update": "node scripts/replay-suite.mjs --update",
     "calibrate": "node scripts/calibrate-standards.mjs",
-    "fetch:ocr": "node scripts/fetch-ocr-model.mjs"
+    "fetch:ocr": "node scripts/fetch-ocr-model.mjs",
+    "migrate:active-key": "node scripts/migrate-generation-active-key.mjs"
   },
   "dependencies": {
     "cors": "2.8.6",

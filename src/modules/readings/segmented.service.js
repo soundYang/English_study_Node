@@ -36,6 +36,18 @@ import {
  */
 const ACCEPTED_CATEGORIES = new Set(['proper_noun', 'wordform', 'abbreviation'])
 
+/**
+ * 段级容错可以吞掉的错误（md/55 §4.6）。
+ *
+ * 这些都是「上游这一次没成功」，换一段/下一轮还有机会；吞掉后该段记 dropped，
+ * 整篇是否还能交付仍由 MIN_SEGMENT_ACCEPTANCE 决定。
+ */
+const DROPPABLE_SEGMENT_CODES = new Set([
+  ERROR_CODES.AI_PROVIDER_ERROR,
+  ERROR_CODES.AI_PROVIDER_BUSY,
+  ERROR_CODES.AI_INVALID_RESPONSE,
+])
+
 /** 只留下真正需要重写的违规；人名/词形/缩写不卡生成 */
 function blockingOnly(violations) {
   return violations.filter(({ category }) => !ACCEPTED_CATEGORIES.has(category))
@@ -416,6 +428,51 @@ export async function generateSegmented({
       unknownAllowance: unknownAllowances[index] ?? 0,
     })
 
+  /**
+   * 单段失败只丢这一段（md/55 §4.6）。
+   *
+   * 反过来，鉴权错误、参数错误、取消 / deadline 以及真正的未知异常必须继续
+   * 向上抛：把它们也吞成 dropped，用户会拿到一篇「少了几段」的文章，
+   * 而不是一个能据以重试的错误。
+   */
+  const isFatalSegmentError = (error) => {
+    if (signal?.aborted) return true
+    if (error?.name === 'AbortError') return true
+
+    return !DROPPABLE_SEGMENT_CODES.has(error?.code)
+  }
+
+  const safeWriteSegment = async (index, refill) => {
+    try {
+      return await writeSegment(index, refill)
+    } catch (error) {
+      if (isFatalSegmentError(error)) throw error
+
+      logger.warn(
+        { segment: plan[index].id, code: error?.code, err: error },
+        'segment failed, dropped',
+      )
+
+      return {
+        accepted: false,
+        text: '',
+        stats: {
+          id: plan[index].id,
+          goal: plan[index].goal,
+          maxWords: plan[index].maxWords,
+          limitWords: plan[index].limitWords,
+          attempts: 0,
+          actualWords: 0,
+          overLength: false,
+          accepted: false,
+          unknownWords: [],
+          unknownAllowance: unknownAllowances[index] ?? 0,
+          errorCode: error?.code ?? ERROR_CODES.AI_PROVIDER_ERROR,
+        },
+      }
+    }
+  }
+
   const indexes = segments.map((_, index) => index)
   const results = new Array(indexes.length)
   const pendingIndexes = []
@@ -448,7 +505,7 @@ export async function generateSegmented({
   }
 
   const fresh = await mapWithConcurrency(pendingIndexes, config.segmentConcurrency, (index) =>
-    writeSegment(index, false),
+    safeWriteSegment(index, false),
   )
   for (const [position, index] of pendingIndexes.entries()) {
     results[index] = fresh[position]
@@ -470,7 +527,7 @@ export async function generateSegmented({
     if (missing.length === 0) break
 
     const retries = await mapWithConcurrency(missing, config.segmentConcurrency, (index) =>
-      writeSegment(index, true),
+      safeWriteSegment(index, true),
     )
 
     for (const [position, index] of missing.entries()) {

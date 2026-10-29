@@ -13,7 +13,11 @@ async function reclaimEach(staleFilter, patch) {
   for (const { _id } of candidates) {
     const flipped = await GenerationTask.findOneAndUpdate(
       { _id, ...staleFilter() },
-      { $set: patch },
+      {
+        $set: patch,
+        // 终态必须清掉活跃键，否则这个用户会被一条失败任务永久锁死（md/55 §4.3.3）
+        $unset: { activeKey: 1 },
+      },
     )
 
     if (flipped) reclaimedIds.push(_id)
@@ -28,8 +32,21 @@ export const generationTaskRepository = {
     return GenerationTask.create(data)
   },
 
+  findById(id) {
+    return GenerationTask.findById(id)
+  },
+
   findByIdAndUser(id, userId) {
     return GenerationTask.findOne({ _id: id, userId })
+  },
+
+  /** 唯一索引报 E11000 后，用它判断是不是一条终态脏数据还占着 activeKey */
+  findByActiveKey(activeKey) {
+    return GenerationTask.findOne({ activeKey })
+  },
+
+  clearActiveKey(id) {
+    return GenerationTask.updateOne({ _id: id }, { $unset: { activeKey: 1 } })
   },
 
   findByClientToken({ userId, clientToken }) {
@@ -53,7 +70,12 @@ export const generationTaskRepository = {
    */
   claim(id, { owner, now }) {
     return GenerationTask.findOneAndUpdate(
-      { _id: id, status: 'queued' },
+      {
+        _id: id,
+        status: 'queued',
+        // P0 只允许创建者执行；owner 为空是迁移前的老任务，允许任意实例认领
+        $or: [{ owner }, { owner: null }],
+      },
       {
         $set: {
           status: 'running',
@@ -80,6 +102,17 @@ export const generationTaskRepository = {
   },
 
   /**
+   * 队列心跳（md/55 §4.4）：排队中的任务还没 claim，但同样需要一个
+   * 「我还活着」的标记，否则正常排队超过 taskStaleMs 会被巡检误杀。
+   */
+  touchQueued(owner, now) {
+    return GenerationTask.updateMany(
+      { status: 'queued', owner },
+      { $set: { heartbeatAt: now } },
+    )
+  },
+
+  /**
    * 只更新进行中的任务。
    * 用条件更新而不是先查再改：任务被启动清理标成 failed 之后，
    * 迟到的进度回调不该把状态改回去。
@@ -102,9 +135,15 @@ export const generationTaskRepository = {
 
   /** 终态写入：允许覆盖 running，但只在还没到终态时才接受 */
   finish(id, data) {
+    const terminal = ['succeeded', 'failed', 'cancelled'].includes(data.status)
+
     return GenerationTask.findOneAndUpdate(
       { _id: id, status: { $in: ['queued', 'running'] } },
-      { $set: data },
+      {
+        $set: data,
+        // 终态必须释放 activeKey，否则同一用户再也建不了新任务
+        ...(terminal && { $unset: { activeKey: 1 } }),
+      },
       { new: true },
     )
   },
@@ -145,6 +184,7 @@ export const generationTaskRepository = {
       stage: 'done',
       finishedAt: new Date(),
       owner: null,
+      heartbeatAt: null,
       error,
     })
   },
@@ -152,16 +192,24 @@ export const generationTaskRepository = {
   /**
    * 回收「一直没被认领」的 queued 任务：创建它的实例在 setImmediate 之前就没了。
    *
-   * 用 `updatedAt` 而不是 `createdAt`：重试会重置 createdAt，而重试后的
-   * 任务也应该在这么久没被认领时被回收。
+   * 新任务用队列心跳 `heartbeatAt` 判断（md/55 §4.4）；迁移前的老任务没有
+   * heartbeatAt，退回 `updatedAt`，否则一条刚创建的老任务会被立刻误杀。
    */
   async reclaimStaleQueued({ staleBefore, error }) {
-    const staleFilter = () => ({ status: 'queued', updatedAt: { $lt: staleBefore } })
+    const staleFilter = () => ({
+      status: 'queued',
+      $or: [
+        { heartbeatAt: { $lt: staleBefore } },
+        { heartbeatAt: null, updatedAt: { $lt: staleBefore } },
+      ],
+    })
 
     return reclaimEach(staleFilter, {
       status: 'failed',
       stage: 'done',
       finishedAt: new Date(),
+      owner: null,
+      heartbeatAt: null,
       error,
     })
   },

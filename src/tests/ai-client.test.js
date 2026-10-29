@@ -2,8 +2,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 /**
  * 上游客户端只测「重试边界」：
- *   超时 → 重试一次；连续两次失败 → 502；4xx 与主动取消 → 不重试。
+ *   超时 → 按 AI_MAX_RETRIES 重试；用尽 → 502；4xx 与主动取消 → 不重试。
  * 这些分支决定一次生成是「偶发失败」还是「用户看到 502」，值得单独钉住。
+ *
+ * setup.js 把 AI_MAX_RETRIES 固定为生产默认值 2：可重试失败最多 3 次。
  */
 const { create } = vi.hoisted(() => ({ create: vi.fn() }))
 
@@ -40,14 +42,15 @@ describe('chatJson · 超时重试', () => {
     expect(result.finishReason).toBe('stop')
   })
 
-  it('连续两次超时才 502', async () => {
+  it('重试次数用尽才 502', async () => {
     create.mockRejectedValue(timeoutError())
 
     await expect(chatJson({ messages: [], maxTokens: 100 })).rejects.toMatchObject({
       status: 502,
       code: 'AI_PROVIDER_ERROR',
     })
-    expect(create).toHaveBeenCalledTimes(2)
+    // 1 次首轮 + AI_MAX_RETRIES=2 次重试
+    expect(create).toHaveBeenCalledTimes(3)
   })
 
   it('4xx 说明请求本身有问题，不重试', async () => {

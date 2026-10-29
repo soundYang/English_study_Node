@@ -55,7 +55,13 @@ export const ERROR_CODES = Object.freeze({
   FOCUS_WORDS_NOT_LEARNED: 'FOCUS_WORDS_NOT_LEARNED',
   VOCABULARY_VALIDATION_FAILED: 'VOCABULARY_VALIDATION_FAILED',
   AI_PROVIDER_ERROR: 'AI_PROVIDER_ERROR',
+  // md/55：上游忙（熔断打开 / 信号量排队超时）与整篇超时，前端要能分开提示。
+  AI_PROVIDER_BUSY: 'AI_PROVIDER_BUSY',
   AI_INVALID_RESPONSE: 'AI_INVALID_RESPONSE',
+  // 任务调度器队满（503）：请求在扣额度之前就被拒，不会留下任务。
+  GENERATION_SATURATED: 'GENERATION_SATURATED',
+  // 整篇 deadline 到（504）：任务 failed，额度退回，可以 retry。
+  GENERATION_TIMEOUT: 'GENERATION_TIMEOUT',
   // 分段路径丢段过多（md/23 D2 / md/27 §3）：结构是对的，但成文残缺。
   // 与 AI_INVALID_RESPONSE 分开，前端才能给「换短一点的篇幅再试」这类文案。
   ARTICLE_TOO_INCOMPLETE: 'ARTICLE_TOO_INCOMPLETE',
@@ -498,6 +504,57 @@ export const freeBudgetExhausted = ({ limitTokens, usedTokens }) =>
     '免费生成额度已用完，请接入自己的 API Key 后继续使用',
     '',
     { limitTokens, usedTokens },
+  )
+
+/**
+ * 503：本实例的任务队列已满（md/55 §3.2）。
+ *
+ * 这个错误必须在扣每日额度之前抛出：用户被拒时既没有任务，也没有少一次。
+ * `retryAfter` 只给前端做按钮冷却，不代表队列一定会在这么久内腾出位置。
+ */
+export const generationSaturated = ({
+  retryAfter = 5,
+  active = 0,
+  queued = 0,
+  maxActive = 0,
+  maxQueue = 0,
+} = {}) =>
+  new ApiError(
+    503,
+    ERROR_CODES.GENERATION_SATURATED,
+    '当前生成人数较多，请稍后再试',
+    '',
+    { retryAfter, active, queued, maxActive, maxQueue },
+  )
+
+/**
+ * 503：上游熔断打开，或等上游并发槽超时（md/55 §4.5）。
+ *
+ * 与 `AI_PROVIDER_ERROR` 分开：上游并没有返回错误，只是我们主动不再打它；
+ * 前端提示「AI 服务繁忙」并允许稍后重试，而不是显示一次失败。
+ */
+export const aiProviderBusy = ({ retryAfter = 10 } = {}) =>
+  new ApiError(
+    503,
+    ERROR_CODES.AI_PROVIDER_BUSY,
+    'AI 服务暂时繁忙，请稍后再试',
+    '',
+    { retryAfter },
+  )
+
+/**
+ * 504：整篇生成超过 deadline（md/55 §4.7）。
+ *
+ * 同步接口直接返回 504；任务侧写成 failed + 本 code，额度自动退回。
+ * 不放在 `NON_RETRYABLE` 里——用户可以直接 retry 同一个任务。
+ */
+export const generationTimeout = ({ deadlineMs = 0 } = {}) =>
+  new ApiError(
+    504,
+    ERROR_CODES.GENERATION_TIMEOUT,
+    '这次生成超时了，请重试',
+    '',
+    { deadlineMs },
   )
 
 // ——— 用户自备 API Key（md/43）———
