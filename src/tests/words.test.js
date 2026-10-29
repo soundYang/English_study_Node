@@ -215,12 +215,40 @@ describe('POST /api/words', () => {
     expect(res.body.senses.length).toBeGreaterThan(0)
   })
 
-  it('手填且填了释义 → 尊重用户，仍存 manual', async () => {
+  it('手填且填了释义 → 仍存 manual，但词库快照照样补全（md/51）', async () => {
     const res = await post({ word: 'abandon', source: 'manual', meaning: '我的记法' })
 
     expect(res.status).toBe(201)
+    expect(res.body).toMatchObject({
+      word: 'abandon',
+      source: 'manual',
+      dictionaryId: 'dict_abandon',
+    })
+    // 音标、词性、词库完整义项一个都不少
+    expect(res.body.phonetic.uk).toMatch(/\//)
+    expect(res.body.senses[0].pos).toBe('vt.')
+
+    // 词库覆盖不到的「自己的记法」追加到最后，不能被丢掉
+    expect(res.body.senses.at(-1)).toEqual({ pos: '', meaning: '我的记法' })
+    expect(res.body.senses.length).toBeGreaterThan(1)
+  })
+
+  it('手填释义已被词库义项覆盖 → 不重复追加', async () => {
+    const res = await post({ word: 'abandon', source: 'manual', meaning: '放弃' })
+
+    expect(res.status).toBe(201)
     expect(res.body.source).toBe('manual')
-    expect(res.body.senses).toEqual([{ pos: '', meaning: '我的记法' }])
+    // 「放弃」被「放弃，抛弃；离弃…」包含，词库说法更完整，不再单存一条
+    expect(res.body.senses.every((sense) => sense.pos !== '')).toBe(true)
+    expect(res.body.senses.filter((sense) => sense.meaning === '放弃')).toHaveLength(0)
+  })
+
+  it('手填词库没有的词 + 释义 → 仍是单条无词性义项', async () => {
+    const res = await post({ word: 'zzzqqq', source: 'manual', meaning: '自造词' })
+
+    expect(res.status).toBe(201)
+    expect(res.body).toMatchObject({ source: 'manual', dictionaryId: null, phonetic: null })
+    expect(res.body.senses).toEqual([{ pos: '', meaning: '自造词' }])
   })
 
   it('非法字符 and/or → 400，field=word', async () => {
@@ -369,7 +397,7 @@ describe('重复词合并', () => {
     expect((await Word.findById(doc._id).lean()).dictionaryId).toBe('dict_abandon')
   })
 
-  it('手填空释义 + 这次带了释义 → 用用户释义补上', async () => {
+  it('手填空释义 + 这次带了释义 → 词库快照与用户释义一起补上', async () => {
     const doc = await Word.create({
       userId: uid,
       word: 'gadget',
@@ -380,8 +408,10 @@ describe('重复词合并', () => {
     const res = await post({ word: 'gadget', source: 'manual', meaning: '小装置' })
 
     expect(res.body.action).toBe('enriched')
-    expect(res.body.senses).toEqual([{ pos: '', meaning: '小装置' }])
-    expect((await Word.findById(doc._id).lean()).senses[0].meaning).toBe('小装置')
+    expect(res.body.senses).toEqual([
+      { pos: 'n.', meaning: '小玩意；小配件；小装置' },
+    ])
+    expect((await Word.findById(doc._id).lean()).dictionaryId).toBe('dict_gadget')
   })
 
   it('已有非空手填释义 → 词库命中也不覆盖', async () => {
@@ -510,7 +540,7 @@ describe('PATCH /api/words/:id', () => {
     })
   })
 
-  it('手填词改词后用新释义重建 senses', async () => {
+  it('手填词改词后按新词重建 senses（词库命中就带词性）', async () => {
     const doc = await Word.create({
       userId: uid,
       word: 'gadget',
@@ -522,7 +552,24 @@ describe('PATCH /api/words/:id', () => {
 
     expect(res.status).toBe(200)
     expect(res.body.word).toBe('gizmo')
-    expect(res.body.senses).toEqual([{ pos: '', meaning: '小玩意儿' }])
+    expect(res.body).toMatchObject({ dictionaryId: 'dict_gizmo' })
+    // 新词命中词库：词库义项在前，用户这次给的释义没被覆盖，追加在后
+    expect(res.body.senses).toEqual([
+      { pos: 'n.', meaning: '小发明' },
+      { pos: '', meaning: '小玩意儿' },
+    ])
+  })
+
+  it('只改释义 → 重新合并词库，词性不会丢；自己的释义仍在', async () => {
+    const res = await post({ word: 'abandon', source: 'manual', meaning: '我的记法' })
+    const doc = await Word.findById(res.body.id).lean()
+
+    const patched = await patch(String(doc._id), { meaning: '放弃' })
+
+    expect(patched.status).toBe(200)
+    expect(patched.body.senses[0].pos).toBe('vt.')
+    // 之前那条自己的记法不是这次改的那条，必须保留
+    expect(patched.body.senses.at(-1)).toEqual({ pos: '', meaning: '我的记法' })
   })
 
   it('改名撞已有单词 → 409 WORD_EXISTS', async () => {

@@ -99,9 +99,21 @@ describe('POST /api/words/batch', () => {
     const rows = await Word.find({ userId: uid }).lean()
     const byWord = Object.fromEntries(rows.map((row) => [row.word, row]))
 
-    expect(byWord.abandon.senses[0].meaning).toBe('放弃，抛弃')
-    expect(byWord.apple.senses[0].meaning).toBe('苹果')
-    expect(byWord.gizmo.senses[0].meaning).toBe('小玩意儿')
+    // 命中词库：词库完整义项在前（带词性），用户释义被覆盖时不再重复存（md/51）
+    expect(byWord.abandon.senses[0]).toEqual({
+      pos: 'vt.',
+      meaning: '放弃，抛弃；离弃，丢弃；使屈从；停止进行，终止',
+    })
+    expect(byWord.abandon.phonetic.uk).toMatch(/\//)
+    expect(byWord.apple.senses[0]).toEqual({
+      pos: 'n.',
+      meaning: '苹果；苹果树；苹果公司',
+    })
+    // 「小玩意儿」词库没覆盖 → 追加在词库义项之后
+    expect(byWord.gizmo.senses).toEqual([
+      { pos: 'n.', meaning: '小发明' },
+      { pos: '', meaning: '小玩意儿' },
+    ])
     // 没有释义、词库也没有 → 允许存空释义的 manual 词
     expect(byWord.serendipity).toMatchObject({ source: 'manual', senses: [] })
   })

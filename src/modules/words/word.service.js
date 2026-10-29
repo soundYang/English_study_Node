@@ -15,8 +15,14 @@ import {
   normalizeMeaningOrThrow,
   normalizeWordOrThrow,
 } from '../../shared/utils/word-form.js'
+import { findEntry } from '../dictionary/dictionary.loader.js'
 import { toWordDto } from './word.dto.js'
-import { buildCreatePayload, resolveDuplicate } from './word-import.js'
+import {
+  buildCreatePayload,
+  isCoveredByEntry,
+  mergeSenses,
+  resolveDuplicate,
+} from './word-import.js'
 import { getWordRank } from './word-ranks.js'
 import { wordRepository as repo } from './word.repository.js'
 import {
@@ -232,6 +238,46 @@ async function assertLibraryHasRoom(userId) {
 }
 
 /**
+ * 手填词落库：命中词库就用词库义项（带词性、音标），用户释义按规则合并（md/51）。
+ *
+ * `previousSenses` 只在「词形没变、只改释义」时传：之前手动加的、
+ * 词库覆盖不到的释义（比如自己的记法）不能因为改一次释义就消失。
+ * 改词形时不传——旧词的义项跟新词无关，带过来只会污染新词。
+ */
+function applyManualSenses(doc, { word, meaning, previousSenses = [] }) {
+  const entry = findEntry(word)
+
+  if (!entry?.senses?.length) {
+    doc.dictionaryId = null
+    doc.phonetic = null
+    doc.senses = meaning ? [{ pos: '', meaning }] : []
+    return
+  }
+
+  doc.dictionaryId = entry.id ?? null
+  doc.phonetic = {
+    uk: entry.phonetic?.uk ?? null,
+    us: entry.phonetic?.us ?? null,
+  }
+
+  const senses = mergeSenses(entry, meaning)
+  const nextMeaning = String(meaning ?? '').trim()
+
+  for (const sense of previousSenses) {
+    const text = String(sense?.meaning ?? '').trim()
+
+    if (!text || text === nextMeaning) continue
+    // 词库自己的义项会被 mergeSenses 带回来，不用重复追加
+    if (isCoveredByEntry(entry, text)) continue
+    if (senses.some((item) => String(item.meaning).trim() === text)) continue
+
+    senses.push({ pos: '', meaning: text })
+  }
+
+  doc.senses = senses
+}
+
+/**
  * PATCH /api/words/:id
  *
  * 校验顺序不可调整：404 → 400 只读字段 → 400 格式 → 409 重复。
@@ -286,7 +332,10 @@ export async function updateWord({ userId, id, body }) {
       throw conflict(ERROR_CODES.WORD_EXISTS, '这个单词已经添加过了', 'word')
     }
 
-    const currentMeaning = doc.senses?.[0]?.meaning ?? ''
+    // 只改词形、没传新释义时，带过去的是「用户自己写的那条」（pos 为空），
+    // 不是 senses[0]——词库命中时第一条是词库释义，跟新词无关
+    const currentMeaning =
+      [...(doc.senses ?? [])].reverse().find((sense) => !sense.pos)?.meaning ?? ''
     doc.word = nextWord
     // 词形变了，旧排名描述的已经不是这个词了；不改会一直按错的难度参与选池
     doc.cocaRank = getWordRank(nextWord)
@@ -298,12 +347,19 @@ export async function updateWord({ userId, id, body }) {
       doc.phonetic = null
       doc.senses = []
     } else {
-      const meaning = nextMeaning ?? currentMeaning
-      doc.senses = meaning ? [{ pos: '', meaning }] : []
+      applyManualSenses(doc, {
+        word: nextWord,
+        meaning: nextMeaning ?? currentMeaning,
+      })
     }
   } else if (nextMeaning !== undefined && doc.source === 'manual') {
-    // 只改释义、词形没动：契约只写了「改词时」怎么处理，这里是合理的补充
-    doc.senses = nextMeaning ? [{ pos: '', meaning: nextMeaning }] : []
+    // 只改释义、词形没动：契约只写了「改词时」怎么处理，这里是合理的补充。
+    // 重新过一遍词库，编辑一次不会把词性和完整义项又弄丢（md/51）
+    applyManualSenses(doc, {
+      word: doc.word,
+      meaning: nextMeaning,
+      previousSenses: doc.senses ?? [],
+    })
   }
 
   try {

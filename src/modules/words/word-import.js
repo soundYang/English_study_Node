@@ -38,32 +38,67 @@ function raiseAction(current, next) {
   return DUPLICATE_ACTIONS[next] > DUPLICATE_ACTIONS[current] ? next : current
 }
 
+/** 义项比较用的归一化：去掉空白与常见分隔符，只留文字本身 */
+const SENSE_SEPARATOR_PATTERN = /[\s；;，,、。．./|（）()\[\]【】]/g
+
+function normalizeSenseText(text) {
+  return String(text ?? '').replace(SENSE_SEPARATOR_PATTERN, '').toLowerCase()
+}
+
+/**
+ * 用户释义是否已被词库义项覆盖。
+ *
+ * 「放弃」被「放弃，抛弃；离弃，丢弃…」包含，视为已覆盖——
+ * 词库的说法更完整，没必要再存一条更短的。
+ */
+export function isCoveredByEntry(entry, meaning) {
+  const target = normalizeSenseText(meaning)
+  if (!target) return true
+  return entry.senses.some((sense) => normalizeSenseText(sense.meaning).includes(target))
+}
+
+/**
+ * 词库义项 + 手填释义 → 落库 `senses`（md/51）。
+ *
+ * 词库义项全部保留、排在前面：列表第一行要能显示词性，
+ * 手填释义的 `pos` 只能是空串，不能占第一条。
+ * 用户释义没被词库覆盖时追加到最后一条，**永远不丢**。
+ */
+export function mergeSenses(entry, meaning = '') {
+  const senses = entry.senses.map((sense) => ({
+    pos: sense.pos ?? '',
+    meaning: sense.meaning,
+  }))
+
+  if (!meaning || isCoveredByEntry(entry, meaning)) return senses
+
+  return [...senses, { pos: '', meaning }]
+}
+
 /** 词库词条 → 落库快照的公共部分 */
-function snapshotFromEntry(entry) {
+function snapshotFromEntry(entry, meaning = '') {
   return {
     dictionaryId: entry.id ?? null,
     phonetic: {
       uk: entry.phonetic?.uk ?? null,
       us: entry.phonetic?.us ?? null,
     },
-    senses: entry.senses.map((sense) => ({
-      pos: sense.pos ?? '',
-      meaning: sense.meaning,
-    })),
+    senses: mergeSenses(entry, meaning),
   }
 }
 
 /**
  * 组装新建文档。
  *
- * 词库补全规则（md/44 §5.2）：
+ * 词库补全规则（md/51，替代 md/44 §5.2 的「释义为空才补」）：
  *   1. 显式 `source='dictionary'` → 必须命中词库，否则 400
- *   2. 手填但**释义为空**且词库命中 → 按词库词存（补全）
- *   3. 手填且释义非空         → 尊重用户，存 manual
- *   4. 手填、释义为空、词库没有 → 存 manual 空释义（现状）
+ *   2. 手填 + 词库命中         → 一律带词库快照（音标 / 词性 / 完整义项），
+ *                                用户释义按 `mergeSenses` 合并进来
+ *   3. 手填 + 词库没有         → 存 manual（有释义就一条无词性义项）
  *
- * 第 2 条是这次的核心：前端「词库补全」开关关掉时，用户直接回车保存的词
- * 也能拿到音标与义项，不再出现「词汇页上一行空白」。
+ * `source` 的含义不变：这条记录的释义是用户给的（`manual`，可继续编辑）
+ * 还是服务端从词库拿的（`dictionary`，释义只读）。命中词库但用户带了释义时，
+ * 落 `manual` —— 用户仍可以改自己的释义，词库快照只是补全，不是接管。
  *
  * @param {{ userId: string, word: string, status?: string, source?: string, meaning?: string }} input
  * @returns {object} 可直接交给 Word.create 的字段
@@ -92,18 +127,17 @@ export function buildCreatePayload({ userId, word, status, source, meaning = '' 
     }
   }
 
-  if (!meaning) {
-    const entry = findEntry(word)
+  const entry = findEntry(word)
 
-    if (entry?.senses?.length) {
-      return {
-        userId,
-        word,
-        status: nextStatus,
-        source: 'dictionary',
-        ...snapshotFromEntry(entry),
-        cocaRank: getWordRank(word),
-      }
+  if (entry?.senses?.length) {
+    return {
+      userId,
+      word,
+      status: nextStatus,
+      // 带了释义说明用户要的是自己的说法，保持可编辑；没带才是纯词库词
+      source: meaning ? 'manual' : 'dictionary',
+      ...snapshotFromEntry(entry, meaning),
+      cocaRank: getWordRank(word),
     }
   }
 
@@ -159,14 +193,15 @@ export function resolveDuplicate(existing, { status, meaning = '' } = {}) {
       action = 'reactivated'
     }
   } else if (existing.source === 'manual' && !hasSenses) {
-    // 手填空释义：优先用户这次带来的释义，其次词库（规则 5 / 5b）。
+    // 手填空释义：词库命中就一律带快照（md/51）。这次带了释义时与词库义项合并，
+    // 不再只存一条无词性释义；没带释义时仍是纯词库词。
     // 只能往上升级：这次同时改了状态时，action 仍是 updated / reactivated
-    if (meaning) {
-      update.senses = [{ pos: '', meaning }]
+    if (dictionaryHasEntry) {
+      if (!meaning) update.source = 'dictionary'
+      Object.assign(update, snapshotFromEntry(entry, meaning))
       action = raiseAction(action, 'enriched')
-    } else if (dictionaryHasEntry) {
-      update.source = 'dictionary'
-      Object.assign(update, snapshotFromEntry(entry))
+    } else if (meaning) {
+      update.senses = [{ pos: '', meaning }]
       action = raiseAction(action, 'enriched')
     }
   }
