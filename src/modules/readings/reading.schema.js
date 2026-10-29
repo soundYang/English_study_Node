@@ -1,6 +1,6 @@
 import { z } from 'zod'
 
-import { VOCAB_SCOPES } from './vocabulary-pool.js'
+import { VOCAB_SCOPES, requiredTargetWords } from './vocabulary-pool.js'
 
 export const LEVELS = ['easy', 'medium', 'hard']
 export const QUESTION_COUNTS = [3, 5, 8]
@@ -36,6 +36,96 @@ const targetWordsRules = z
   .refine((value) => value % 10 === 0, 'targetWords 必须是 10 的倍数')
 
 /**
+ * 用户自选词（md/54）。
+ *
+ * 字符集与 `target-coverage.js` / `vocabulary.service.js` 的词元切分保持一致：
+ * 字母开头，允许连字符与撇号。带重音字母、空格词组都不支持——前者进不了切词，
+ * 后者不是「一个单词」，词形变化与覆盖度都算不准。
+ */
+const FOCUS_WORD_RE = /^[A-Za-z][A-Za-z'-]{0,49}$/
+
+/** 小写、去重、保留首次出现顺序。schema 与 capacity 共用同一份，避免两处规则分叉 */
+function normalizeFocusWords(list) {
+  const seen = new Set()
+  const result = []
+
+  for (const item of list) {
+    const word = String(item).replace(/’/g, "'").trim().toLowerCase()
+    if (!word || seen.has(word)) continue
+
+    seen.add(word)
+    result.push(word)
+  }
+
+  return result
+}
+
+/**
+ * 弯撇号在**校验前**就归一成直撇号：`Don’t` 是用户键盘上最常见的形式，
+ * 等到 transform 再换已经过不了正则了。
+ */
+const focusWordSchema = z.preprocess(
+  (value) =>
+    typeof value === 'string' ? value.replace(/’/g, "'").trim() : value,
+  z
+    .string({ error: 'focusWords 的每一项必须是字符串' })
+    .min(1, 'focusWords 不能包含空字符串')
+    .max(50, '单个单词最多 50 个字符')
+    .regex(FOCUS_WORD_RE, '单词只能包含英文字母、连字符和撇号')
+    .transform((word) => word.toLowerCase()),
+)
+
+/**
+ * 不传 = 自动；显式 `[]` → 400（与 vocabScope 同一口径）。
+ * 上限依赖 targetWords，数量校验放在对象级 superRefine，字段本身只管形状。
+ */
+const focusWordsField = z
+  .array(focusWordSchema, { error: 'focusWords 必须是数组' })
+  .min(1, 'focusWords 不能为空数组')
+  .max(100, 'focusWords 最多 100 个')
+  .transform(normalizeFocusWords)
+  .optional()
+
+/**
+ * capacity 是 GET，选词只能放在 query 里：逗号分隔（也兼容重复参数）。
+ * 空串 `focusWords=` 过滤成 [] = 没有选词——诊断接口不该因为一个空参数挡住整页；
+ * 生成接口则把 `[]` 判成 400（md/54 §3.3）。
+ */
+const capacityFocusWordsField = z.preprocess(
+  (value) => {
+    if (value === undefined) return undefined
+
+    const list = Array.isArray(value) ? value : String(value).split(',')
+    return list.map((item) => String(item).trim()).filter(Boolean)
+  },
+  z
+    .array(focusWordSchema, { error: 'focusWords 必须是逗号分隔的单词' })
+    .max(100, 'focusWords 最多 100 个')
+    .transform(normalizeFocusWords)
+    .optional(),
+)
+
+/**
+ * 数量上限 = 本次篇幅的目标词配额（md/54 §4.1）。
+ *
+ * 多选等于让模型把文章写成填词练习，所以宁可 400 也不静默截断——
+ * 静默截断会让用户以为所有勾选的词都生效了。
+ */
+function focusWordsLimitRule(value, ctx) {
+  if (!Array.isArray(value.focusWords) || value.focusWords.length === 0) return
+
+  const max = requiredTargetWords(value.targetWords)
+
+  if (value.focusWords.length > max) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['focusWords'],
+      message: `focusWords 最多 ${max} 个（${value.targetWords} 词的文章最多 ${max} 个目标词）`,
+    })
+  }
+}
+
+/**
  * 生成参数的公共字段。`generateReadingSchema` / `createTaskSchema` /
  * `capacityQuerySchema` 共用这一份，避免三处手抄分叉。
  */
@@ -69,6 +159,12 @@ const readingShape = {
    * 语义是「允许」不是「保证」：模型全用熟词也完全合法。
    */
   allowNewWords: z.boolean({ error: 'allowNewWords 必须是布尔值' }).optional(),
+  /**
+   * 用户显式要求用上的词（md/54）。不传 = 自动；显式 [] 是 400。
+   * 词必须在个人词库里（learning / mastered），由 service 在读库后校验——
+   * 这里只做形状、归一化与数量上限。
+   */
+  focusWords: focusWordsField,
 }
 
 /** easy 不能开生词容忍：这是难度承诺的一部分，不是参数偏好 */
@@ -82,6 +178,7 @@ export const generateReadingSchema = z
     message: ALLOW_NEW_WORDS_MESSAGE,
     path: ['allowNewWords'],
   })
+  .superRefine(focusWordsLimitRule)
 
 /**
  * POST /api/readings/generate/tasks 的请求体（md/31 §3.1）。
@@ -107,23 +204,28 @@ export const createTaskSchema = z
     message: ALLOW_NEW_WORDS_MESSAGE,
     path: ['allowNewWords'],
   })
+  .superRefine(focusWordsLimitRule)
 
 /**
  * GET /api/readings/capacity 的查询参数。
  *
- * 两处差异都由「query 里全是字符串」造成：
+ * 三处差异都由「query 里全是字符串」造成：
  *   targetWords 需要 coerce，再交给 generate 的同一套规则校验；
- *   vocabScope 单值时是字符串、多值时是数组，先统一成数组再复用枚举。
+ *   vocabScope 单值时是字符串、多值时是数组，先统一成数组再复用枚举；
+ *   focusWords 用逗号分隔，空串视为「没有选词」（md/54）。
  */
-export const capacityQuerySchema = z.object({
-  targetWords: z
-    .coerce.number({ error: 'targetWords 必须是数字' })
-    .pipe(targetWordsRules),
-  vocabScope: z.preprocess(
-    (value) => (value === undefined ? undefined : [].concat(value)),
-    readingShape.vocabScope,
-  ),
-})
+export const capacityQuerySchema = z
+  .object({
+    targetWords: z
+      .coerce.number({ error: 'targetWords 必须是数字' })
+      .pipe(targetWordsRules),
+    vocabScope: z.preprocess(
+      (value) => (value === undefined ? undefined : [].concat(value)),
+      readingShape.vocabScope,
+    ),
+    focusWords: capacityFocusWordsField,
+  })
+  .superRefine(focusWordsLimitRule)
 
 /**
  * POST /api/readings/:id/submit 的请求体。

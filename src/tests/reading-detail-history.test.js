@@ -50,7 +50,7 @@ const detail = (id) => request(app).get(`/api/readings/${id}`)
 const history = (query) => request(app).get('/api/readings/history').query(query)
 
 describe('GET /api/readings/:id · 未提交分支', () => {
-  it('返回安全 DTO：恰好 12 个字段，不含翻译与答案', async () => {
+  it('返回安全 DTO：恰好 13 个字段，不含翻译与答案', async () => {
     const reading = await makeReading()
 
     const res = await detail(reading._id)
@@ -60,6 +60,7 @@ describe('GET /api/readings/:id · 未提交分支', () => {
       'actualWords',
       'article',
       'createdAt',
+      'focusWords',
       'id',
       'level',
       'newWords',

@@ -39,6 +39,8 @@ const generationFailureSchema = new Schema(
     targetWords: Number,
     questionCount: Number,
     scope: { type: [String], default: [] },
+    // md/54：用户显式选了哪些词。失败集中在自选词上时，靠它才能归因
+    focusWords: { type: [String], default: [] },
 
     // ——— 选池结果：排查「是不是池子太小」的唯一依据 ———
     available: Number,

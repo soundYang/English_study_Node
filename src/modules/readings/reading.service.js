@@ -6,6 +6,7 @@ import {
   ERROR_CODES,
   conflict,
   finalModeLocked,
+  focusWordsNotLearned,
   knownWordsBelowLength,
   readingNotFound,
   targetWordsTooLong,
@@ -58,7 +59,7 @@ import {
 import { buildTargetPlan } from './target-plan.js'
 import { collectWordForms, validateArticle } from './vocabulary.service.js'
 import { describeNewWord } from './word-detail.js'
-import { selectVocabularyPool } from './vocabulary-pool.js'
+import { requiredTargetWords, selectVocabularyPool } from './vocabulary-pool.js'
 import {
   basicWordsVersions,
   codeVersion,
@@ -256,6 +257,8 @@ async function recordFailure(diag, error) {
     targetWords: diag.params?.targetWords,
     questionCount: diag.params?.questionCount,
     scope: diag.selection?.scope ?? [],
+    // md/54：用户选了什么。失败集中在自选词上时，这是唯一的归因依据
+    focusWords: diag.params?.focusWords ?? [],
 
     available: diag.selection?.available,
     poolSize: diag.selection?.poolSize,
@@ -437,6 +440,20 @@ async function generateReadingInner({ userId, body, signal, diag, onProgress, re
 
   const words = await wordRepository.findVocabulary(userId)
 
+  // md/54：用户显式选中的词必须已经在个人词库（learning / mastered）里。
+  // 放在读完词库之后、选池之前——纯本地判断，不调模型，也不该白占一次额度。
+  // `new` 词不在 findVocabulary 的结果里，所以会一起被拒：它代表用户明确标了不认识。
+  const focusWordsRequested = params.focusWords ?? []
+  const learnedWordSet = new Set(words.map((item) => item.word))
+  const unknownFocusWords = focusWordsRequested.filter((word) => !learnedWordSet.has(word))
+
+  if (unknownFocusWords.length > 0) {
+    throw focusWordsNotLearned({
+      words: unknownFocusWords,
+      max: requiredTargetWords(params.targetWords),
+    })
+  }
+
   // 个人基础词：该难度的基础表 − 用户标记为 new 的词（功能词不可移除）
   const removedBasicWords = (await wordRepository.findNewWords(userId)).map((item) => item.word)
   const ignoredRemovals = ignoredFunctionWordRemovals(removedBasicWords)
@@ -560,6 +577,8 @@ async function generateReadingInner({ userId, body, signal, diag, onProgress, re
     level: params.level,
     scope: params.vocabScope,
     targetWords: params.targetWords,
+    // md/54：用户选中的词已经占用目标词名额，A 门按剩余配额折算
+    preselected: focusWordsRequested,
   })
 
   // 先记选池结果再判够不够：VOCABULARY_TOO_SMALL 恰恰最需要这组数字
@@ -568,6 +587,9 @@ async function generateReadingInner({ userId, body, signal, diag, onProgress, re
     available: selection.available,
     poolSize: selection.poolSize,
     requiredWords: selection.requiredWords,
+    selectedCount: selection.selectedCount,
+    remainingRequired: selection.remainingRequired,
+    supply: selection.supply,
   }
 
   // A 门：候选池装不下本次篇幅所需的目标词。调一次模型要几秒和几千 token，
@@ -582,18 +604,23 @@ async function generateReadingInner({ userId, body, signal, diag, onProgress, re
         targetWords: params.targetWords,
         scope: selection.scope,
         requiredWords: selection.requiredWords,
+        selectedCount: selection.selectedCount,
+        remainingRequired: selection.remainingRequired,
         neededVocab: selection.neededVocab,
         available: selection.available,
+        supply: selection.supply,
       },
       'reading generate rejected: VOCABULARY_TOO_SMALL',
     )
     throw vocabularyTooSmall({
       required: selection.neededVocab,
-      available: selection.available,
+      available: selection.supply,
       requiredWords: selection.requiredWords,
       targetWords: params.targetWords,
       scope: selection.scope,
       level: params.level,
+      selectedCount: selection.selectedCount,
+      remainingRequired: selection.remainingRequired,
     })
   }
 
@@ -607,10 +634,17 @@ async function generateReadingInner({ userId, body, signal, diag, onProgress, re
     // 最终模式不挑目标词：1000 词里塞 100 个必用词只会写成凑词练习
     // 冷启动同理：没有个人词可选，目标词只能从基础词里凑，等于把 the / is 当复习重点
     selectTargets: !finalMode && !coldStart,
+    // md/54：用户选中的词无论哪一档都要进必用清单
+    selectedWords: focusWordsRequested,
   })
 
   // 篇幅口径：目标 ×1.1、上限 ×1.15，提示词、校验、DTO 全从这里取
   const range = planWordRange(params.targetWords)
+
+  // md/54：最终模式原本是自由写作（没有任何必用词）。用户显式选词后，
+  // 系统提示词里「本次没有指定的目标词」与【目标词】清单互相矛盾，
+  // 必须把 freeForm 关掉。冷启动的 freeForm 本来就是 false，不受影响。
+  const freeForm = finalMode && plan.requiredWords === 0
 
   // vocabularySnapshot 的语义变了：不再是「最新 800 个词」，而是「本次选出的候选池」。
   // 老文章存的是前者，两者都只是快照，不影响回放。
@@ -669,7 +703,10 @@ async function generateReadingInner({ userId, body, signal, diag, onProgress, re
       allowedWordCount: allowedWords.size,
       requiredWords: plan.requiredWords,
       focusCount: plan.focusWords.length,
-      // 最终模式与冷启动下 requiredWords/focusCount 恒为 0，
+      // md/54：用户选了几个。与 focusCount（计划里的 ★ 总数，含自动补的）分开记，
+      // 采样时才分得清「用户要的」和「系统凑的」
+      selectedFocusCount: focusWordsRequested.length,
+      // 最终模式与冷启动下、且用户没选词时，requiredWords/focusCount 恒为 0，
       // 只看这两个数会以为选池坏了
       finalMode,
       coldStart,
@@ -709,7 +746,7 @@ async function generateReadingInner({ userId, body, signal, diag, onProgress, re
       focusWords: plan.focusWords,
       targetWordList: plan.targetWords,
       supportWords: plan.supportWords,
-      freeForm: finalMode,
+      freeForm,
     })
 
     let segments
@@ -869,7 +906,7 @@ async function generateReadingInner({ userId, body, signal, diag, onProgress, re
       targetWordList: plan.targetWords,
       supportWords: plan.supportWords,
       basicWords: personalBasicWords,
-      freeForm: finalMode,
+      freeForm,
     })
 
     const first = await callModel({
@@ -1013,9 +1050,10 @@ async function generateReadingInner({ userId, body, signal, diag, onProgress, re
   })
   const unusedTargetWords = targetUsage.unused
 
-  // 最终模式没有目标词，requiredWords = 0 时 coverageRate 恒为 0（0/0 的约定），
-  // 不判一下这篇长文每次生成都会留一条假告警，把真告警淹掉。
-  if (!finalMode && targetUsage.coverageRate < TARGET_COVERAGE_ALERT) {
+  // requiredWords = 0 时 coverageRate 恒为 0（0/0 的约定）：
+  // 最终模式不选词、冷启动不选词都属于这种情况，不判一下每次生成都会留一条假告警，
+  // 把真告警淹掉。md/54：最终模式 + 选词时 requiredWords = S > 0，终于能测覆盖度。
+  if (plan.requiredWords > 0 && targetUsage.coverageRate < TARGET_COVERAGE_ALERT) {
     logger.warn(
       { ...targetUsage, strategy: config.generationStrategy, level: params.level },
       'target coverage below threshold (warn only, md/21 W5)',
@@ -1139,6 +1177,9 @@ async function generateReadingInner({ userId, body, signal, diag, onProgress, re
       poolSize: selection.poolSize,
       requiredWords: plan.requiredWords,
       focusWords: plan.focusWords,
+      // md/54：用户显式选中的词。focusWords 里还混着自动补的，只有这一份能回答
+      // 「用户要的是哪几个」，DTO 的 missing 也靠它计算
+      selectedWords: focusWordsRequested,
       unused: unusedTargetWords,
     },
     names: data.names,
@@ -1230,11 +1271,22 @@ async function generateReadingInner({ userId, body, signal, diag, onProgress, re
  * 破 2 万再改聚合计数。
  */
 export async function getCapacity({ userId, query }) {
-  const { targetWords, vocabScope } = parseOrThrow(capacityQuerySchema, query)
+  const {
+    targetWords,
+    vocabScope,
+    focusWords = [],
+  } = parseOrThrow(capacityQuerySchema, query)
   const words = await wordRepository.findVocabulary(userId)
   const removedBasicWords = (await wordRepository.findNewWords(userId)).map((item) => item.word)
   const learnedWords = words.map((item) => item.word)
   const range = planWordRange(targetWords)
+
+  // md/54：capacity 是诊断接口，选词失效时**只报告不抛 422**（生成接口才 422）。
+  // 有效选词参与每档的 A 门折算；无效词另外回给前端标红。
+  const learnedWordSet = new Set(learnedWords)
+  const invalidFocusWords = focusWords.filter((word) => !learnedWordSet.has(word))
+  const validFocusWords = focusWords.filter((word) => learnedWordSet.has(word))
+  const maxFocusWords = requiredTargetWords(targetWords)
 
   // 解锁口径：个人词库条数（learning + mastered），与生成里 countVocabulary 同源
   const personalWords = words.length
@@ -1249,7 +1301,13 @@ export async function getCapacity({ userId, query }) {
   let knownWords = 0
 
   for (const level of LEVELS) {
-    const selection = selectVocabularyPool({ words, level, scope: vocabScope, targetWords })
+    const selection = selectVocabularyPool({
+      words,
+      level,
+      scope: vocabScope,
+      targetWords,
+      preselected: validFocusWords,
+    })
     // 与 generateReadingInner 调的是同一个函数，预检数字和真实闸门不会分叉
     const known = measureKnownVocabulary({ level, learnedWords, removedBasicWords })
     const ladder = lengthLadder({ level, knownWords: known.knownWords, personalWords })
@@ -1273,9 +1331,11 @@ export async function getCapacity({ userId, query }) {
       // 免得前端显示「还差 100 个」而把本可以点的生成按钮灰掉
       required: finalMode || coldStart ? 0 : selection.neededVocab,
       sufficient: finalMode || coldStart ? true : selection.sufficient,
+      // md/54：选中的词占掉的目标词名额不能再当 supply，所以缺口用 supply 算，
+      // 不能再用 available——否则会把「已经选过的词」重复算成可补词
       shortage: finalMode || coldStart
         ? 0
-        : Math.max(0, selection.neededVocab - selection.available),
+        : Math.max(0, selection.neededVocab - selection.supply),
       // 每档各自的候选池大小（English_vue/md/13 B1）：
       // 顶层 available 是循环里最后一次赋值的 hard 口径，easy 的池子更小，
       // 用 hard 的数字解释 easy 说「不够」，用户会觉得系统在骗人
@@ -1317,6 +1377,12 @@ export async function getCapacity({ userId, query }) {
       unlockAt,
       shortage: unlockShortage,
       maxTargetWords: FINAL_MODE_MAX_WORDS,
+    },
+    // md/54：本次预检用的选词。invalid 里的词不参与折算，前端标红并允许移除
+    focusWords: {
+      requested: [...focusWords],
+      invalid: [...invalidFocusWords],
+      max: maxFocusWords,
     },
     levels,
   }

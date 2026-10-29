@@ -32,6 +32,7 @@ export const REPEAT_PLAN = Object.freeze({
  *   level: string,           // 目前不参与切分，保留给后续按难度调复现计划
  *   targetWords: number,     // 请求里的篇幅参数（正文词数），不是目标词数
  *   selectTargets?: boolean, // false = 不挑目标词（最终模式，md/30 §7.3）
+ *   selectedWords?: string[],// 用户显式选中的词（md/54），已小写、去重、已校验
  * }} params
  * @returns {{
  *   requiredWords: number,   // 按篇幅算出的目标词数
@@ -51,16 +52,36 @@ export const REPEAT_PLAN = Object.freeze({
  * 只会把正文变成「凑词练习」，反倒写不流畅。这时三个列表只剩 `supportWords`——
  * 整个池子降级成「可用词表」，提示词照样给词，只是不再要求必须出现。
  * `requiredWords` 必须一起归零：它同时是覆盖度的分母，留着 100 会让覆盖度永远 0。
+ *
+ * md/54：有显式选词时，选中词**全部**进入必用清单，自动补词只填剩余配额。
+ * 普通模式下按 `FOCUS_RATIO` 切：前 `focusCount` 个选中词拿 ★，其余作普通目标词，
+ * 这样 30 个词不会全部被要求复现 2–3 次。最终模式 / 冷启动本来没有自动目标词，
+ * 选中词全作 ★——用户只选几个时，让它们都承担复习重点是合理的。
  */
-export function buildTargetPlan({ pool, level, targetWords, selectTargets = true }) {
+export function buildTargetPlan({
+  pool,
+  level,
+  targetWords,
+  selectTargets = true,
+  selectedWords = [],
+}) {
   const list = Array.isArray(pool) ? pool : []
+  const selected = [
+    ...new Set(
+      (Array.isArray(selectedWords) ? selectedWords : []).map((word) =>
+        String(word).toLowerCase(),
+      ),
+    ),
+  ]
+  const selectedSet = new Set(selected)
 
   if (!selectTargets) {
     return {
-      requiredWords: 0,
-      focusWords: [],
+      // 分母 = 用户选了几个；没选时仍为 0（覆盖度不产生假告警）
+      requiredWords: selected.length,
+      focusWords: selected,
       targetWords: [],
-      supportWords: list,
+      supportWords: list.filter((word) => !selectedSet.has(String(word).toLowerCase())),
       repeatPlan: REPEAT_PLAN,
     }
   }
@@ -68,13 +89,25 @@ export function buildTargetPlan({ pool, level, targetWords, selectTargets = true
   const requiredWords = requiredTargetWords(targetWords)
   const focusCount = Math.round(requiredWords * FOCUS_RATIO)
 
+  // S ≤ requiredWords 由 schema 保证；这里再截一次只是防御手工调用
+  const selectedFocus = selected.slice(0, focusCount)
+  const selectedTarget = selected.slice(focusCount, requiredWords)
+
+  const remaining = Math.max(0, requiredWords - selected.length)
+  const autoFocusCount = Math.max(0, focusCount - selectedFocus.length)
+  const autoTargetCount = Math.max(0, remaining - autoFocusCount)
+  const autoPool = list.filter((word) => !selectedSet.has(String(word).toLowerCase()))
+
   return {
     requiredWords,
-    focusWords: list.slice(0, focusCount),
+    focusWords: [...selectedFocus, ...autoPool.slice(0, autoFocusCount)],
     // 变量名带 List 只是为了避免和上面的 targetWords 撞名，
     // 返回出去仍然叫 targetWords，提示词那边直接读
-    targetWords: list.slice(focusCount, requiredWords),
-    supportWords: list.slice(requiredWords),
+    targetWords: [
+      ...selectedTarget,
+      ...autoPool.slice(autoFocusCount, autoFocusCount + autoTargetCount),
+    ],
+    supportWords: autoPool.slice(autoFocusCount + autoTargetCount),
     repeatPlan: REPEAT_PLAN,
   }
 }

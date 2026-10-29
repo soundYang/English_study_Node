@@ -38,6 +38,8 @@ const NON_RETRYABLE = new Set([
   ERROR_CODES.INSUFFICIENT_VOCABULARY,
   ERROR_CODES.VOCABULARY_TOO_SMALL,
   ERROR_CODES.INVALID_REQUEST,
+  // md/54：选词不在词库里，重试只会再失败一次；用户要做的是改选词或把词加进词库
+  ERROR_CODES.FOCUS_WORDS_NOT_LEARNED,
 ])
 
 /** 参数比对用：把「集合」语义的 vocabScope 排序，避免 ['all','today_new'] 与反序被当成不同请求 */
@@ -51,6 +53,8 @@ function fingerprint(params) {
     // 开关不同就是不同请求，不能复用上一个任务；「未传」与「显式 false」
     // 也必须分开，否则最终模式的自动默认会被一次显式关闭污染
     allowNewWords: params?.allowNewWords ?? null,
+    // md/54：集合语义，排序后比对；顺序不同不应算成两次不同请求
+    focusWords: [...(params?.focusWords ?? [])].sort(),
   })
 }
 
@@ -65,6 +69,8 @@ export function toTaskParams(task) {
     questionCount: task.params?.questionCount ?? null,
     vocabScope: [...(task.params?.vocabScope ?? [])],
     allowNewWords: task.params?.allowNewWords ?? null,
+    // md/54：null = 没传（自动）；数组 = 用户的选择。[] 不会出现——schema 已拦
+    focusWords: task.params?.focusWords?.length ? [...task.params.focusWords] : null,
   }
 }
 
@@ -211,6 +217,11 @@ function toPlainParams(task) {
     // 让服务端重新按「自动」判定（最终模式开，其余关）。写成 `=== true`
     // 会把「没传」变成显式 false，最终模式重试后突然变严。
     ...(typeof allowNewWords === 'boolean' ? { allowNewWords } : {}),
+    // md/54：只在非空时带上。generateReadingSchema 对 [] 是 400，
+    // 重试不能把「没传」变成空数组，否则每次重试都会在参数校验处失败
+    ...(task.params?.focusWords?.length
+      ? { focusWords: [...task.params.focusWords] }
+      : {}),
   }
 }
 
@@ -490,6 +501,8 @@ export async function createGenerationTask({ userId, body, identity = null }) {
         vocabScope: generationParams.vocabScope,
         // 原样存：undefined 表示「没传」= 自动，不能被压成 false
         allowNewWords: generationParams.allowNewWords,
+        // md/54：同样保留 undefined；没选词的任务不要写成 []
+        focusWords: generationParams.focusWords,
       },
       model: config.deepseekModel,
       strategy: config.generationStrategy,

@@ -162,14 +162,32 @@ export function selectVocabularyPool({
   targetWords,
   now = new Date(),
   limit = POOL_LIMIT,
+  // md/54：用户显式选中的词。它们已经占用目标词名额，只剩「剩余配额」需要池子补
+  preselected = [],
 }) {
   const normalizedScope = normalizeScope(scope)
   const candidates = filterByScope(words, normalizedScope, now)
   const available = candidates.length
 
   const requiredWords = requiredTargetWords(targetWords)
-  const neededVocab = neededVocabulary({ targetWords, level })
   const ratio = POOL_RATIOS[level] ?? POOL_RATIOS.medium
+
+  const selected = [
+    ...new Set(
+      (Array.isArray(preselected) ? preselected : []).map((word) =>
+        String(word).toLowerCase(),
+      ),
+    ),
+  ]
+  const candidateSet = new Set(candidates.map((word) => word.word))
+  // 选中的词即使不在本次 scope 里也照常可用：scope 约束自动挑词的范围，
+  // 不约束用户亲手点的词。只有「scope 外」的那部分才是额外 supply。
+  const outOfScopeSelected = selected.filter((word) => !candidateSet.has(word)).length
+  const remainingRequired = Math.max(0, requiredWords - selected.length)
+  // selected 已经分配为目标词，不能再拿去充当补词 supply；
+  // 没有选词时 supply === available，neededVocab 与旧实现完全一致
+  const supply = Math.max(0, available + outOfScopeSelected - selected.length)
+  const neededVocab = Math.ceil(remainingRequired / ratio)
 
   // 取「比例折算值」与「目标词数」的较大者：四舍五入可能让 available×ratio
   // 比 requiredWords 少一个，导致池子装不下计划里的目标词
@@ -188,7 +206,11 @@ export function selectVocabularyPool({
     available,
     requiredWords,
     neededVocab,
-    sufficient: available >= neededVocab,
+    sufficient: supply >= neededVocab,
     scope: normalizedScope,
+    // 给诊断与 422 文案用：选了几个、还需自动补几个、实际可补的词数
+    selectedCount: selected.length,
+    remainingRequired,
+    supply,
   }
 }

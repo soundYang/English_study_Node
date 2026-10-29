@@ -60,6 +60,9 @@ const targetPlanSchema = new Schema(
     poolSize: { type: Number, default: 0 }, // 候选池实际大小
     requiredWords: { type: Number, default: 0 }, // 按篇幅算出的目标词数
     focusWords: { type: [String], default: [] }, // 重点词清单，要求复现 2–3 次
+    // md/54：用户显式选中的词（已归一化、保留顺序）。与 focusWords 不同——
+    // 后者还包含自动补的词；只有这里存的值能回答「用户要的是哪几个」
+    selectedWords: { type: [String], default: [] },
     // 最终正文里完全没出现的目标词（W4 只记录；W5 据此算 coverageRate）
     unused: { type: [String], default: [] },
   },

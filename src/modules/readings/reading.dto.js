@@ -6,7 +6,26 @@ import { countWords } from './word-count.js'
  */
 
 /**
- * 安全 DTO：12 个字段，一个都不能少。
+ * 自选词命中情况（md/54）。
+ *
+ * `missing` 从 `aiMeta.targetUsage.unused` 与 `targetPlan.selectedWords` 的交集算，
+ * 不单独落库——存两份迟早分叉。`unused` 已经按词形变化统计（runs → run），
+ * 所以这里只做小写比对，不再展开词形。
+ */
+function buildFocusWords(doc) {
+  const requested = doc.targetPlan?.selectedWords ?? []
+  const unused = new Set(
+    (doc.aiMeta?.targetUsage?.unused ?? []).map((word) => String(word).toLowerCase()),
+  )
+
+  return {
+    requested: [...requested],
+    missing: requested.filter((word) => unused.has(String(word).toLowerCase())),
+  }
+}
+
+/**
+ * 安全 DTO：13 个字段，一个都不能少。
  *
  * 绝对不包含：translation、correctAnswer、explanation、userAnswers、
  * score、correctCount、names、aiMeta。
@@ -14,9 +33,10 @@ import { countWords } from './word-count.js'
  * `status` 必须有——前端拿它判断是否需要重定向到结果页，
  * 漏掉就会停在「答题中」却渲染不出内容。
  *
- * 新增三样都是给用户看的，不是内部数据：
+ * 新增四样都是给用户看的，不是内部数据：
  *   actualWords —— 文章页显示「全文 218 词」
  *   newWords    —— 折叠提示「本文含 4 个未学单词」
+ *   focusWords  —— md/54：自选词的命中情况（requested / missing）
  *   tokenUsage  —— 显示「本次消耗 N tokens」
  */
 export function toSafeDto(doc) {
@@ -37,6 +57,9 @@ export function toSafeDto(doc) {
       senses: (item.senses ?? []).map(({ pos, meaning }) => ({ pos, meaning })),
       source: item.source,
     })),
+    // md/54：用户自选词的命中情况。老文档没有 selectedWords / targetUsage，
+    // 两个数组都回空——字段始终存在，前端不用判 undefined。
+    focusWords: buildFocusWords(doc),
     tokenUsage: {
       promptTokens: doc.aiMeta?.promptTokens ?? 0,
       completionTokens: doc.aiMeta?.completionTokens ?? 0,

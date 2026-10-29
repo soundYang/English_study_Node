@@ -50,6 +50,9 @@ export const ERROR_CODES = Object.freeze({
   ALREADY_SUBMITTED: 'ALREADY_SUBMITTED',
   INSUFFICIENT_VOCABULARY: 'INSUFFICIENT_VOCABULARY',
   VOCABULARY_TOO_SMALL: 'VOCABULARY_TOO_SMALL',
+  // 用户自选词里有不在词库（或已标 new）的词（md/54）。
+  // 与 VOCABULARY_TOO_SMALL 分开：那个是「词不够」，这个要用户改选词
+  FOCUS_WORDS_NOT_LEARNED: 'FOCUS_WORDS_NOT_LEARNED',
   VOCABULARY_VALIDATION_FAILED: 'VOCABULARY_VALIDATION_FAILED',
   AI_PROVIDER_ERROR: 'AI_PROVIDER_ERROR',
   AI_INVALID_RESPONSE: 'AI_INVALID_RESPONSE',
@@ -193,13 +196,19 @@ const LEVEL_LABELS = Object.freeze({ easy: '简单', medium: '进阶', hard: '�
  * 用户才知道该加词、缩篇幅还是降难度。`details` 同时给结构化版本，
  * 前端要显示进度条或算差值时不必自己再推一遍。
  *
+ * md/54：用户自选了目标词时，自动补词的配额变小，门槛也按**剩余配额**折算。
+ * 这时 `requiredWords` 是总目标词数、`remainingRequired` 是还需要系统补的数；
+ * 文案要把「你已选 S 个」说出来，否则用户会以为系统没算他的选择。
+ *
  * @param {{
- *   required: number,       // 折算后的已学词门槛（neededVocab）
- *   available: number,      // 当前候选池实际词数
- *   requiredWords: number,  // 篇幅换算出的目标词数
- *   targetWords: number,    // 用户请求的篇幅
+ *   required: number,          // 折算后的已学词门槛（neededVocab）
+ *   available: number,         // 可用于补词的候选词数（supply）
+ *   requiredWords: number,     // 篇幅换算出的目标词总数
+ *   targetWords: number,       // 用户请求的篇幅
  *   scope: string[],
  *   level: string,
+ *   selectedCount?: number,    // md/54：用户显式选了几个（0 = 没选）
+ *   remainingRequired?: number // md/54：还需要自动补几个
  * }} payload
  */
 export const vocabularyTooSmall = ({
@@ -209,18 +218,63 @@ export const vocabularyTooSmall = ({
   targetWords,
   scope,
   level,
-}) =>
-  new ApiError(
-    422,
-    ERROR_CODES.VOCABULARY_TOO_SMALL,
-    `${LEVEL_LABELS[level] ?? level}模式写 ${targetWords} 词的文章需要约 ${requiredWords} 个目标词，`
+  selectedCount = 0,
+  remainingRequired = requiredWords,
+}) => {
+  const intro = selectedCount > 0
+    ? `${LEVEL_LABELS[level] ?? level}模式写 ${targetWords} 词的文章还需要约 ${remainingRequired} 个自动目标词`
+      + `（你已选 ${selectedCount} 个），折算下来至少还需要 ${required} 个其他已学单词，`
+      + `当前符合条件的只有 ${available} 个（还差 ${Math.max(0, required - available)} 个）。`
+    : `${LEVEL_LABELS[level] ?? level}模式写 ${targetWords} 词的文章需要约 ${requiredWords} 个目标词，`
       + `折算下来至少要有 ${required} 个已学单词，当前符合条件的只有 ${available} 个`
       + `（还差 ${Math.max(0, required - available)} 个）。`
-      + '请添加更多单词，或缩短篇幅、降低难度。',
+
+  return new ApiError(
+    422,
+    ERROR_CODES.VOCABULARY_TOO_SMALL,
+    intro + '请添加更多单词，或缩短篇幅、降低难度。',
     'targetWords',
-    // kind 让前端区分两道 422：目标词凑不齐（缩篇幅/降难度）与已知词汇量不够（加词）
-    { kind: 'target_words', required, available, requiredWords, targetWords, scope, level },
+    // kind 让前端区分两道 422：目标词凑不齐（缩篇幅/降难度）与已知词汇量不够（加词）。
+    // selectedCount 只在真的有选词时才出现，保持老响应的 details 形状不变
+    {
+      kind: 'target_words',
+      required,
+      available,
+      requiredWords,
+      targetWords,
+      scope,
+      level,
+      ...(selectedCount > 0 ? { selectedCount, remainingRequired } : {}),
+    },
   )
+}
+
+/**
+ * 422：用户显式指定的词里有不在个人词库（learning / mastered）的（md/54）。
+ *
+ * 与 `vocabularyTooSmall` 分开：那个是「你的词总量不够」，这个只需改选词或把词加进词库，
+ * 前端要做的事情完全不同。`details.words` 只回前 20 个，`count` 是完整数量——
+ * 和 violations 的截断口径一致，避免一个恶意/异常请求把响应撑大。
+ */
+export const focusWordsNotLearned = ({ words, max = null }) => {
+  const list = [...new Set((words ?? []).map((word) => String(word)))]
+  const shown = list.slice(0, 20)
+
+  return new ApiError(
+    422,
+    ERROR_CODES.FOCUS_WORDS_NOT_LEARNED,
+    `有 ${list.length} 个词不在你的词库里，或已被标记为「不认识」：`
+      + `${shown.join('、')}${list.length > shown.length ? ' 等' : ''}。`
+      + '只有「学习中」和「已掌握」的词可以指定生成。',
+    'focusWords',
+    {
+      kind: 'focus_words',
+      words: shown,
+      count: list.length,
+      ...(max === null ? {} : { max }),
+    },
+  )
+}
 
 /**
  * 400：该难度不支持这么长的请求（md/20 §2.2 篇幅上限跟难度走）。

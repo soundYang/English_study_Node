@@ -124,6 +124,9 @@ const generationTaskSchema = new Schema(
       // 故意不设 default：把「没传」和「显式 false」混成一档，
       // 最终模式的任务重试时就会突然变严（md/42 §3）。
       allowNewWords: Boolean,
+      // md/54：用户自选词。同样不设 default——「没传」不能让 Mongoose 写成 []，
+      // 否则回显时无法区分「自动」和「选了 0 个」（后者本来就是 400）。
+      focusWords: { type: [String], default: undefined },
     },
 
     // done / total 都是「段」为单位，整篇路径没有段，恒为 0/0
