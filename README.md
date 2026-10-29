@@ -80,7 +80,8 @@ Mongo 断开时返回 **503** + `status: "degraded"`，这是唯一的健康判�
 | `PORT` | 3000 | 本机已有服务占用时（测试实例习惯用 3100–3102） |
 | `CLIENT_ORIGIN` | `http://localhost:5173,http://127.0.0.1:5173` | 前端换了地址。**多个用逗号分隔**（局域网联调写 `http://localhost:5173,http://127.0.0.1:5173,http://192.168.x.x:5173`），结尾斜杠会被忽略。按源精确匹配：`localhost` 与 `127.0.0.1`、vite 打印的每个网卡 IP 都是不同的源，漏配就会 `ERR_FAILED` + 页面「网络错误」 |
 | `MONGODB_URI` | — | **必填**，缺了进程直接退出并提示 |
-| `DEFAULT_USER_ID` | `local-user` | MVP 无登录，所有请求归属它；采样脚本会改成 fixture 用户 |
+| `DEFAULT_USER_ID` | `local-user` | 仅 `AUTH_ENFORCED=false` 时生效：匿名请求归属它；采样脚本会改成 fixture 用户 |
+| `AUTH_ENFORCED` | false | 匿名请求是否强制 401。**生产必须设 `true`**：为 false 时所有请求都落到 `DEFAULT_USER_ID`，等于全站共用一个账号（词库/文章/额度互相可见）。前端对应 `VITE_AUTH_ENFORCED`，构建期注入 |
 | `DEEPSEEK_API_KEY` | 空 | 不填也能启动，但生成接口会 502 |
 | `DEEPSEEK_MODEL` | `deepseek-chat` | 换模型后**必须重新采样**，token 与费用口径都会变 |
 | `DEEPSEEK_TIMEOUT_MS` | 60000 | 单次上游调用超时。**必须小于前端 axios 超时（90 s）** |
