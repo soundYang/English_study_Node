@@ -25,4 +25,4 @@ bash deploy/scripts/gen-webp.sh /var/www/english-app/assets
 
 **这一步不能忘**：`.webp` 是构建产物的一部分，上传新 `dist` 会把它们覆盖掉。漏跑的后果不是报错，而是「悄悄退回原图」——首屏从 400KB 变回 2.9MB，只看日志完全发现不了。
 
-更彻底的做法是把图片压缩接进前端构建（`vite-plugin-imagemin` / `vite-imagetools`），见 `md/22_前端协作清单.md` 第 79 行。
+前端已经把这一步接进自己的构建（`English_vue` 提交 `2792896`：`vite build && node scripts/gen-webp.mjs`），见 `md/22_前端协作清单.md` 第 80 行。所以本脚本**降级为兜底**：新 `dist` 自带 `.webp` 就无需再跑，漏带了跑一遍补齐——已存在时重跑只是覆盖成同样的结果，无害。

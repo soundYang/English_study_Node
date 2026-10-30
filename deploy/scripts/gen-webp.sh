@@ -6,8 +6,9 @@
 # 首屏要下好几 MB。nginx 侧已经配好按 Accept 头协商（见 deploy/nginx/english-node.conf），
 # 只要同目录存在 <原名>.webp 就会优先发它，不支持 WebP 的浏览器自动回落原图。
 #
-# 关键前提：**这些 .webp 是构建产物的一部分，不在前端仓库里**。
-# 所以每次上传新的 dist 之后都要重跑一次，否则线上只剩原图。
+# 现状（2026-10-30 起）：前端已把生成接进自己的构建（English_vue 提交 2792896），
+# 新 dist 里自带 .webp。本脚本因此降级为**兜底**——只有碰上没带 .webp 的 dist 时才需要跑。
+# 已存在 .webp 时重跑也只是覆盖成同样的结果，无害。
 #
 # 用法：
 #   bash deploy/scripts/gen-webp.sh                 # 默认处理 dist/assets
