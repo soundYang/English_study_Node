@@ -106,6 +106,32 @@ describe('冷启动 · /capacity', () => {
     expect(res.body.levels.easy.shortage).toBe(86)
   })
 
+  it('标过「不认识」的用户不会被冷启动地板卡住（md/56 §18）', async () => {
+    // 两个基础词进了墓碑表：knownWords 只有 616，全量地板 618 会永远差 2 个
+    await Word.insertMany([
+      { userId: config.defaultUserId, word: 'water', status: 'new', source: 'basic-removed' },
+      { userId: config.defaultUserId, word: 'tree', status: 'new', source: 'basic-removed' },
+    ])
+
+    const res = await capacity({ targetWords: 100 })
+
+    expect(res.body.knownWords).toBe(BASE_UNION - 2)
+    expect(res.body.levels.easy.minKnown).toBe(BASE_UNION - 2)
+    expect(res.body.levels.easy.lengths[0]).toMatchObject({ unlocked: true, blockedBy: null })
+    expect(res.body.levels.hard.lengths[0]).toMatchObject({ unlocked: true, blockedBy: null })
+  })
+
+  it('自己加的 status=new 词不算「不认识」，不减基础词池（md/56 §18）', async () => {
+    await Word.insertMany([
+      { userId: config.defaultUserId, word: 'water', status: 'new', source: 'manual' },
+    ])
+
+    const res = await capacity({ targetWords: 100 })
+
+    // 减法项只认墓碑；按 status 判的话这里会变成 BASE_UNION - 1
+    expect(res.body.knownWords).toBe(BASE_UNION)
+  })
+
   it('个人词库够覆盖目标词的用户不触发冷启动', async () => {
     await seedWords(400)
 
@@ -133,6 +159,19 @@ describe('冷启动 · 生成', () => {
     expect(doc.aiMeta.coldStart).toBe(true)
     expect(doc.aiMeta.finalMode).toBe(false)
     expect(doc.aiMeta.minKnown).toBe(BASE_UNION)
+  })
+
+  it('标过「不认识」的 0 词用户 + easy 100 → 201', async () => {
+    await Word.insertMany([
+      { userId: config.defaultUserId, word: 'water', status: 'new', source: 'basic-removed' },
+      { userId: config.defaultUserId, word: 'tree', status: 'new', source: 'basic-removed' },
+    ])
+
+    const res = await generate({ level: 'easy', targetWords: 100, questionCount: 3 })
+
+    expect(res.status).toBe(201)
+    const doc = await Reading.findById(res.body.id).lean()
+    expect(doc.aiMeta.minKnown).toBe(BASE_UNION - 2)
   })
 
   it('0 词 + hard 200 → 201（200 是冷启动上限）', async () => {

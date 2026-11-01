@@ -24,7 +24,8 @@
     "replay:update": "node scripts/replay-suite.mjs --update",
     "calibrate": "node scripts/calibrate-standards.mjs",
     "fetch:ocr": "node scripts/fetch-ocr-model.mjs",
-    "migrate:active-key": "node scripts/migrate-generation-active-key.mjs"
+    "migrate:active-key": "node scripts/migrate-generation-active-key.mjs",
+    "migrate:new-words": "node scripts/migrate-new-words-to-learning.mjs"
   },
   "dependencies": {
     "cors": "2.8.6",

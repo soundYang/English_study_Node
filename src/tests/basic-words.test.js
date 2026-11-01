@@ -226,15 +226,19 @@ describe('GET /api/basic-words', () => {
     expect(known.body.counts).toMatchObject({ learned: 2, removed: 1, untouched: 647 })
   })
 
-  it('个人词库里 status=new 的手填词也算「不认识了」', async () => {
-    // 生成链路按 status 减词，不看 source；页面口径必须一致
+  it('个人词库里 status=new 的手填词算「认识」，不再算「不认识」', async () => {
+    // md/56 §18：只有 basic-removed 墓碑是「不认识」。
+    // 按 status 判的话，用户正常添加的词会被显示成「不认识」、也不计入 knownWords
     await seed([{ word: 'book', status: 'new', source: 'manual' }])
 
-    const res = await list({ status: 'removed' })
-    const book = res.body.items.find((item) => item.word === 'book')
+    const removed = await list({ status: 'removed' })
+    const known = await list({ status: 'known' })
+    const book = known.body.items.find((item) => item.word === 'book')
 
-    expect(res.body.total).toBe(1)
-    expect(book.removed).toBe(true)
+    expect(removed.body.total).toBe(0)
+    expect(known.body.total).toBe(1)
+    expect(book.removed).toBe(false)
+    expect(book.personalState).toBe('known')
     expect(book.personalStatus).toBe('new')
   })
 
@@ -525,20 +529,21 @@ describe('PATCH /api/basic-words/:word（三态标记，md/52）', () => {
     expect(doc).toMatchObject({ status: 'learning', articleExposureCount: 7 })
   })
 
-  it('用户自己加的新词：标认识 / 未标记 409，标不认识 200 空操作', async () => {
+  it('用户自己加的词（含 new）：标认识 200，标未标记 / 不认识 409', async () => {
+    // md/56 §18：词库里的词就是「认识」，包括状态还是 new 的。
+    // 覆盖 status 等于抹掉学习进度，只能回词汇页做
     await seed([{ word: 'book', status: 'new', source: 'manual' }])
 
     const asKnown = await patch('book', 'known')
     const asNone = await patch('book', 'none')
-    const asUnknown = await patch('book', 'unknown')
 
-    expect(asKnown.status).toBe(409)
-    expect(asKnown.body.error.code).toBe('BASIC_WORD_ALREADY_LEARNED')
-    // 已经是「不认识」口径：PATCH 幂等，不删用户自己的记录
-    expect(asUnknown.status).toBe(200)
-    expect(asUnknown.body.item.personalState).toBe('removed')
+    expect(asKnown.status).toBe(200)
+    expect(asKnown.body.item.personalState).toBe('known')
+    expect(asKnown.body.item.knownSource).toBe('library')
     expect(asNone.status).toBe(409)
+    expect(asNone.body.error.code).toBe('BASIC_WORD_ALREADY_LEARNED')
 
+    // 词库里已有，写不写墓碑都不该多一条记录
     expect(await Word.countDocuments({ userId: uid, word: 'book' })).toBe(1)
   })
 

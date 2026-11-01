@@ -493,7 +493,7 @@ async function generateReadingInner({ userId, body, signal, diag, onProgress, re
   }
 
   // 个人基础词：该难度的基础表 − 用户标记为 new 的词（功能词不可移除）
-  const removedBasicWords = (await wordRepository.findNewWords(userId)).map((item) => item.word)
+  const removedBasicWords = (await wordRepository.findRemovedBasicWords(userId)).map((item) => item.word)
   const ignoredRemovals = ignoredFunctionWordRemovals(removedBasicWords)
   if (ignoredRemovals.length > 0) {
     logger.warn(
@@ -502,7 +502,7 @@ async function generateReadingInner({ userId, body, signal, diag, onProgress, re
     )
   }
 
-  // 已知词汇量：篇幅门槛（`minKnownFor`）与最终模式共用；顺便拿到扣掉 new 词之后的个人基础词
+  // 已知词汇量：篇幅门槛（`minKnownFor`）与最终模式共用；顺便拿到扣掉「不认识」之后的个人基础词
   const known = measureKnownVocabulary({
     level: params.level,
     learnedWords: words.map((item) => item.word),
@@ -553,10 +553,14 @@ async function generateReadingInner({ userId, body, signal, diag, onProgress, re
   const maxTargetWords = overrideMax ?? maxTargetWordsFor(params.level, personalWords)
   // 最低已知词量随篇幅走（md/30 §7.2）。最终模式不查这条：
   // 它的真实闸门是 personalWords，再用 knownWords 拦一次只会自相矛盾。
-  // 冷启动时门槛退回基础词地板（618），300 词以上仍按 minKnown(N) 判
+  // 冷启动时门槛退回**该用户自己的**地板（他的基础词 ∪ 日历词，已扣掉标「不认识」的词）
+  // ——用全量地板会把他排除掉的词也算进门槛，标一个「不认识」就永远差一个（md/56 §18）
   const minKnown = finalMode
     ? 0
-    : minKnownFor(params.targetWords, params.level, { personalWords })
+    : minKnownFor(params.targetWords, params.level, {
+        personalWords,
+        personalBasicWords,
+      })
 
   // 先落诊断再抛错：下面三道门任意一道拦下都要能归因。
   // 旧实现把这一块放在 B 门之前、A 门之后，结果 A 门的失败样本一直没有门禁数字。
@@ -1328,7 +1332,7 @@ export async function getCapacity({ userId, query }) {
     focusWords = [],
   } = parseOrThrow(capacityQuerySchema, query)
   const words = await wordRepository.findVocabulary(userId)
-  const removedBasicWords = (await wordRepository.findNewWords(userId)).map((item) => item.word)
+  const removedBasicWords = (await wordRepository.findRemovedBasicWords(userId)).map((item) => item.word)
   const learnedWords = words.map((item) => item.word)
   const range = planWordRange(targetWords)
 
@@ -1361,7 +1365,12 @@ export async function getCapacity({ userId, query }) {
     })
     // 与 generateReadingInner 调的是同一个函数，预检数字和真实闸门不会分叉
     const known = measureKnownVocabulary({ level, learnedWords, removedBasicWords })
-    const ladder = lengthLadder({ level, knownWords: known.knownWords, personalWords })
+    const ladder = lengthLadder({
+      level,
+      knownWords: known.knownWords,
+      personalWords,
+      personalBasicWords: known.personalBasicWords,
+    })
     // 采样实例（MAX_TARGET_WORDS）按同一个覆盖值报，否则预检与生成对不上
     const maxTargetWords = Number.isInteger(config.maxTargetWordsOverride)
       ? config.maxTargetWordsOverride
@@ -1370,9 +1379,13 @@ export async function getCapacity({ userId, query }) {
     const finalMode = isFinalMode({ level, targetWords, personalWords })
     // 冷启动：100 / 200 词且个人词库凑不齐目标词——只用基础词写（md/39）
     const coldStart = isColdStart({ level, targetWords, personalWords })
+    // 冷启动地板按用户自己的算，与生成链路同一个入参（md/56 §18）
     const minKnown = finalMode
       ? 0
-      : minKnownFor(targetWords, level, { personalWords })
+      : minKnownFor(targetWords, level, {
+          personalWords,
+          personalBasicWords: known.personalBasicWords,
+        })
 
     available = selection.available
     knownWords = known.knownWords

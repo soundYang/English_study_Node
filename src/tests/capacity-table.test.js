@@ -12,6 +12,9 @@ import {
   maxTargetWordsFor,
   minKnownFor,
 } from '../modules/readings/capacity-table.js'
+import { basicWordsByLevel, functionWords } from '../modules/readings/basic-words.js'
+import { calendarWords } from '../modules/readings/calendar-words.js'
+import { measureKnownVocabulary } from '../modules/readings/level-limits.js'
 
 /**
  * 篇幅 ↔ 词汇量对照表（md/30 §7.1、§8.2）。
@@ -90,6 +93,57 @@ describe('minKnownFor — 形状', () => {
   it('非法输入不炸：0 / 负数 / NaN 按 1 词处理', () => {
     expect(minKnownFor(0, 'hard')).toBe(minKnownFor(1, 'hard'))
     expect(Number.isFinite(minKnownFor(Number.NaN, 'hard'))).toBe(true)
+  })
+})
+
+describe('minKnownFor — 冷启动地板按用户自己算（md/56 §18）', () => {
+  // 用户把两个基础词标成了「不认识」。挑不在日历词表、也不是功能词的：
+  // 删一个日历词，并集只少 1 个（它两边都有）；功能词根本不参与减法
+  const calendar = new Set(calendarWords)
+  const funcs = new Set(functionWords)
+  const removed = basicWordsByLevel.easy
+    .filter((word) => !calendar.has(word) && !funcs.has(word))
+    .slice(0, 2)
+  const personalBasicWords = basicWordsByLevel.easy.filter((word) => !removed.includes(word))
+  const ownFloor = new Set([...personalBasicWords, ...calendarWords]).size
+
+  it('地板扣掉用户排除的词，不做全量要求', () => {
+    expect(ownFloor).toBe(KNOWN_FLOOR - 2)
+    expect(minKnownFor(100, 'easy', { personalWords: 0, personalBasicWords })).toBe(ownFloor)
+    expect(minKnownFor(100, 'hard', { personalWords: 0, personalBasicWords })).toBe(ownFloor)
+  })
+
+  it('knownWords 恰好等于自己的地板时门槛通过（全量地板下会永远差 2 个）', () => {
+    const known = measureKnownVocabulary({
+      level: 'easy',
+      learnedWords: [],
+      removedBasicWords: removed,
+    })
+
+    expect(known.knownWords).toBe(ownFloor)
+    expect(
+      minKnownFor(100, 'easy', {
+        personalWords: 0,
+        personalBasicWords: known.personalBasicWords,
+      }),
+    ).toBe(ownFloor)
+  })
+
+  it('不传 personalBasicWords 时维持全量地板，老脚本行为不变', () => {
+    expect(minKnownFor(100, 'easy', { personalWords: 0 })).toBe(KNOWN_FLOOR)
+    expect(minKnownFor(100, 'easy')).toBe(KNOWN_FLOOR + 29)
+  })
+
+  it('阶梯里的 100 / 200 也按用户地板解锁', () => {
+    const ladder = lengthLadder({
+      level: 'easy',
+      knownWords: ownFloor,
+      personalWords: 0,
+      personalBasicWords,
+    })
+
+    expect(ladder[0]).toMatchObject({ targetWords: 100, unlocked: true, blockedBy: null })
+    expect(ladder[1]).toMatchObject({ targetWords: 200, unlocked: true, blockedBy: null })
   })
 })
 

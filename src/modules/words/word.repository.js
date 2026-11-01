@@ -82,13 +82,18 @@ export const wordRepository = {
   },
 
   /**
-   * 用户标记为 `new` 的词：个人基础词的减法项（md/06 §5.2）。
+   * 用户标了「不认识」的基础词：个人基础词的减法项（md/06 §5.2、md/56 §18）。
    *
    * 这些词既不在候选池里，也要从基础词白名单里扣掉——
    * 否则用户明明标了「不认识」，文章还是照用。
+   *
+   * **只认 `source: 'basic-removed'`**，不再按 `status: 'new'` 判断。
+   * `new` 曾经同时表示「还没开始学」和「不认识」，一次机制调整后
+   * 用户正常添加的词被留在了 `new` 上，于是加得越多、基础词池越小；
+   * 收窄到墓碑之后，「不认识」只有这一个来源。
    */
-  findNewWords(userId) {
-    return Word.find({ userId, status: 'new' }).select('word').lean()
+  findRemovedBasicWords(userId) {
+    return Word.find({ userId, source: 'basic-removed' }).select('word').lean()
   },
 
   /**

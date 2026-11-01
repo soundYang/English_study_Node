@@ -72,6 +72,22 @@ export function knownFloorFor(level = HARD) {
   return KNOWN_FLOOR.get(level) ?? KNOWN_FLOOR.get(DEFAULT_LEVEL)
 }
 
+/**
+ * **某个用户自己的**地板：他的基础词表（已扣掉标了「不认识」的词）∪ 日历词。
+ *
+ * 与 `knownFloorFor` 的区别就是「扣没扣排除词」。冷启动门槛必须用这一个：
+ * `knownWords` 本身就是按用户扣过的，拿全量地板去比，等于要求
+ * 「你排除掉的那 N 个词也要认识」——标一个「不认识」，门槛反而更远，永远差 N 个。
+ *
+ * 传入 `personalBasicWords`（`measureKnownVocabulary` 的产出）时现算；
+ * 没传就退回全量地板，老脚本不受影响。
+ */
+function coldStartFloor(level, personalBasicWords) {
+  if (!Array.isArray(personalBasicWords)) return knownFloorFor(level)
+
+  return new Set([...personalBasicWords, ...calendarWords]).size
+}
+
 /** 该档的常规篇幅上限（不含最终模式） */
 export function baseMaxWordsFor(level = HARD) {
   const limit = LEVEL_LIMITS[level] ?? LEVEL_LIMITS[DEFAULT_LEVEL]
@@ -148,8 +164,12 @@ export function isColdStart({ level = HARD, targetWords, personalWords = 0 }) {
  * 两项都随 N 单调不减，取 max 之后整张表也单调不减。
  *
  * **冷启动例外（md/39）**：`targetWords ≤ 200` 且个人词库凑不齐目标词时，
- * 门槛退回「基础词表 ∪ 日历词」的地板（现算，当前是 618）——0 词用户也能写 100 / 200 词。
- * 调用方要把 `personalWords` 传进来；不传（老脚本）则维持原口径。
+ * 门槛退回**该用户自己的**地板「他的基础词表 ∪ 日历词」（md/56 §18）——
+ * 0 词用户也能写 100 / 200 词。
+ * 调用方要把 `personalWords` 与 `personalBasicWords` 传进来；不传（老脚本）则维持原口径。
+ *
+ * 为什么不能用全量地板：`knownWords` 是按用户排除过的词算的，全量地板没有扣，
+ * 用户每标一个「不认识」，门槛就离他远一分——标 3 个，就永远差 3 个。
  *
  * 超过常规上限（601–1000）分两种：
  *   · hard → 折算值 618 + 3000 = 3618。最终模式的真实闸门是 personalWords，
@@ -162,19 +182,22 @@ export function isColdStart({ level = HARD, targetWords, personalWords = 0 }) {
 export function minKnownFor(
   targetWords,
   level = HARD,
-  { personalWords = Number.POSITIVE_INFINITY } = {},
+  { personalWords = Number.POSITIVE_INFINITY, personalBasicWords = null } = {},
 ) {
   const n = Math.max(1, Math.round(Number(targetWords) || 0))
 
   if (n > baseMaxWordsFor(HARD)) {
-    if (level !== HARD) return minKnownFor(baseMaxWordsFor(level), level, { personalWords })
+    if (level !== HARD) {
+      return minKnownFor(baseMaxWordsFor(level), level, { personalWords, personalBasicWords })
+    }
 
     return knownFloorFor(level) + FINAL_MODE_PERSONAL_WORDS
   }
 
-  // 冷启动只放开 100 / 200：基础词表够写这么长，但没有个人词就没有复习对象
+  // 冷启动只放开 100 / 200：基础词表够写这么长，但没有个人词就没有复习对象。
+  // 地板按用户自己的算——他排除掉的「不认识」词，不能再算进门槛
   if (isColdStart({ level, targetWords: n, personalWords })) {
-    return knownFloorFor(level)
+    return coldStartFloor(level, personalBasicWords)
   }
 
   const byGate = knownFloorFor(level) + neededVocabulary({ targetWords: n, level })
@@ -195,20 +218,28 @@ export function minKnownFor(
  * 所以 /capacity 把它挂在 `levels[level].lengths` 下，而不是顶层共用一份
  * （md/30 §7.5 的偏离记录）。
  *
- * @param {{ level: string, knownWords: number, personalWords: number }} params
+ * @param {{
+ *   level: string, knownWords: number, personalWords: number,
+ *   personalBasicWords?: string[]|null,
+ * }} params
  * @returns {Array<{
  *   targetWords: number, minKnown: number, unlocked: boolean,
  *   blockedBy: null|'level_cap'|'final_mode'|'known_words',
  *   shortage: number, finalMode: boolean,
  * }>}
  */
-export function lengthLadder({ level = HARD, knownWords = 0, personalWords = 0 }) {
+export function lengthLadder({
+  level = HARD,
+  knownWords = 0,
+  personalWords = 0,
+  personalBasicWords = null,
+}) {
   const finalModeUnlocked = isFinalModeUnlocked({ personalWords })
   const levelCap = maxTargetWordsFor(level, personalWords)
   const ladder = []
 
   for (let targetWords = LENGTH_STEP; targetWords <= FINAL_MODE_MAX_WORDS; targetWords += LENGTH_STEP) {
-    const minKnown = minKnownFor(targetWords, level, { personalWords })
+    const minKnown = minKnownFor(targetWords, level, { personalWords, personalBasicWords })
     const knownOk = Number(knownWords) >= minKnown
     // 超过本档上限的两种原因要分开报：hard 601+ 是「没解锁」，easy 301+ 是「档位到头」
     const beyondFinalMode = level === HARD && targetWords > baseMaxWordsFor(HARD)

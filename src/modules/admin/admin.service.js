@@ -365,7 +365,7 @@ export async function getUserDetail({ dataKey, now = new Date() }) {
     apiKeyDoc,
   ] = await Promise.all([
     wordRepository.findVocabulary(dataKey),
-    wordRepository.findNewWords(dataKey),
+    wordRepository.findRemovedBasicWords(dataKey),
     getProfileStats({ userId: dataKey, now }),
     Quota.findOne({ key: `acct:${dataKey}`, day: quotaDay(now) }).lean(),
     Reading.find({ userId: dataKey })

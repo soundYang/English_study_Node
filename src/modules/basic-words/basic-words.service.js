@@ -99,9 +99,10 @@ function toItem(entry, record, marked = false) {
     meaning: sense.meaning,
   }))
 
-  // removed 只看 status：用户手填一个 status=new 的同名词，同样会被
-  // getPersonalBasicWords 从白名单里扣掉，页面口径必须和生成链路一致。
-  const removed = record?.status === 'new'
+  // removed 只看墓碑（`source: 'basic-removed'`），与 getPersonalBasicWords 的减法项同一口径。
+  // 2026-11-01 之前这里看的是 `status === 'new'`：那会儿「新词」等于「不认识」。
+  // 机制调整后用户正常加的词也会是 new，再按 status 判会把它们显示成「不认识」（md/56 §18）。
+  const removed = record?.source === 'basic-removed'
 
   // 认识有两个来源：词库里的 learning / mastered，或基础词页手动标记（md/52）。
   // 优先级见 md/52 §2.3：不认识 > 词库中 > 手动标记 > 未标记
@@ -170,7 +171,8 @@ function buildCounts(records, marked) {
     if (entry.isFunctionWord) counts.functionWord += 1
 
     const record = records.get(entry.word)
-    const removed = record?.status === 'new'
+    // 与 toItem 同一口径：只有墓碑算「不认识」（md/56 §18）
+    const removed = record?.source === 'basic-removed'
     const inLibrary = Boolean(record) && !removed
 
     if (inLibrary) counts.learned += 1
@@ -251,7 +253,7 @@ export async function listBasicWords({ userId, query, personalized = true }) {
 /**
  * 写一条「不认识」占位记录（md/29）。
  *
- *   · `getPersonalBasicWords` 的减法项就是 status=new 的词，写完立刻生效；
+ *   · `getPersonalBasicWords` 的减法项就是 `source: 'basic-removed'` 的记录，写完立刻生效；
  *   · 记录里带着词库快照，词汇页看到它时不会只剩一个光秃秃的单词。
  */
 async function createRemovedRecord(userId, entry) {
@@ -287,8 +289,8 @@ async function createRemovedRecord(userId, entry) {
  * DELETE /api/basic-words/:word —— 标记不认识（从个人基础词里移除）。
  *
  * 已经有记录时**不覆盖**：
- *   · status=new  → 已经是不认识了，重复操作给 409；
- *   · 其它状态    → 那条记录上挂着复习时间与曝光次数，覆盖等于抹掉学习进度。
+ *   · source=basic-removed → 已经是不认识了，重复操作给 409；
+ *   · 其它（用户词库里的词）→ 那条记录上挂着复习时间与曝光次数，覆盖等于抹掉学习进度。
  *
  * md/52 起这里同时清掉手动「认识」标记：两种状态互斥。
  */
@@ -299,7 +301,7 @@ export async function removeBasicWord({ userId, word }) {
   const existing = await repo.findOneByWord(userId, entry.word)
 
   if (existing) {
-    if (existing.status === 'new') throw basicWordAlreadyRemoved(entry.word)
+    if (existing.source === 'basic-removed') throw basicWordAlreadyRemoved(entry.word)
     throw basicWordAlreadyLearned(entry.word, existing.status)
   }
 
@@ -327,7 +329,8 @@ export async function restoreBasicWord({ userId, word }) {
 
   if (!existing) throw basicWordNotRemoved(entry.word)
 
-  if (existing.source !== 'basic-removed' || existing.status !== 'new') {
+  // 只认墓碑：用户自己在词库里加的词（哪怕状态也是 new）不在这里删
+  if (existing.source !== 'basic-removed') {
     throw basicWordAlreadyLearned(entry.word, existing.status)
   }
 
@@ -348,18 +351,14 @@ export async function setBasicWordState({ userId, word, body }) {
   assertRemovable(entry)
 
   const existing = await repo.findOneByWord(userId, entry.word)
-  const removed = existing?.status === 'new'
+  // 「不认识」只认墓碑；其余任何记录都是用户词库里的词，属于他的资产（md/56 §18）
+  const removed = existing?.source === 'basic-removed'
   const inLibrary = Boolean(existing) && !removed
-  // 用户自己在词汇页加的新词：它是用户的资产，基础词页不能删、也不能改
-  const ownNewWord = removed && existing.source !== 'basic-removed'
 
   if (state === 'known') {
     if (inLibrary) {
       // 词库里的词已经是认识；顺手清掉可能残留的手动标记
       await markRepo.deleteByWord(userId, entry.word)
-    } else if (ownNewWord) {
-      // 覆盖 status 等于抹掉学习进度，交给词汇页
-      throw basicWordAlreadyLearned(entry.word, existing.status)
     } else {
       // 未标记或 basic-removed 占位：先把「不认识」撤掉，再标记认识
       if (removed) await repo.deleteByWord(userId, entry.word)
@@ -373,9 +372,7 @@ export async function setBasicWordState({ userId, word, body }) {
     await markRepo.deleteByWord(userId, entry.word)
   } else {
     // state === 'none'：回到未标记，两边都清掉
-    if (inLibrary || ownNewWord) {
-      throw basicWordAlreadyLearned(entry.word, existing.status)
-    }
+    if (inLibrary) throw basicWordAlreadyLearned(entry.word, existing.status)
 
     await markRepo.deleteByWord(userId, entry.word)
     if (removed) await repo.deleteByWord(userId, entry.word)

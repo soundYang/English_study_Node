@@ -173,8 +173,9 @@ export function resolveDuplicate(existing, { status, meaning = '' } = {}) {
 
   if (existing.status !== nextStatus) {
     update.status = nextStatus
-    // 从「不认识」转正和普通状态互转是两件事：前者要连 source 一起改
-    action = existing.status === 'new' ? 'reactivated' : 'updated'
+    // 「转正」只对墓碑成立，由下面的 basic-removed 分支改写 action；
+    // 普通状态互转（含 new → learning）只是更新（md/56 §18）
+    action = 'updated'
   }
 
   const senses = existing.senses ?? []
