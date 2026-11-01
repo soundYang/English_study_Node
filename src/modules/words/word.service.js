@@ -90,7 +90,9 @@ export async function listWords({ userId, query }) {
   const rows = await repo.countByStatus(userId)
 
   return {
-    items: items.map(toWordDto),
+    // 不写 `items.map(toWordDto)`：map 会把下标当第二参传进去，
+    // 而 toWordDto 的第二参是 options，将来加字段时很容易被下标悄悄污染
+    items: items.map((item) => toWordDto(item)),
     total,
     page: currentPage,
     pageSize,
@@ -473,7 +475,7 @@ export async function getDailyPlan({ userId, now = new Date() }) {
       // 今天复习过多少个词。包含在文章里顺带复习到的池内词，
       // 所以它可能大于「今天原本到期的数量」——前端不要拿它反推 today
       doneToday,
-      words: words.map(toWordDto),
+      words: words.map((item) => toWordDto(item)),
     },
   }
 }

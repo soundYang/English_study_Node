@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 
 import { createApp } from '../app.js'
 import { config } from '../config/index.js'
+import { deriveStudyState } from '../modules/words/word.dto.js'
 import { Word } from '../modules/words/word.model.js'
 import {
   DAILY_REVIEW_LIMIT,
@@ -200,6 +201,64 @@ describe('POST /api/words/:id/review', () => {
     const res = await review(doc._id, 'pass')
 
     expect(res.status).toBe(400)
+  })
+})
+
+describe('studyState 派生字段（md/56 §14.4 方案 B）', () => {
+  it('今天加入的词显示为「新词」', async () => {
+    await seed([{ word: 'fresh' }])
+
+    const res = await request(app)
+      .get('/api/words')
+      .query({ q: 'fresh', status: 'all', page: 1, pageSize: 10 })
+
+    expect(res.body.items[0].studyState).toBe('new')
+  })
+
+  it('过夜后变成「复习中」，不需要前端参与', async () => {
+    await seed([{ word: 'aging' }])
+    await setCreatedAt('aging', 2)
+
+    const res = await request(app)
+      .get('/api/words')
+      .query({ q: 'aging', status: 'all', page: 1, pageSize: 10 })
+
+    expect(res.body.items[0].studyState).toBe('reviewing')
+  })
+
+  it('已掌握优先于「今天加入」', async () => {
+    await seed([{ word: 'todaydone', status: 'mastered' }])
+
+    const res = await request(app)
+      .get('/api/words')
+      .query({ q: 'todaydone', status: 'all', page: 1, pageSize: 10 })
+
+    expect(res.body.items[0].studyState).toBe('mastered')
+  })
+
+  it('基础词墓碑单独一档，不会跟「新词」混淆', async () => {
+    await seed([{ word: 'gone', status: 'new', source: 'basic-removed' }])
+
+    const res = await request(app)
+      .get('/api/words')
+      .query({ q: 'gone', status: 'all', page: 1, pageSize: 10 })
+
+    expect(res.body.items[0].studyState).toBe('removed')
+  })
+
+  it('跨零点即切换，不用等满 24 小时', () => {
+    // 昨天 23:50 加入的词，今早 00:10 就该是「复习中」
+    const now = new Date(2026, 10, 2, 0, 10)
+    const addedLateLastNight = new Date(2026, 10, 1, 23, 50)
+
+    expect(deriveStudyState({ status: 'learning', createdAt: addedLateLastNight }, now))
+      .toBe('reviewing')
+    expect(deriveStudyState({ status: 'learning', createdAt: new Date(2026, 10, 2, 9, 0) }, now))
+      .toBe('new')
+  })
+
+  it('createdAt 缺失时按老词处理，不凭空造出「新词」', () => {
+    expect(deriveStudyState({ status: 'learning' })).toBe('reviewing')
   })
 })
 
