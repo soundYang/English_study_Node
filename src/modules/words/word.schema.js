@@ -7,6 +7,15 @@ export const WORD_STATUSES = ['new', 'learning', 'mastered']
 export const WORD_STATUS_FILTERS = ['all', ...WORD_STATUSES]
 
 /**
+ * 列表接口允许的 `study` 取值（md/22 第 95 行 ① 的结论）。
+ *
+ * `status` 是数据库口径，`new` 那一档同时装着「今天加的」和「基础词墓碑」，
+ * 按它分档标签页怎么叫都不对。`study` 与 `WordDto.studyState` 一一对应，
+ * 标签页按它分，文案与徽章同源。
+ */
+export const WORD_STUDY_FILTERS = ['all', 'new', 'reviewing', 'mastered', 'removed']
+
+/**
  * GET /api/words 的 query。
  *
  * `_t` 是前端自动附加的时间戳，不在这里声明——zod 默认剥掉未知键，
@@ -18,6 +27,14 @@ export const listWordsQuerySchema = z.object({
     .max(45, '搜索词不能超过 45 个字符')
     .default(''),
   status: z.string({ error: '状态必须是字符串' }).default('all'),
+  // 与 WordDto.studyState 同一套口径（md/22 第 95 行）。传了非 all 的值时优先于 status
+  study: z.string({ error: '学习阶段必须是字符串' }).default('all'),
+  // 默认不返回基础词墓碑；只有想看「不认识」清单时才打开（study=removed 等价于打开）
+  // 不用 z.coerce.boolean()：Boolean('false') 是 true，传 "false" 反而会打开
+  includeRemoved: z
+    .enum(['true', 'false'], { error: 'includeRemoved 只能是 true / false' })
+    .default('false')
+    .transform((value) => value === 'true'),
   page: z.coerce
     .number({ error: '页码必须是数字' })
     .int('页码必须是整数')

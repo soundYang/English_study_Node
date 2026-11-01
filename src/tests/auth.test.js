@@ -375,6 +375,7 @@ describe('令牌 → 数据域（AUTH_ENFORCED=false）', () => {
       page: 1,
       pageSize: 10,
       counts: { all: 0, mastered: 0, learning: 0, new: 0 },
+      studyCounts: { all: 0, new: 0, reviewing: 0, mastered: 0, removed: 0 },
     })
   })
 

@@ -18,11 +18,44 @@ export const wordRepository = {
     return Word.countDocuments(filter)
   },
 
-  /** 按 status 分组计数；调用方保证只按 userId 匹配，不要带筛选条件 */
-  countByStatus(userId) {
+  /**
+   * 按 status 分组计数；调用方保证只按 userId 匹配，不要带筛选条件。
+   *
+   * `includeRemoved=false` 时排除基础词墓碑（md/22 第 95 行 ③）：
+   * 墓碑不是用户的词，把它算进「共 N 个词」会让词库页的数字对不上列表。
+   */
+  countByStatus(userId, { includeRemoved = false } = {}) {
+    const match = { userId }
+    if (!includeRemoved) match.source = { $ne: 'basic-removed' }
+
+    return Word.aggregate([
+      { $match: match },
+      { $group: { _id: '$status', n: { $sum: 1 } } },
+    ])
+  },
+
+  /**
+   * 按 `studyState` 分档计数（md/22 第 95 行 ①）。
+   *
+   * 与 `WordDto.studyState` 的判定顺序一致：墓碑 → 已掌握 → 今天加的 → 其余。
+   * 顺序错了会出现「墓碑被算进新词」「已掌握被算进复习中」这类对不上的数字。
+   *
+   * 分组在数据库里做：只回 3~4 行，比把整个词库拉进内存再数便宜得多。
+   */
+  countByStudyState(userId, today) {
     return Word.aggregate([
       { $match: { userId } },
-      { $group: { _id: '$status', n: { $sum: 1 } } },
+      {
+        $group: {
+          _id: {
+            removed: { $eq: ['$source', 'basic-removed'] },
+            status: '$status',
+            // createdAt 缺失时 $gte 为 false，落到「复习中」——与 deriveStudyState 的兜底一致
+            today: { $gte: ['$createdAt', today] },
+          },
+          n: { $sum: 1 },
+        },
+      },
     ])
   },
 

@@ -19,9 +19,10 @@ const seed = (docs) =>
   Word.insertMany(docs.map((doc) => ({ userId: uid, source: 'manual', ...doc })))
 
 const EMPTY_COUNTS = { all: 0, mastered: 0, learning: 0, new: 0 }
+const EMPTY_STUDY_COUNTS = { all: 0, new: 0, reviewing: 0, mastered: 0, removed: 0 }
 
 describe('GET /api/words', () => {
-  it('空库返回齐全的 counts 四个键', async () => {
+  it('空库返回齐全的 counts / studyCounts', async () => {
     const res = await get({ q: '', status: 'all', page: 1, pageSize: 10, _t: 1 })
 
     expect(res.status).toBe(200)
@@ -31,6 +32,7 @@ describe('GET /api/words', () => {
       page: 1,
       pageSize: 10,
       counts: EMPTY_COUNTS,
+      studyCounts: EMPTY_STUDY_COUNTS,
     })
   })
 
@@ -47,6 +49,104 @@ describe('GET /api/words', () => {
     expect(res.body.total).toBe(1)
     expect(res.body.items).toHaveLength(1)
     expect(res.body.counts).toEqual({ all: 3, mastered: 1, learning: 1, new: 1 })
+  })
+
+  it('studyCounts 按学习阶段分档，与 counts 的口径互不干扰', async () => {
+    await seed([
+      { word: 'alpha', status: 'mastered' },
+      // 今天加但已经设成 learning：按 studyState 仍算「新词」
+      { word: 'beta', status: 'learning' },
+    ])
+
+    const res = await get({ q: '', status: 'all', page: 1, pageSize: 10 })
+
+    expect(res.body.counts).toEqual({ all: 2, mastered: 1, learning: 1, new: 0 })
+    expect(res.body.studyCounts).toEqual({
+      all: 2,
+      new: 1,
+      reviewing: 0,
+      mastered: 1,
+      removed: 0,
+    })
+  })
+
+  it('study=new 只看今天加的，不受 status 影响', async () => {
+    const [old] = await seed([
+      { word: 'oldie', status: 'learning' },
+      { word: 'fresh', status: 'learning' },
+    ])
+    // 绕过 timestamps 造一条昨天的词：走 save() 会被自动改回今天
+    await Word.collection.updateOne(
+      { _id: old._id },
+      { $set: { createdAt: new Date(Date.now() - 2 * 24 * 3600 * 1000) } },
+    )
+
+    const fresh = await get({ q: '', study: 'new', page: 1, pageSize: 10 })
+    const reviewing = await get({ q: '', study: 'reviewing', page: 1, pageSize: 10 })
+
+    expect(fresh.body.items.map((item) => item.word)).toEqual(['fresh'])
+    expect(reviewing.body.items.map((item) => item.word)).toEqual(['oldie'])
+  })
+
+  it('study 有值时优先于 status', async () => {
+    await seed([{ word: 'alpha', status: 'mastered' }])
+
+    // status 说只看 new，study 说只看已掌握——后者说了算
+    const res = await get({ q: '', status: 'new', study: 'mastered', page: 1, pageSize: 10 })
+
+    expect(res.body.items.map((item) => item.word)).toEqual(['alpha'])
+  })
+
+  it('默认排除基础词墓碑，counts / studyCounts 一起排除', async () => {
+    await seed([
+      { word: 'kept', status: 'learning' },
+      { word: 'gone', status: 'new', source: 'basic-removed' },
+    ])
+
+    const res = await get({ q: '', status: 'all', page: 1, pageSize: 10 })
+
+    expect(res.body.items.map((item) => item.word)).toEqual(['kept'])
+    expect(res.body.total).toBe(1)
+    expect(res.body.counts.all).toBe(1)
+    // removed 单独成档，但不计入 all
+    expect(res.body.studyCounts).toEqual({
+      all: 1,
+      new: 1,
+      reviewing: 0,
+      mastered: 0,
+      removed: 1,
+    })
+  })
+
+  it('includeRemoved=true 时墓碑回到列表', async () => {
+    await seed([
+      { word: 'kept', status: 'learning' },
+      { word: 'gone', status: 'new', source: 'basic-removed' },
+    ])
+
+    const res = await get({ q: '', status: 'all', includeRemoved: 'true', page: 1, pageSize: 10 })
+
+    expect(res.body.total).toBe(2)
+    expect(res.body.counts.all).toBe(2)
+  })
+
+  it('study=removed 只返回墓碑，不受 includeRemoved 影响', async () => {
+    await seed([
+      { word: 'kept', status: 'learning' },
+      { word: 'gone', status: 'new', source: 'basic-removed' },
+    ])
+
+    const res = await get({ q: '', study: 'removed', page: 1, pageSize: 10 })
+
+    expect(res.body.items.map((item) => item.word)).toEqual(['gone'])
+    expect(res.body.items[0].studyState).toBe('removed')
+  })
+
+  it('includeRemoved 只认 true / false，其它值 → 400', async () => {
+    const res = await get({ q: '', includeRemoved: '1' })
+
+    expect(res.status).toBe(400)
+    expect(res.body.error.field).toBe('includeRemoved')
   })
 
   it('total 随 q 筛选变化，counts 不变', async () => {

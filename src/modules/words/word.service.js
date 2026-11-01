@@ -36,6 +36,7 @@ import { wordRepository as repo } from './word.repository.js'
 import {
   WORD_STATUSES,
   WORD_STATUS_FILTERS,
+  WORD_STUDY_FILTERS,
   createWordSchema,
   reviewBatchSchema,
   reviewWordSchema,
@@ -48,12 +49,40 @@ import { settleDailyWords } from './word-settlement.js'
 const READONLY_FIELDS = ['source', 'dictionaryId', 'phonetic', 'senses']
 
 /**
+ * 把 `study` 参数翻成 Mongo 过滤条件，与 `WordDto.studyState` 一一对应。
+ *
+ * 判定顺序必须和 `deriveStudyState` 一致：墓碑 → 已掌握 → 今天加的 → 其余。
+ * 顺序错了会出现「已掌握的词出现在复习中」「墓碑被算进新词」这类对不上的筛结果。
+ */
+function buildStudyFilter(study, today) {
+  const notRemoved = { source: { $ne: 'basic-removed' } }
+
+  switch (study) {
+    case 'new':
+      return { ...notRemoved, status: { $ne: 'mastered' }, createdAt: { $gte: today } }
+    case 'reviewing':
+      return { ...notRemoved, status: { $ne: 'mastered' }, createdAt: { $lt: today } }
+    case 'mastered':
+      return { ...notRemoved, status: 'mastered' }
+    case 'removed':
+      return { source: 'basic-removed' }
+    default:
+      return {}
+  }
+}
+
+/**
  * GET /api/words
  *
  * 三个口径必须同时满足：
- *   counts —— 全量，不带任何筛选
- *   total  —— 带 q 和 status 筛选
- *   page   —— 越界收敛到最后一页，并把收敛后的值返回
+ *   counts      —— 全量，不带 q / status / study 筛选
+ *   studyCounts —— 按学习阶段分档，供标签页显示数字
+ *   total       —— 带 q、status（或 study）筛选
+ *   page        —— 越界收敛到最后一页，并把收敛后的值返回
+ *
+ * 默认**不返回**基础词墓碑（`source='basic-removed'`）：那是用户在基础词页
+ * 标「不认识」留下的占位记录，不是他的词，混在词库里会让「共 N 个词」对不上列表。
+ * 想看就说 `includeRemoved=true`，或直接 `study=removed`。
  */
 export async function listWords({ userId, query }) {
   // 先结算再查（md/56 §5.3）：用户第二天打开词库，昨天的新词要已经是「复习中」。
@@ -61,14 +90,22 @@ export async function listWords({ userId, query }) {
   // 是因为服务器重启不会漏、多实例也不会重复结算。
   await settleDailyWords(userId)
 
-  const { q, page, pageSize } = query
-  // status 传了未知值就按「不筛选」处理：契约里没定义这个 400
-  const status = WORD_STATUS_FILTERS.includes(query.status)
-    ? query.status
-    : 'all'
+  const { q, page, pageSize, includeRemoved } = query
+  // 未知值按「不筛选」处理：契约里没定义这个 400
+  const status = WORD_STATUS_FILTERS.includes(query.status) ? query.status : 'all'
+  const study = WORD_STUDY_FILTERS.includes(query.study) ? query.study : 'all'
+  const today = startOfLocalDay(new Date())
 
   const filter = { userId }
-  if (status !== 'all') filter.status = status
+
+  if (study !== 'all') {
+    // study 有值时优先于 status：两者是两套口径，同时传只会让人猜哪个生效
+    Object.assign(filter, buildStudyFilter(study, today))
+  } else {
+    if (status !== 'all') filter.status = status
+    // 默认排除墓碑；study=removed 走的是另一个分支，不受这里影响
+    if (!includeRemoved) filter.source = { $ne: 'basic-removed' }
+  }
 
   // 空串表示不搜索，不能当成「匹配空字符串」去扫全表
   if (q) {
@@ -89,7 +126,11 @@ export async function listWords({ userId, query }) {
           limit: pageSize,
         })
 
-  const rows = await repo.countByStatus(userId)
+  // 两套计数并发取：两者互不依赖，串行只是白等一个来回
+  const [statusRows, studyRows] = await Promise.all([
+    repo.countByStatus(userId, { includeRemoved }),
+    repo.countByStudyState(userId, today),
+  ])
 
   return {
     // 不写 `items.map(toWordDto)`：map 会把下标当第二参传进去，
@@ -98,7 +139,8 @@ export async function listWords({ userId, query }) {
     total,
     page: currentPage,
     pageSize,
-    counts: foldCounts(rows),
+    counts: foldCounts(statusRows),
+    studyCounts: foldStudyCounts(studyRows),
   }
 }
 
@@ -113,6 +155,37 @@ function foldCounts(rows) {
 
   for (const row of rows) {
     if (row._id in counts) counts[row._id] = row.n
+    counts.all += row.n
+  }
+
+  return counts
+}
+
+/**
+ * 把 `countByStudyState` 的聚合结果折成五档（md/22 第 95 行 ②）。
+ *
+ * 判定顺序与 `deriveStudyState` 一致，逐条对应它不可能同时成立的四个分支：
+ *   墓碑 → 已掌握 → 今天加的 → 其余。
+ *
+ * `all` **不含** `removed`：标签页「全部」点进去发的是不带参数的请求，
+ * 默认就排除墓碑；把墓碑算进 all 会让标签上的数字和列表条数对不上。
+ * `removed` 单独成档，是「不认识」入口自己的数字。
+ */
+function foldStudyCounts(rows) {
+  const counts = { all: 0, new: 0, reviewing: 0, mastered: 0, removed: 0 }
+
+  for (const row of rows) {
+    const { removed, status, today } = row._id
+
+    if (removed) {
+      counts.removed += row.n
+      continue
+    }
+
+    if (status === 'mastered') counts.mastered += row.n
+    else if (today) counts.new += row.n
+    else counts.reviewing += row.n
+
     counts.all += row.n
   }
 

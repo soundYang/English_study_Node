@@ -239,9 +239,16 @@ describe('studyState 派生字段（md/56 §14.4 方案 B）', () => {
   it('基础词墓碑单独一档，不会跟「新词」混淆', async () => {
     await seed([{ word: 'gone', status: 'new', source: 'basic-removed' }])
 
-    const res = await request(app)
+    // 墓碑默认不进列表（md/22 第 95 行 ③），要看就 study=removed
+    const hidden = await request(app)
       .get('/api/words')
       .query({ q: 'gone', status: 'all', page: 1, pageSize: 10 })
+
+    expect(hidden.body.items).toHaveLength(0)
+
+    const res = await request(app)
+      .get('/api/words')
+      .query({ q: 'gone', study: 'removed', page: 1, pageSize: 10 })
 
     expect(res.body.items[0].studyState).toBe('removed')
   })
