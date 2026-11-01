@@ -400,8 +400,16 @@ export const basicWordNotFound = (word) =>
 export const basicWordAlreadyRemoved = (word) =>
   conflict(ERROR_CODES.BASIC_WORD_ALREADY_REMOVED, `“${word}”已经标记为不认识了。`)
 
-/** 个人词库状态的中文名；提示语里不要直接露 new / mastered */
-const PERSONAL_STATUS_LABELS = Object.freeze({ new: '不认识', learning: '学习中', mastered: '已掌握' })
+/**
+ * 个人词库状态的中文名；提示语里不要直接露 new / mastered。
+ *
+ * `new` 的对外叫法由「不认识」改为「复习中」（2026-11-01 产品口径，md/22 第 84 行）：
+ * 用户自己在词汇页加的词、还没开始学，界面上一直显示「未学习」，与「复习中」统一。
+ * 基础词页标「不认识」产生的 `source: 'basic-removed'` 占位词也是 `status: 'new'`，
+ * 但它们走不到这条提示（见 basic-words.service.js 的 ownNewWord 分支），
+ * 所以这里不必按 source 再分叉。前端侧的同名改动见 md/22 第 84 行。
+ */
+const PERSONAL_STATUS_LABELS = Object.freeze({ new: '复习中', learning: '学习中', mastered: '已掌握' })
 
 /**
  * 这个词已经在个人词库里（learning / mastered / 手动加的 new）。
