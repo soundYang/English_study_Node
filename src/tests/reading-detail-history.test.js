@@ -70,6 +70,8 @@ describe('GET /api/readings/:id · 未提交分支', () => {
       'targetWords',
       'title',
       'tokenUsage',
+      // md/56 §6.3：本篇实际用到的用户词
+      'usedWords',
     ])
     expect(res.body.status).toBe('generated')
     expect(res.body.questions).toHaveLength(3)

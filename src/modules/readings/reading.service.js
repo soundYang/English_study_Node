@@ -16,6 +16,7 @@ import { logger } from '../../shared/logger.js'
 import { parseOrThrow } from '../../shared/utils/validation.js'
 import { freeAiKey } from '../ai-keys/ai-key.service.js'
 import { wordRepository } from '../words/word.repository.js'
+import { nextReviewAtAfterPass } from '../words/review-schedule.js'
 import { settleDailyWords } from '../words/word-settlement.js'
 import { ABBREVIATION_WORDS } from './abbreviations.js'
 import {
@@ -58,7 +59,7 @@ import {
   submitReadingSchema,
 } from './reading.schema.js'
 import { buildTargetPlan } from './target-plan.js'
-import { collectWordForms, validateArticle } from './vocabulary.service.js'
+import { collectWordForms, countWordForms, validateArticle } from './vocabulary.service.js'
 import { describeNewWord } from './word-detail.js'
 import { requiredTargetWords, selectVocabularyPool } from './vocabulary-pool.js'
 import {
@@ -88,6 +89,36 @@ function pickUsedWords(candidates, article) {
   const forms = collectWordForms(article)
 
   return [...forms].filter((word) => candidateSet.has(word))
+}
+
+/**
+ * 本篇实际用到的用户词，带次数与来源分类（md/56 §4.2 / §6.1）。
+ *
+ * 分类口径按「这个词在这篇里承担什么角色」定，不按状态定：
+ *   focus  计划里的重点词（用户自选的那批优先，其次是自动补的）
+ *   target 计划里的普通目标词
+ *   pool   候选池里恰好被正文用上的词
+ *
+ * 为什么 `pool` 也要单独存一档：交卷时**只有 focus / target 推进复习轮次**。
+ * 一篇 800 词的文章会顺带用到几十个池内词，用户并没有定向复习它们，
+ * 拿它们算轮次会让「复习」两天就失效（§6.2）。
+ *
+ * 排序按次数倒序、同次数按字母序：前端直接渲染即可，
+ * 不排序的话 MongoDB 存回去的顺序取决于正文出现先后，两个用户看到的层级不一样。
+ */
+function buildUsedWords({ candidates, article, focusWords = [], targetWords = [] }) {
+  const lower = (word) => String(word).toLowerCase()
+  const focus = new Set(focusWords.map(lower))
+  const target = new Set(targetWords.map(lower))
+  const counts = countWordForms(article, new Set(candidates.map(lower)))
+
+  return [...counts]
+    .map(([word, count]) => ({
+      word,
+      count,
+      kind: focus.has(word) ? 'focus' : target.has(word) ? 'target' : 'pool',
+    }))
+    .sort((a, b) => b.count - a.count || a.word.localeCompare(b.word))
 }
 
 /**
@@ -1166,6 +1197,16 @@ async function generateReadingInner({ userId, body, signal, diag, onProgress, re
   // 落库前最后一条进度：之后 frontend 会立刻拿到 readingId
   await report({ stage: 'saving' })
 
+  // 本篇实际用词：数据在 markExposure 那一步已经算过一遍，这里只多带出次数与分类。
+  // 落库而不是每次读时重算——正文是快照，用户的词库却会变，
+  // 重算会把「今天用过的词」算成「用户后来删掉/改状态的词」（md/56 §4.2）。
+  const usedWords = buildUsedWords({
+    candidates: learnedWords,
+    article: data.article,
+    focusWords: plan.focusWords,
+    targetWords: plan.targetWords,
+  })
+
   const doc = await repo.create({
     userId,
     title: data.title,
@@ -1177,6 +1218,7 @@ async function generateReadingInner({ userId, body, signal, diag, onProgress, re
     actualWords,
     questions: data.questions,
     vocabularySnapshot,
+    usedWords,
     newWords,
     targetPlan: {
       scope: selection.scope,
@@ -1247,7 +1289,9 @@ async function generateReadingInner({ userId, body, signal, diag, onProgress, re
   try {
     await wordRepository.markExposure({
       userId,
-      words: pickUsedWords(learnedWords, data.article),
+      // 复用上面算好的结果：集合与 pickUsedWords(learnedWords, article) 完全一致，
+      // 但不用再把正文扫第二遍
+      words: usedWords.map((item) => item.word),
       at: new Date(),
     })
   } catch (error) {
@@ -1409,6 +1453,72 @@ function parseAnswers(body) {
 }
 
 /**
+ * 交卷后的复习回写（md/56 §6.2）。
+ *
+ * 分两种，口径写在 `usedWords.kind` 里：
+ *   pool          只更新 `lastReviewedAt`（P2 之前的行为，保持不变）
+ *   focus / target 推进一轮复习；到掌握线转 `mastered`
+ *
+ * **为什么只让 focus / target 推进轮次**：一篇 800 词的文章会顺带用到几十个池内词，
+ * 用户并没有定向复习它们。如果也推进，点一次交卷就能把大半个词库的轮次刷上去，
+ * 「复习」两天就失效了。
+ *
+ * 老文章没有 `usedWords`（P2 之前生成的），退回「正文 ∩ 词表快照」全部按 pool 处理，
+ * 行为与改造前完全一致，不会给历史文章凭空补轮次。
+ */
+async function applySubmitReview({ userId, reading }) {
+  const at = reading.submittedAt ?? new Date()
+  const stored = reading.usedWords ?? []
+
+  const entries = stored.length
+    ? stored.map((item) => ({ word: item.word, kind: item.kind }))
+    : pickUsedWords(reading.vocabularySnapshot ?? [], reading.article)
+        .map((word) => ({ word, kind: 'pool' }))
+
+  if (!entries.length) return
+
+  const advanceWords = entries.filter((item) => item.kind !== 'pool').map((item) => item.word)
+  const touchWords = entries.filter((item) => item.kind === 'pool').map((item) => item.word)
+
+  const updates = []
+
+  if (advanceWords.length) {
+    const docs = await wordRepository.findByWords(
+      userId,
+      advanceWords,
+      'word status reviewStage source',
+    )
+
+    for (const doc of docs) {
+      // 基础词墓碑不是用户的词，不能因为「恰好被用进文章」就被复活
+      if (doc.source === 'basic-removed') continue
+
+      // 已掌握的不再推进：mastered 本来就退出了复习队列，
+      // 再往上加轮次只会让它离「已掌握」越来越远，没有任何意义
+      if (doc.status === 'mastered') {
+        touchWords.push(doc.word)
+        continue
+      }
+
+      const stage = (doc.reviewStage ?? 0) + 1
+
+      updates.push({
+        word: doc.word,
+        stage,
+        // null = 已达掌握线，写回时转 mastered
+        nextReviewAt: nextReviewAtAfterPass(stage, at),
+      })
+    }
+  }
+
+  await wordRepository.markReviewed({ userId, words: touchWords, at })
+
+  if (updates.length) {
+    await wordRepository.applyReviewBatch({ userId, updates, at })
+  }
+}
+
+/**
  * POST /api/readings/:id/submit
  *
  * 1. 校验答案数组的结构
@@ -1479,14 +1589,9 @@ export async function submitReading({ userId, id, body }) {
   // 不能拿整库取交集——the / is 这类词每篇都有，写进去等于把 today_reviewed 泡成第二份全库。
   // submitIfGenerated 已经保证只有第一次提交能走到这里，重复提交不会二次写时间。
   try {
-    const usedWords = pickUsedWords(updated.vocabularySnapshot ?? [], updated.article)
-    await wordRepository.markReviewed({
-      userId,
-      words: usedWords,
-      at: updated.submittedAt ?? new Date(),
-    })
+    await applySubmitReview({ userId, reading: updated })
   } catch (error) {
-    logger.error({ err: error, userId, id }, 'reading submit: markReviewed failed')
+    logger.error({ err: error, userId, id }, 'reading submit: review writeback failed')
   }
 
   return toResultDto(updated)

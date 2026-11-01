@@ -401,3 +401,38 @@ export function collectWordForms(article) {
 
   return forms
 }
+
+/**
+ * 正文里每个候选词实际出现了几次（md/56 §4.2）。
+ *
+ * 与 `collectWordForms` 的差别只有一条：**带次数**，且只统计传入的候选词。
+ *
+ * 一个 token 可能同时还原出多个形式（`ran` → `ran` / `run`），
+ * 这些形式都属于**同一个** token，所以按 token 去重后再加一，
+ * 否则 `ran` 这种不规则变形会把次数翻倍，用户看到的「出现 6 次」是假的。
+ *
+ * @param {string} article 正文
+ * @param {Iterable<string>} candidates 候选词（已小写的原形）
+ * @returns {Map<string, number>} 候选词 → 出现次数
+ */
+export function countWordForms(article, candidates) {
+  const candidateSet = candidates instanceof Set ? candidates : new Set(candidates)
+  const counts = new Map()
+
+  if (!candidateSet.size) return counts
+
+  for (const rawToken of tokenize(article)) {
+    const matched = new Set()
+
+    for (const word of expandToken(rawToken)) {
+      if (candidateSet.has(word)) matched.add(word)
+      for (const base of resolveBaseForms(word)) {
+        if (candidateSet.has(base)) matched.add(base)
+      }
+    }
+
+    for (const word of matched) counts.set(word, (counts.get(word) ?? 0) + 1)
+  }
+
+  return counts
+}

@@ -157,7 +157,7 @@ describe('POST /api/readings/generate · 词汇量闸门', () => {
 })
 
 describe('POST /api/readings/generate · 正常生成', () => {
-  it('返回 201，且 DTO 恰好 13 个字段', async () => {
+  it('返回 201，且 DTO 恰好 14 个字段', async () => {
     await seedWords(400)
     chatJson.mockResolvedValue(reply(makePayload()))
 
@@ -178,6 +178,8 @@ describe('POST /api/readings/generate · 正常生成', () => {
       'targetWords',
       'title',
       'tokenUsage',
+      // md/56 §6.3：本篇实际用到的用户词
+      'usedWords',
     ])
     expect(res.body.status).toBe('generated')
     expect(res.body.level).toBe('easy')

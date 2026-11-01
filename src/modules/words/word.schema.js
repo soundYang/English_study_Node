@@ -79,6 +79,33 @@ export const reviewWordSchema = z.object({
   }),
 })
 
+/**
+ * 一次批量自评的上限（md/56 §8.1）。
+ *
+ * 200 = 一天的复习上限（50）的四倍：既够用户把积压连续清几拨，
+ * 又不至于让别人用一个请求刷出几千次写。
+ */
+export const MAX_REVIEW_BATCH = 200
+
+/**
+ * POST /api/words/review/batch 的请求体。
+ *
+ * 只收 `id`，不收 `word`：词形可以被用户改（PATCH 支持改词），
+ * 用词形当键会在改词后指向一个已经不存在的词。`id` 是稳定的。
+ */
+export const reviewBatchSchema = z.object({
+  items: z
+    .array(
+      z.object({
+        id: z.string({ error: 'id 必须是字符串' }),
+        result: z.enum(['pass', 'lapse'], { error: 'result 只能是 pass 或 lapse' }),
+      }),
+      { error: 'items 必须是 { id, result } 的数组' },
+    )
+    .min(1, '至少提供 1 个词')
+    .max(MAX_REVIEW_BATCH, `一次最多自评 ${MAX_REVIEW_BATCH} 个词`),
+})
+
 /** 一次批量导入的上限（md/44 §5.4）。200 条已覆盖「一整课单词」的极端情况 */
 export const MAX_BATCH_WORDS = 200
 /** 粘贴文本上限；express.json 是 64kb，留一半给 JSON 结构 */

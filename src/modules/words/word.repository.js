@@ -208,6 +208,80 @@ export const wordRepository = {
     )
   },
 
+  /**
+   * 批量推进复习轮次：交卷回写（md/56 §6.2）与批量自评（§8.1）共用。
+   *
+   * 三种结果按写回内容区分，不在调用方重复一遍「怎么写」：
+   *   lapse: true           没记住 —— 轮次归零、计数 +1、按传入的时间再来
+   *   nextReviewAt === null 已达掌握线 —— 转 mastered，退出队列
+   *   其余                  通过一轮 —— 记轮次与下次复习时间
+   *
+   * 过滤条件里带 `source: { $ne: 'basic-removed' }`：即使调用方漏判，
+   * 基础词墓碑也不会被复活（同 `settleDailyWords` 的原因）。
+   *
+   * `ordered: false`：一篇文章的十几个 focus/target 互不依赖，
+   * 其中一条写失败不应该拦住其它词。
+   *
+   * @param {Array<{word: string, stage: number, nextReviewAt: Date|null, lapse?: boolean}>} updates
+   */
+  applyReviewBatch({ userId, updates, at }) {
+    if (!updates.length) return Promise.resolve({ modifiedCount: 0 })
+
+    return Word.bulkWrite(
+      updates.map((item) => ({
+        updateOne: {
+          filter: { userId, word: item.word, source: { $ne: 'basic-removed' } },
+          update: item.lapse
+            ? {
+                $set: {
+                  status: 'learning',
+                  reviewStage: 0,
+                  nextReviewAt: item.nextReviewAt,
+                  lastResult: 'lapse',
+                  lastReviewedAt: at,
+                },
+                $inc: { lapseCount: 1 },
+              }
+            : item.nextReviewAt === null
+              ? {
+                  $set: {
+                    status: 'mastered',
+                    reviewStage: item.stage,
+                    nextReviewAt: null,
+                    lastResult: 'pass',
+                    lastReviewedAt: at,
+                    masteredAt: at,
+                  },
+                }
+              : {
+                  $set: {
+                    status: 'learning',
+                    reviewStage: item.stage,
+                    nextReviewAt: item.nextReviewAt,
+                    lastResult: 'pass',
+                    lastReviewedAt: at,
+                  },
+                },
+        },
+      })),
+      { ordered: false },
+    )
+  },
+
+  /**
+   * 按 id 批量取词，供批量自评用（md/56 §8.1）。
+   *
+   * 非法 id 在 service 层已被过滤，这里不做 `isValidObjectId` 判断——
+   * 混进一个非法值会让整个 `$in` 抛 CastError，一条坏数据拖垮一批正常请求。
+   */
+  findByIdsAndUser(ids, userId, select) {
+    if (!ids.length) return Promise.resolve([])
+
+    const query = Word.find({ _id: { $in: ids }, userId })
+
+    return (select ? query.select(select) : query).lean()
+  },
+
   create(data) {
     return Word.create(data)
   },

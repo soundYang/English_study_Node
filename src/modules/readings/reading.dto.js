@@ -60,6 +60,13 @@ export function toSafeDto(doc) {
     // md/54：用户自选词的命中情况。老文档没有 selectedWords / targetUsage，
     // 两个数组都回空——字段始终存在，前端不用判 undefined。
     focusWords: buildFocusWords(doc),
+    // md/56 §6.3：本篇实际用到了用户的哪些词。P2 之前生成的文档没有这个字段，
+    // 回空数组而不是 null，前端不用判空类型。
+    //
+    // 只回 `word / count / kind` 三个**落库时的事实**，不回 `status / reviewStage`：
+    // 那是词库此刻的状态，跟这篇历史文章没关系，塞进来会让同一篇文章两次刷新
+    // 显示不同的结果。前端要显示当前状态，拿 `word` 去词汇页那份列表里查即可。
+    usedWords: (doc.usedWords ?? []).map(({ word, count, kind }) => ({ word, count, kind })),
     tokenUsage: {
       promptTokens: doc.aiMeta?.promptTokens ?? 0,
       completionTokens: doc.aiMeta?.completionTokens ?? 0,

@@ -14,6 +14,7 @@ import {
   getDailyPlan,
   listWords,
   reviewWord,
+  reviewWords,
   updateWord,
 } from './word.service.js'
 
@@ -184,6 +185,17 @@ router.patch('/:id', writeLimiter, async (req, res) => {
 
 router.delete('/:id', writeLimiter, async (req, res) => {
   res.json(await deleteWord({ userId: req.userId, id: req.params.id }))
+})
+
+/**
+ * 批量自评（md/56 §8.1）：`{ items: [{ id, result }] }`。
+ *
+ * 必须挂在 `/:id/review` **之前**：虽然 `/:id/review` 的第二段是字面量
+ * `review`、匹配不到 `/review/batch`，但静态路径先挂是本仓库的惯例
+ * （batch / check 也是这么排的），以后加 `GET /review/xxx` 时不会踩坑。
+ */
+router.post('/review/batch', writeLimiter, async (req, res) => {
+  res.json(await reviewWords({ userId: req.userId, body: req.body ?? {} }))
 })
 
 /**

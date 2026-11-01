@@ -37,6 +37,7 @@ import {
   WORD_STATUSES,
   WORD_STATUS_FILTERS,
   createWordSchema,
+  reviewBatchSchema,
   reviewWordSchema,
   updateWordSchema,
 } from './word.schema.js'
@@ -528,4 +529,80 @@ export async function reviewWord({ userId, id, body }) {
 
   // 重新读一次再转 DTO：用算好的结果构造，避免和 repository 的写逻辑重复一遍
   return toWordDto(await repo.findByIdAndUser(id, userId))
+}
+
+/**
+ * POST /api/words/review/batch（md/56 §8.1）
+ *
+ * 一天的复习上限是 50 个词，逐个点「通过」要发 50 次请求。
+ * 这个接口把它们合成一次，语义与单个自评完全一致。
+ *
+ * **单项失败不拖垮整批**：不存在的 id、墓碑词都进 `skipped` 并说明原因，
+ * 其余照常写。批量接口最忌讳「一条不对就全失败」——用户点了 30 个，
+ * 其中一个已被删掉，前面 29 次操作白做。
+ *
+ * 同一个 id 传两次以**最后一次**为准：连点两次「通过」不该把轮次推两轮，
+ * 而 bulkWrite 里同一 filter 出现两条会真的写两次。
+ */
+export async function reviewWords({ userId, body }) {
+  const parsed = parseOrThrow(reviewBatchSchema, body)
+  const now = new Date()
+
+  const results = new Map()
+  for (const item of parsed.items) results.set(item.id, item.result)
+
+  const validIds = [...results.keys()].filter((id) => mongoose.isValidObjectId(id))
+  const docs = await repo.findByIdsAndUser(validIds, userId, 'word status reviewStage source')
+  const byId = new Map(docs.map((doc) => [String(doc._id), doc]))
+
+  const skipped = []
+  const updates = []
+  const writtenIds = []
+
+  // 按请求顺序遍历：skipped 的顺序要和用户点的顺序一致，
+  // 否则前端按 id 回填时对不上号
+  for (const [id, result] of results) {
+    // 非法 id 与「查不到」对外是同一个结果：这个词不在你的库里
+    if (!mongoose.isValidObjectId(id)) {
+      skipped.push({ id, reason: 'NOT_FOUND' })
+      continue
+    }
+
+    const doc = byId.get(id)
+
+    if (!doc) {
+      skipped.push({ id, reason: 'NOT_FOUND' })
+      continue
+    }
+
+    // 与单个自评同一口径：墓碑词不能被自评复活，否则用户标过的「不认识」凭空失效
+    if (doc.source === 'basic-removed') {
+      skipped.push({ id, reason: 'BASIC_REMOVED' })
+      continue
+    }
+
+    const lapse = result === 'lapse'
+    const stage = lapse ? 0 : (doc.reviewStage ?? 0) + 1
+
+    updates.push({
+      word: doc.word,
+      stage,
+      nextReviewAt: lapse ? nextReviewAtAfterLapse(now) : nextReviewAtAfterPass(stage, now),
+      lapse,
+    })
+    writtenIds.push(id)
+  }
+
+  if (updates.length) await repo.applyReviewBatch({ userId, updates, at: now })
+
+  // 回写后的状态再读一次：前端据此就地更新列表，不用整页重拉
+  const updated = writtenIds.length
+    ? await repo.findByIdsAndUser(writtenIds, userId)
+    : []
+
+  return {
+    updated: updates.length,
+    skipped,
+    words: updated.map((item) => toWordDto(item)),
+  }
 }
