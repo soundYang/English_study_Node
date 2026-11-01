@@ -138,6 +138,28 @@ export const wordRepository = {
     return Word.countDocuments({ userId, status: 'learning', nextReviewAt: { $lte: now } })
   },
 
+  /**
+   * 已掌握词的规模与平均轮次（md/56 §10 P3）。
+   *
+   * `MASTER_STAGE` 是 2，平均轮次明显高于 2 说明用户老是「没记住」、
+   * 反复回到起点——这正是复习曲线该被调参的信号。
+   * 没有已掌握词时返回 0 而不是 NaN：`$avg` 对空集合返回 null。
+   */
+  async masterySummary(userId) {
+    const [row] = await Word.aggregate([
+      { $match: { userId, status: 'mastered' } },
+      { $group: { _id: null, count: { $sum: 1 }, avgStage: { $avg: '$reviewStage' } } },
+    ])
+
+    if (!row) return { count: 0, avgStage: 0 }
+
+    return {
+      count: row.count,
+      // 保留一位小数：1.4 比 1.3913043478260869 好读，也够用
+      avgStage: Math.round((row.avgStage ?? 0) * 10) / 10,
+    }
+  },
+
   /** 今天已经复习过的词数（交过卷、且那次交卷落在今天） */
   countReviewedBetween({ userId, from, to }) {
     return Word.countDocuments({ userId, lastReviewedAt: { $gte: from, $lt: to } })

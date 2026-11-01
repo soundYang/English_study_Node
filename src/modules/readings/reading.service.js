@@ -17,6 +17,7 @@ import { parseOrThrow } from '../../shared/utils/validation.js'
 import { freeAiKey } from '../ai-keys/ai-key.service.js'
 import { wordRepository } from '../words/word.repository.js'
 import { nextReviewAtAfterPass } from '../words/review-schedule.js'
+import { recordStudyActivity } from '../words/study-stats.service.js'
 import { settleDailyWords } from '../words/word-settlement.js'
 import { ABBREVIATION_WORDS } from './abbreviations.js'
 import {
@@ -1516,6 +1517,16 @@ async function applySubmitReview({ userId, reading }) {
   if (updates.length) {
     await wordRepository.applyReviewBatch({ userId, updates, at })
   }
+
+  // md/56 §10 P3：交卷也算一天的复习活动。
+  // updates（推进了轮次）与 touchWords（只更新了时间）都是「今天复习过的词」，
+  // 只数 updates 会让「交卷但没推进轮次」的一天显示成 0。
+  await recordStudyActivity({
+    userId,
+    reviewed: updates.length + touchWords.length,
+    mastered: updates.filter((item) => item.nextReviewAt === null).length,
+    at,
+  })
 }
 
 /**

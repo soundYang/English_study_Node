@@ -41,6 +41,7 @@ import {
   reviewWordSchema,
   updateWordSchema,
 } from './word.schema.js'
+import { recordStudyActivity } from './study-stats.service.js'
 import { settleDailyWords } from './word-settlement.js'
 
 /** PATCH 时不允许修改的字段 */
@@ -502,6 +503,8 @@ export async function reviewWord({ userId, id, body }) {
   }
 
   const now = new Date()
+  // 只有「通过且到掌握线」才算一个新晋已掌握，没记住永远是 0
+  let mastered = 0
 
   if (parsed.result === 'lapse') {
     await repo.applyLapse({
@@ -516,6 +519,7 @@ export async function reviewWord({ userId, id, body }) {
 
     if (nextReviewAt === null) {
       await repo.applyMastery({ userId, word: doc.word, stage, at: now })
+      mastered = 1
     } else {
       await repo.applyReviewPass({
         userId,
@@ -526,6 +530,8 @@ export async function reviewWord({ userId, id, body }) {
       })
     }
   }
+
+  await recordStudyActivity({ userId, reviewed: 1, mastered, at: now })
 
   // 重新读一次再转 DTO：用算好的结果构造，避免和 repository 的写逻辑重复一遍
   return toWordDto(await repo.findByIdAndUser(id, userId))
@@ -593,7 +599,16 @@ export async function reviewWords({ userId, body }) {
     writtenIds.push(id)
   }
 
-  if (updates.length) await repo.applyReviewBatch({ userId, updates, at: now })
+  if (updates.length) {
+    await repo.applyReviewBatch({ userId, updates, at: now })
+
+    await recordStudyActivity({
+      userId,
+      reviewed: updates.length,
+      mastered: updates.filter((item) => !item.lapse && item.nextReviewAt === null).length,
+      at: now,
+    })
+  }
 
   // 回写后的状态再读一次：前端据此就地更新列表，不用整页重拉
   const updated = writtenIds.length

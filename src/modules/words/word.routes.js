@@ -7,6 +7,7 @@ import { parseOrThrow } from '../../shared/utils/validation.js'
 import { extractWordsFromFile } from './import/index.js'
 import { MAX_FILE_BYTES } from './import/limits.js'
 import { checkWords, importWords } from './word-batch.service.js'
+import { getStudyStats } from './study-stats.service.js'
 import { listWordsQuerySchema } from './word.schema.js'
 import {
   createWord,
@@ -148,6 +149,16 @@ function readMode(raw) {
 
   return mode
 }
+
+/**
+ * 学习统计（md/56 §10 P3）：连续复习天数、今日/累计、掌握情况、待复习数。
+ *
+ * `pendingReview > 0` 就是首页红点的条件。与 `/daily-plan` 的区别：
+ * daily-plan 给的是「今天要做什么」（清单 + 配额），这里给的是「我一直做得怎么样」。
+ */
+router.get('/stats', async (req, res) => {
+  res.json(await getStudyStats({ userId: req.userId }))
+})
 
 /**
  * 今日任务（md/56 §8.1）：今日到期复习 + 新词配额进度。
