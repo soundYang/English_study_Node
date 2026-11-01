@@ -51,5 +51,12 @@ export function toWordDto(doc) {
       : null,
     senses,
     summary: buildSummary(senses),
+
+    // ——— 复习调度（md/56）：前端据此显示「第 N 轮」与到期提示 ———
+    // 老文档没有这几个字段，全部兜底，避免前端拿到 undefined 后渲染成 "undefined"
+    reviewStage: doc.reviewStage ?? 0,
+    nextReviewAt: doc.nextReviewAt ?? null,
+    lapseCount: doc.lapseCount ?? 0,
+    lastReviewedAt: doc.lastReviewedAt ?? null,
   }
 }

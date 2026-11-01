@@ -119,6 +119,95 @@ export const wordRepository = {
     )
   },
 
+  /**
+   * 今天到期、还没复习的词（md/56 §5.4）。
+   *
+   * 按 `nextReviewAt` 升序：欠账最久的排前面，用户从列表头上开始复习
+   * 就是他最该补的那批。同一时刻到期的用 `_id` 兜底，保证分页顺序稳定。
+   */
+  findDueForReview({ userId, now, limit }) {
+    const query = Word.find({ userId, status: 'learning', nextReviewAt: { $lte: now } })
+      .sort({ nextReviewAt: 1, _id: 1 })
+
+    if (limit) query.limit(limit)
+
+    return query.lean()
+  },
+
+  countDueForReview({ userId, now }) {
+    return Word.countDocuments({ userId, status: 'learning', nextReviewAt: { $lte: now } })
+  },
+
+  /** 今天已经复习过的词数（交过卷、且那次交卷落在今天） */
+  countReviewedBetween({ userId, from, to }) {
+    return Word.countDocuments({ userId, lastReviewedAt: { $gte: from, $lt: to } })
+  },
+
+  /** 今天新加的词数；`source: basic-removed` 的墓碑不算「学了一个新词」 */
+  countCreatedBetween({ userId, from, to }) {
+    return Word.countDocuments({
+      userId,
+      source: { $ne: 'basic-removed' },
+      createdAt: { $gte: from, $lt: to },
+    })
+  },
+
+  /**
+   * 自评「通过」：推进一轮，排下次复习（md/56 §6.2）。
+   *
+   * 用 `updateOne` 而不是读出来改再 save：自评是幂等动作，
+   * 用户连点两次不该把轮次推两轮。调用方先读一遍拿当前 stage，
+   * 这里只按算好的结果写。
+   */
+  applyReviewPass({ userId, word, stage, nextReviewAt, at }) {
+    return Word.updateOne(
+      { userId, word },
+      {
+        $set: {
+          status: 'learning',
+          reviewStage: stage,
+          nextReviewAt,
+          lastResult: 'pass',
+          lastReviewedAt: at,
+        },
+      },
+    )
+  },
+
+  /** 自评「通过」且已达掌握线：转 mastered，退出复习队列 */
+  applyMastery({ userId, word, stage, at }) {
+    return Word.updateOne(
+      { userId, word },
+      {
+        $set: {
+          status: 'mastered',
+          reviewStage: stage,
+          nextReviewAt: null,
+          lastResult: 'pass',
+          lastReviewedAt: at,
+          masteredAt: at,
+        },
+      },
+    )
+  },
+
+  /** 自评「没记住」：轮次归零、明天再来 */
+  applyLapse({ userId, word, nextReviewAt, at }) {
+    return Word.updateOne(
+      { userId, word },
+      {
+        $set: {
+          status: 'learning',
+          reviewStage: 0,
+          nextReviewAt,
+          lastResult: 'lapse',
+          lastReviewedAt: at,
+        },
+        $inc: { lapseCount: 1 },
+      },
+    )
+  },
+
   create(data) {
     return Word.create(data)
   },

@@ -11,7 +11,9 @@ import { listWordsQuerySchema } from './word.schema.js'
 import {
   createWord,
   deleteWord,
+  getDailyPlan,
   listWords,
+  reviewWord,
   updateWord,
 } from './word.service.js'
 
@@ -146,6 +148,16 @@ function readMode(raw) {
   return mode
 }
 
+/**
+ * 今日任务（md/56 §8.1）：今日到期复习 + 新词配额进度。
+ *
+ * 静态路径必须挂在 `/` 之前，虽然现在没有 `GET /:id`，
+ * 但与 batch / check 的惯例保持一致，以后加详情接口不会踩坑。
+ */
+router.get('/daily-plan', async (req, res) => {
+  res.json(await getDailyPlan({ userId: req.userId }))
+})
+
 router.get('/', async (req, res) => {
   const query = parseOrThrow(listWordsQuerySchema, req.query)
   res.json(await listWords({ userId: req.userId, query }))
@@ -172,6 +184,19 @@ router.patch('/:id', writeLimiter, async (req, res) => {
 
 router.delete('/:id', writeLimiter, async (req, res) => {
   res.json(await deleteWord({ userId: req.userId, id: req.params.id }))
+})
+
+/**
+ * 自评（md/56 §7）：`{ result: 'pass' | 'lapse' }`。
+ * 复用写接口的桶——一次点击一条写，60 次/分钟对批量复习也够用。
+ */
+router.post('/:id/review', writeLimiter, async (req, res) => {
+  const dto = await reviewWord({
+    userId: req.userId,
+    id: req.params.id,
+    body: req.body ?? {},
+  })
+  res.json(dto)
 })
 
 export default router

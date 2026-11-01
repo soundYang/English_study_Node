@@ -16,6 +16,7 @@ import { logger } from '../../shared/logger.js'
 import { parseOrThrow } from '../../shared/utils/validation.js'
 import { freeAiKey } from '../ai-keys/ai-key.service.js'
 import { wordRepository } from '../words/word.repository.js'
+import { settleDailyWords } from '../words/word-settlement.js'
 import { ABBREVIATION_WORDS } from './abbreviations.js'
 import {
   buildExpandMessages,
@@ -412,6 +413,11 @@ async function generateReadingInner({ userId, body, signal, diag, onProgress, re
 
   const report = makeReporter(onProgress)
   await report({ stage: 'planning' })
+
+  // 生成入口也结算一次（md/56 §5.3）：手机端可能直接从生成页进来，不经过词汇列表。
+  // 必须在 countVocabulary 之前——结算会把过夜的 `new` 词推进成 `learning`，
+  // 它们才能被算进可用词汇。
+  await settleDailyWords(userId)
 
   // 篇幅上限曾经放在读库之前（纯参数判定）。md/30 §7 之后它要依赖个人词库规模
   // （hard 攒够 3000 词才能写到 1000），只能挪到读完词库之后，

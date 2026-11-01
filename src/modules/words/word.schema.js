@@ -67,6 +67,18 @@ export const updateWordSchema = z.object({
   meaning: z.string({ error: '释义必须是字符串' }).optional(),
 })
 
+/**
+ * POST /api/words/:id/review 的自评请求体（md/56 §7）。
+ *
+ * 只有两个取值，不做「不传就默认 pass」的兜底：
+ * 自评直接决定这个词的复习轮次，猜错的代价比报 400 大得多。
+ */
+export const reviewWordSchema = z.object({
+  result: z.enum(['pass', 'lapse'], {
+    error: 'result 只能是 pass 或 lapse',
+  }),
+})
+
 /** 一次批量导入的上限（md/44 §5.4）。200 条已覆盖「一整课单词」的极端情况 */
 export const MAX_BATCH_WORDS = 200
 /** 粘贴文本上限；express.json 是 64kb，留一半给 JSON 结构 */

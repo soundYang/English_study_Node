@@ -10,6 +10,7 @@ import {
   wordNotFound,
 } from '../../shared/errors.js'
 import { escapeRegex } from '../../shared/utils/regex.js'
+import { startOfLocalDay } from '../../shared/utils/time.js'
 import { parseOrThrow } from '../../shared/utils/validation.js'
 import {
   normalizeMeaningOrThrow,
@@ -23,14 +24,23 @@ import {
   mergeSenses,
   resolveDuplicate,
 } from './word-import.js'
+import {
+  DAILY_NEW_WORDS,
+  DAILY_REVIEW_LIMIT,
+  localDateKey,
+  nextReviewAtAfterLapse,
+  nextReviewAtAfterPass,
+} from './review-schedule.js'
 import { getWordRank } from './word-ranks.js'
 import { wordRepository as repo } from './word.repository.js'
 import {
   WORD_STATUSES,
   WORD_STATUS_FILTERS,
   createWordSchema,
+  reviewWordSchema,
   updateWordSchema,
 } from './word.schema.js'
+import { settleDailyWords } from './word-settlement.js'
 
 /** PATCH 时不允许修改的字段 */
 const READONLY_FIELDS = ['source', 'dictionaryId', 'phonetic', 'senses']
@@ -44,6 +54,11 @@ const READONLY_FIELDS = ['source', 'dictionaryId', 'phonetic', 'senses']
  *   page   —— 越界收敛到最后一页，并把收敛后的值返回
  */
 export async function listWords({ userId, query }) {
+  // 先结算再查（md/56 §5.3）：用户第二天打开词库，昨天的新词要已经是「复习中」。
+  // 两条 updateMany，命中 0 条时开销可忽略；放在这里而不是定时任务，
+  // 是因为服务器重启不会漏、多实例也不会重复结算。
+  await settleDailyWords(userId)
+
   const { q, page, pageSize } = query
   // status 传了未知值就按「不筛选」处理：契约里没定义这个 400
   const status = WORD_STATUS_FILTERS.includes(query.status)
@@ -323,7 +338,10 @@ export async function updateWord({ userId, id, body }) {
       ? normalizeMeaningOrThrow(parsed.meaning)
       : undefined
 
-  if (parsed.status !== undefined) doc.status = parsed.status
+  if (parsed.status !== undefined) {
+    doc.status = parsed.status
+    applyManualStatusSideEffects(doc, parsed.status)
+  }
 
   const wordChanged = nextWord !== doc.word
 
@@ -385,4 +403,127 @@ export async function deleteWord({ userId, id }) {
   const total = await repo.count({ userId })
 
   return { id: String(removed._id), total }
+}
+
+/**
+ * 手动改状态时维护复习排期（md/56 §7）。
+ *
+ * 手动改状态是用户的最终裁量权，自动流程不能覆盖它，所以这里按目标状态直接重排：
+ *   mastered → 退出复习队列，记下掌握时刻
+ *   learning → 立刻进队列（用户说「我要复习它」，那就今天开始）
+ *   new      → 退出队列，等次日结算再把它推回 learning
+ *
+ * 只在这里改，不在结算里改：结算只处理「过夜的新词」和「漏排期的老词」，
+ * 不碰用户刚手动设过的状态。
+ */
+function applyManualStatusSideEffects(doc, status) {
+  if (status === 'mastered') {
+    doc.nextReviewAt = null
+    doc.masteredAt = doc.masteredAt ?? new Date()
+    return
+  }
+
+  // 一旦不是 mastered，掌握时刻就该清掉，否则历史里会留一条对不上的记录
+  doc.masteredAt = null
+
+  if (status === 'learning') {
+    doc.reviewStage = doc.reviewStage ?? 0
+    doc.nextReviewAt = startOfLocalDay(new Date())
+    return
+  }
+
+  doc.nextReviewAt = null
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000
+
+/**
+ * GET /api/words/daily-plan（md/56 §8.1）
+ *
+ * 回答两个问题：今天的复习队列还剩多少、今天还能加几个新词。
+ *
+ * 这里**先结算再统计**：如果不结算，昨天的新词今天还算 `new`，
+ * 用户早上打开看到「待复习 0 个」，会以为系统坏了。
+ */
+export async function getDailyPlan({ userId, now = new Date() }) {
+  await settleDailyWords(userId, now)
+
+  const today = startOfLocalDay(now)
+  const tomorrow = new Date(today.getTime() + DAY_MS)
+
+  const [words, remaining, doneToday, addedToday] = await Promise.all([
+    repo.findDueForReview({ userId, now, limit: DAILY_REVIEW_LIMIT }),
+    repo.countDueForReview({ userId, now }),
+    repo.countReviewedBetween({ userId, from: today, to: tomorrow }),
+    repo.countCreatedBetween({ userId, from: today, to: tomorrow }),
+  ])
+
+  return {
+    date: localDateKey(today),
+    newWords: {
+      quota: DAILY_NEW_WORDS,
+      addedToday,
+      remaining: Math.max(0, DAILY_NEW_WORDS - addedToday),
+    },
+    review: {
+      // 现在到期、还没复习的总量（可能上千，积压越久越大）
+      remaining,
+      // 今天建议复习几个：积压再多，一天也只捞上限那么多
+      today: Math.min(remaining, DAILY_REVIEW_LIMIT),
+      // 今天复习过多少个词。包含在文章里顺带复习到的池内词，
+      // 所以它可能大于「今天原本到期的数量」——前端不要拿它反推 today
+      doneToday,
+      words: words.map(toWordDto),
+    },
+  }
+}
+
+/**
+ * POST /api/words/:id/review（md/56 §7）
+ *
+ * 自评是唯一会推进复习轮次的入口。文章的提交练习走另一条路径
+ * （reading.service 按 usedWords 回写），两者互不覆盖。
+ */
+export async function reviewWord({ userId, id, body }) {
+  const parsed = parseOrThrow(reviewWordSchema, body)
+
+  if (!mongoose.isValidObjectId(id)) throw wordNotFound()
+
+  const doc = await repo.findByIdAndUser(id, userId)
+  if (!doc) throw wordNotFound()
+
+  // 基础词页的墓碑记录不是「用户的词」，让它可以被复习等于把它重新激活，
+  // 用户标过的「不认识」会凭空失效
+  if (doc.source === 'basic-removed') {
+    throw badRequest('这个词在基础词表里被标为「不认识」，不能作为复习对象', 'id')
+  }
+
+  const now = new Date()
+
+  if (parsed.result === 'lapse') {
+    await repo.applyLapse({
+      userId,
+      word: doc.word,
+      nextReviewAt: nextReviewAtAfterLapse(now),
+      at: now,
+    })
+  } else {
+    const stage = (doc.reviewStage ?? 0) + 1
+    const nextReviewAt = nextReviewAtAfterPass(stage, now)
+
+    if (nextReviewAt === null) {
+      await repo.applyMastery({ userId, word: doc.word, stage, at: now })
+    } else {
+      await repo.applyReviewPass({
+        userId,
+        word: doc.word,
+        stage,
+        nextReviewAt,
+        at: now,
+      })
+    }
+  }
+
+  // 重新读一次再转 DTO：用算好的结果构造，避免和 repository 的写逻辑重复一遍
+  return toWordDto(await repo.findByIdAndUser(id, userId))
 }

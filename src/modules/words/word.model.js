@@ -69,6 +69,30 @@ const wordSchema = new Schema(
       type: Number,
       default: null, // COCA 词频排名，越小越常用；手填词与源表里没有的词（an / yourselves）为 null
     },
+
+    // ——— 复习调度（md/56，全部有默认值，老文档无需迁移）———
+
+    reviewStage: {
+      type: Number,
+      default: 0, // 已通过的复习轮次数；0 = 还没复习过
+    },
+    nextReviewAt: {
+      type: Date,
+      default: null, // 下次到期时间；null = 不进复习队列（新词 / 已掌握 / 基础词墓碑）
+    },
+    lastResult: {
+      type: String,
+      enum: ['pass', 'lapse', null],
+      default: null, // 最近一次自评结果
+    },
+    lapseCount: {
+      type: Number,
+      default: 0, // 累计「没记住」次数
+    },
+    masteredAt: {
+      type: Date,
+      default: null, // 自动转「已掌握」的时刻；手动改状态时由 service 维护
+    },
   },
   { timestamps: true }, // 自动维护 createdAt / updatedAt，createdAt 就是「加入时间」
 )
@@ -76,5 +100,6 @@ const wordSchema = new Schema(
 wordSchema.index({ userId: 1, word: 1 }, { unique: true }) // 同一用户内单词唯一，去重靠它而不是应用层 if
 wordSchema.index({ userId: 1, createdAt: -1 }) // 列表默认按创建时间倒序
 wordSchema.index({ userId: 1, status: 1, lastReviewedAt: 1 }) // P3 选池：按复习优先级取词，替代按 createdAt 截断
+wordSchema.index({ userId: 1, status: 1, nextReviewAt: 1 }) // md/56：查「今天到期的复习词」
 
 export const Word = mongoose.model('Word', wordSchema)
