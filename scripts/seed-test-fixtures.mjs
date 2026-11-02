@@ -140,6 +140,7 @@ const FIXTURES = {
   'real-v282': { userId: 'fixture-real-v282', count: 282, mixedStatus: false, common: true, reserveEasyOnly: true }, // N=300 → known 900
   'real-v432': { userId: 'fixture-real-v432', count: 432, mixedStatus: false, common: true, reserveEasyOnly: true }, // known 1050（1.75N，找曲线）
   'real-v582': { userId: 'fixture-real-v582', count: 582, mixedStatus: false, common: true, reserveEasyOnly: true }, // N=400 → known 1200
+  'real-v702': { userId: 'fixture-real-v702', count: 702, mixedStatus: false, common: true, reserveEasyOnly: true }, // N=600 → known 1320（2.2N）
   'real-v882': { userId: 'fixture-real-v882', count: 882, mixedStatus: false, common: true, reserveEasyOnly: true }, // N=500 → known 1500；N=600 → 2.5N
   'real-v1182': { userId: 'fixture-real-v1182', count: 1182, mixedStatus: false, common: true, reserveEasyOnly: true }, // N=600 → known 1800
   // 最坏组成对照：同样的 known 1800，但词等距取自 rank 9000 区间（md/57 §5）
