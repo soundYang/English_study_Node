@@ -15,7 +15,7 @@ describe('maskPhone', () => {
   })
 
   it('正常手机号保留前 3 后 4', () => {
-    expect(maskPhone('13800000000')).toBe('138****8000')
+    expect(maskPhone('13800000000')).toBe('138****0000')
   })
 
   it('短号原样返回，避免变成满屏星号', () => {
@@ -30,7 +30,7 @@ describe('maskContact', () => {
   })
 
   it('手机号形状与 maskPhone 一致', () => {
-    expect(maskContact('13800000000')).toBe('138****8000')
+    expect(maskContact('13800000000')).toBe('138****0000')
   })
 
   it('邮箱只留前 2 个字符 + 域名', () => {

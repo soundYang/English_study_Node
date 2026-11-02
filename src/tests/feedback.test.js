@@ -11,7 +11,7 @@ import { hashPassword } from '../modules/auth/password.js'
  *   · 用户侧不要求登录，能拿到身份就存快照；
  *   · 管理端列表不带正文全文，只有 excerpt。
  */
-const ADMIN_USERNAME = 'admin'
+const ADMIN_USERNAME = 'testAdmin'
 const ADMIN_PASSWORD = 'AdminPass123'
 const DEVICE_ID = 'feedback-device-0001'
 
@@ -235,8 +235,8 @@ describe('管理端反馈接口', () => {
     const item = list.body.items.find((row) => row.id === created.body.id)
 
     // 一次翻页 20 条，列表不能直接把手机号交出去
-    expect(item.phone).toBe('138****8000')
-    expect(item.contact).toBe('138****8000')
+    expect(item.phone).toBe('138****0000')
+    expect(item.contact).toBe('138****0000')
 
     const detail = await adminRequest('get', `/api/admin/feedback/${created.body.id}`)
 

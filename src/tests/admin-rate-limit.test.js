@@ -14,7 +14,7 @@ import { hashPassword } from '../modules/auth/password.js'
  * 否则管理员正常用几次就会被自己锁住。
  */
 process.env.RATE_LIMIT_ENABLED = 'true'
-process.env.ADMIN_USERNAME = 'admin'
+process.env.ADMIN_USERNAME = 'testAdmin'
 process.env.ADMIN_PASSWORD_HASH = await hashPassword('AdminPass123')
 
 const { createApp } = await import('../app.js')
@@ -22,7 +22,7 @@ const { createApp } = await import('../app.js')
 const app = createApp()
 
 const login = (password) =>
-  request(app).post('/api/admin/auth/login').send({ username: 'admin', password })
+  request(app).post('/api/admin/auth/login').send({ username: 'testAdmin', password })
 
 describe('管理员登录限流', () => {
   // 顺序有讲究：成功登录先跑，计数保持 0；后面 5 次失败用完配额，

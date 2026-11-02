@@ -11,7 +11,7 @@ import { hashPassword } from '../modules/auth/password.js'
  *
  * 单独成文件：config 读环境变量的时机在首次 import。
  */
-const ADMIN_USERNAME = 'admin'
+const ADMIN_USERNAME = 'testAdmin'
 const ADMIN_PASSWORD = 'AdminPass123'
 
 process.env.ADMIN_USERNAME = ADMIN_USERNAME

@@ -10,7 +10,7 @@ import { hashPassword } from '../modules/auth/password.js'
  * 登录限流单独放 admin-rate-limit.test.js：本文件需要「多次输错」的用例，
  * 开着限流会把它们打成 429。
  */
-const ADMIN_USERNAME = 'admin'
+const ADMIN_USERNAME = 'testAdmin'
 const ADMIN_PASSWORD = 'AdminPass123'
 
 process.env.ADMIN_USERNAME = ADMIN_USERNAME

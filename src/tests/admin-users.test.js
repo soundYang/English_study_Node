@@ -10,7 +10,7 @@ import { hashPassword } from '../modules/auth/password.js'
  * 词汇量不计 new / basic-removed、正确率按题数加权、token 只认事件表、
  * 额度开关关闭时不能显示成「剩余 3 次」。这些是最容易看起来对、其实全错的地方。
  */
-const ADMIN_USERNAME = 'admin'
+const ADMIN_USERNAME = 'testAdmin'
 const ADMIN_PASSWORD = 'AdminPass123'
 
 process.env.ADMIN_USERNAME = ADMIN_USERNAME
@@ -248,7 +248,7 @@ describe('GET /api/admin/users', () => {
     expect(res.status).toBe(200)
     expect(res.body.total).toBe(1)
     expect(res.body.items[0].dataKey).toBe(user.dataKey)
-    expect(res.body.items[0].phone).toBe('138****8000')
+    expect(res.body.items[0].phone).toBe('138****0000')
   })
 
   it('按 token 排序：花得多的在前', async () => {
