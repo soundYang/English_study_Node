@@ -134,6 +134,16 @@ const FIXTURES = {
   // 它在 hard 的 A 门上有大量余量（1000 词只需 143 个个人词），
   // 所以跑出来只反映「刚解锁能不能写 1000 词」，不会和 A 门混在一起。
   'real-v3000': { userId: 'fixture-real-v3000', count: 3000, mixedStatus: false, common: true, reserveEasyOnly: true },
+
+  // ——— md/57：3N 门槛的校准点（V = 3N − 618）———
+  // 全部 common（从最高频开始取），代表「正常人按频率背单词」的形态。
+  'real-v282': { userId: 'fixture-real-v282', count: 282, mixedStatus: false, common: true, reserveEasyOnly: true }, // N=300 → known 900
+  'real-v432': { userId: 'fixture-real-v432', count: 432, mixedStatus: false, common: true, reserveEasyOnly: true }, // known 1050（1.75N，找曲线）
+  'real-v582': { userId: 'fixture-real-v582', count: 582, mixedStatus: false, common: true, reserveEasyOnly: true }, // N=400 → known 1200
+  'real-v882': { userId: 'fixture-real-v882', count: 882, mixedStatus: false, common: true, reserveEasyOnly: true }, // N=500 → known 1500；N=600 → 2.5N
+  'real-v1182': { userId: 'fixture-real-v1182', count: 1182, mixedStatus: false, common: true, reserveEasyOnly: true }, // N=600 → known 1800
+  // 最坏组成对照：同样的 known 1800，但词等距取自 rank 9000 区间（md/57 §5）
+  'gate-hard-1800': { userId: 'fixture-gate-hard-1800', count: 1182, mixedStatus: false, rankMax: 9000 },
 }
 
 const DAY_MS = 86_400_000
