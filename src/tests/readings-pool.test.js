@@ -69,7 +69,7 @@ beforeEach(() => {
 })
 
 describe('词量不足以支撑篇幅', () => {
-  it('45 个词 + hard + 600 → 422，门槛是 minKnown(600)=704', async () => {
+  it('45 个词 + hard + 600 → 422，门槛是 minKnown(600)=1800', async () => {
     await seedWords(45)
 
     const res = await generate({ level: 'hard', targetWords: 600, questionCount: 3 })
@@ -77,17 +77,17 @@ describe('词量不足以支撑篇幅', () => {
     expect(res.status).toBe(422)
     expect(res.body.error.code).toBe('VOCABULARY_TOO_SMALL')
     expect(res.body.error.field).toBe('targetWords')
-    // md/30 §7.2：600 词的实测下限 704（618 基础 ∪ 日历 + 86 个 A 门折算）。
-    // 45 个个人词只有 663 个已知词，差 41——门槛随篇幅走，此时先报的是「词不够」
+    // md/57：600 词的门槛是 3N = 1800（高于 A 门折算的 704）。
+    // 45 个个人词只有 663 个已知词，差 1137——门槛随篇幅走，此时先报的是「词不够」
     expect(res.body.error.details).toEqual({
       kind: 'known_words',
       level: 'hard',
       targetWords: 600,
-      required: 704,
+      required: 1800,
       available: 45 + BASE_UNION,
-      shortage: 704 - (45 + BASE_UNION),
+      shortage: 1800 - (45 + BASE_UNION),
     })
-    expect(res.body.error.message).toContain('还差 41 个')
+    expect(res.body.error.message).toContain('还差 1137 个')
     // 注定凑不出目标词数，一次模型都不该调
     expect(chatJson).not.toHaveBeenCalled()
     expect(await Reading.countDocuments()).toBe(0)
@@ -130,7 +130,7 @@ describe('词量不足以支撑篇幅', () => {
     await seedWords(20)
     chatJson.mockResolvedValue(reply)
 
-    // 20 + 618 = 638 个已知词。300 词要 661（实测点），差 23
+    // 20 + 618 = 638 个已知词。300 词要 3N = 900，差 262
     const long = await generate({ level: 'hard', targetWords: 300, questionCount: 3 })
 
     expect(long.status).toBe(422)
@@ -139,13 +139,13 @@ describe('词量不足以支撑篇幅', () => {
       kind: 'known_words',
       level: 'hard',
       targetWords: 300,
-      required: 661,
+      required: 900,
       available: 20 + BASE_UNION,
-      shortage: 23,
+      shortage: 262,
     })
     expect(chatJson).not.toHaveBeenCalled()
 
-    // 100 词只要 638（实测点），刚好够——这就是「缩篇幅能解」，
+    // 100 词只要 633（A 门折算仍高于 3N），刚好够——这就是「缩篇幅能解」，
     // 与旧 B 门「只能加词或降难度」的结论相反（md/30 §7.2）
     const short = await generate({ level: 'hard', targetWords: 100, questionCount: 3 })
 
@@ -290,7 +290,8 @@ describe('生成前预检 GET /capacity', () => {
   })
 
   it('篇幅阶梯按难度给，blockedBy 说明为什么不能写', async () => {
-    await seedWords(400)
+    // md/57：hard 600 要 1800 个已知词，1200 个个人词才够（1818）
+    await seedWords(1200)
 
     const res = await capacity({ targetWords: 200 })
     const { easy, hard } = res.body.levels
@@ -311,7 +312,7 @@ describe('生成前预检 GET /capacity', () => {
       targetWords: 700,
       unlocked: false,
       blockedBy: 'final_mode',
-      shortage: 3000 - 400,
+      shortage: 3000 - 1200,
       finalMode: true,
     })
   })
@@ -327,15 +328,15 @@ describe('生成前预检 GET /capacity', () => {
       sufficient: false,
       shortage: 41,
       knownWords: 45 + BASE_UNION,
-      // 45 + 618 = 663 < 704
-      minKnown: 704,
+      // md/57：45 + 618 = 663 < 1800
+      minKnown: 1800,
     })
-    // 阶梯上 600 这一行是「词不够」，不是「档位到头」
+    // 阶梯上 600 这一行是「词不够」，不是「档位到头」；缺口是篇幅门槛的差额
     expect(res.body.levels.hard.lengths[5]).toMatchObject({
       targetWords: 600,
       unlocked: false,
       blockedBy: 'known_words',
-      shortage: 41,
+      shortage: 1800 - (45 + BASE_UNION),
     })
 
     // 同一组参数真的去生成，422 里回的数字必须一致（篇幅门槛先报）
@@ -363,7 +364,8 @@ describe('生成前预检 GET /capacity', () => {
     await seedWords(20)
 
     const res = await capacity({ targetWords: 300 })
-    expect(res.body.levels.medium.minKnown).toBe(678)
+    // md/57：300 词三档同值 3N = 900
+    expect(res.body.levels.medium.minKnown).toBe(900)
     expect(res.body.levels.medium.knownWords).toBe(20 + BASE_UNION)
 
     const rejected = await generate({ level: 'medium', targetWords: 300, questionCount: 3 })
@@ -372,14 +374,14 @@ describe('生成前预检 GET /capacity', () => {
       kind: 'known_words',
       required: res.body.levels.medium.minKnown,
       available: res.body.levels.medium.knownWords,
-      shortage: 40,
+      shortage: 262,
     })
     // 文案里的差额与阶梯上的 shortage 同源
-    expect(rejected.body.error.message).toContain('还差 40 个')
+    expect(rejected.body.error.message).toContain('还差 262 个')
     expect(res.body.levels.medium.lengths[2]).toMatchObject({
       targetWords: 300,
       blockedBy: 'known_words',
-      shortage: 40,
+      shortage: 262,
     })
   })
 
@@ -429,7 +431,7 @@ describe('生成前预检 GET /capacity', () => {
   })
 })
 
-describe('700 词库的产品含义（md/30 §7：B 门删除后的能力边界）', () => {
+describe('词库规模的产品含义（md/30 §7 / md/57）', () => {
   /**
    * 700 个词，其中 300 个本来就在基础词表里（现在三档共用 easy 600）。
    * 真实用户的词库不可能与基础表不相交——把 700 个填充词当成「互不相交」，
@@ -456,21 +458,47 @@ describe('700 词库的产品含义（md/30 §7：B 门删除后的能力边界�
     ])
   }
 
-  it('700 个词能把三档写到各自上限——旧 B 门要求 hard 3778，是它的 5.4 倍', async () => {
-    await seed700()
+  /**
+   * md/57：hard 600 要 1800 个已知词。
+   * 其中 300 个与基础词表重合（真实用户一定重合），所以个人词要 1482 个，
+   * 并集才是 618 + 1182 = 1800。
+   */
+  async function seedCapacity() {
+    const overlap = basicWordsByLevel.easy.slice(0, 300).map((word, index) => ({
+      userId: config.defaultUserId,
+      word,
+      status: 'learning',
+      source: 'manual',
+      senses: [{ pos: '', meaning: `基础词 ${index}` }],
+    }))
+
+    await Word.insertMany([
+      ...overlap,
+      ...Array.from({ length: 1182 }, (_, index) => ({
+        userId: config.defaultUserId,
+        word: `extra${index}`,
+        status: 'learning',
+        source: 'manual',
+        senses: [{ pos: '', meaning: '测试释义' }],
+      })),
+    ])
+  }
+
+  it('1800 个已知词能把三档写到各自上限——旧 B 门要求 hard 3778，是它的 48%', async () => {
+    await seedCapacity()
     chatJson.mockResolvedValue(reply)
 
-    // knownWords = 600 基础 − 300(重合) + 700 = 1018。
-    // 三档各自上限下的 minKnown 最高是 hard 600 的 704，全部够得着
+    // knownWords = 618 + 1182 个不重合的个人词 = 1800，正好压在 hard 600 的门槛上。
+    // md/57：三档各自上限下的 minKnown 最高是 hard 600 的 1800，全部够得着
     const caps = { easy: 300, medium: 450, hard: 600 }
 
     for (const [level, targetWords] of Object.entries(caps)) {
       const res = await generate({ level, targetWords, questionCount: 3 })
       expect(res.status).toBe(201)
       const doc = await Reading.findById(res.body.id).lean()
-      expect(doc.aiMeta.knownWords).toBe(BASE_UNION + 400)
-      expect(doc.aiMeta.minKnown).toBeLessThanOrEqual(BASE_UNION + 400)
-      expect(doc.aiMeta.personalWords).toBe(700)
+      expect(doc.aiMeta.knownWords).toBe(BASE_UNION + 1182)
+      expect(doc.aiMeta.minKnown).toBeLessThanOrEqual(BASE_UNION + 1182)
+      expect(doc.aiMeta.personalWords).toBe(1482)
     }
   })
 

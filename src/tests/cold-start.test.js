@@ -93,8 +93,8 @@ describe('冷启动 · /capacity', () => {
       expect(lengths[2]).toMatchObject({ targetWords: 300, blockedBy: 'known_words' })
     }
 
-    // 300 词的缺口就是 A 门折算：easy = ceil(30 / 0.35) = 86
-    expect(res.body.levels.easy.lengths[2].shortage).toBe(86)
+    // md/57：300 词起门槛是 3N = 900，缺口 900 − 618 = 282
+    expect(res.body.levels.easy.lengths[2].shortage).toBe(282)
   })
 
   it('请求 300 词时不再是冷启动：required / sufficient 回到真实数字', async () => {
@@ -200,7 +200,7 @@ describe('冷启动 · 生成', () => {
       kind: 'known_words',
       level: 'hard',
       targetWords: 300,
-      required: 661,
+      required: 900,
       available: 20 + BASE_UNION,
     })
     expect(chatJson).not.toHaveBeenCalled()

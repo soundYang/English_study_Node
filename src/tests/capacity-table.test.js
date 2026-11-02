@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  CAPACITY_RATIO,
   FINAL_MODE_MAX_WORDS,
   FINAL_MODE_PERSONAL_WORDS,
   LENGTH_STEP,
@@ -17,10 +18,10 @@ import { calendarWords } from '../modules/readings/calendar-words.js'
 import { measureKnownVocabulary } from '../modules/readings/level-limits.js'
 
 /**
- * 篇幅 ↔ 词汇量对照表（md/30 §7.1、§8.2）。
+ * 篇幅 ↔ 词汇量对照表（md/30 §7.1、§8.2；公式由 md/57 改写）。
  *
  * 这张表取代了旧 B 门（easy 1000 / medium 1900 / hard 3778）。测试要守的是：
- *   · 实测点原样落表（它们是真实采样结果，不是拍脑袋写的）；
+ *   · 新公式 `max(3N, 地板 + A 门)` 的每一档数值（md/57 §3.1）；
  *   · 整张表**单调不减**——否则「用户加词反而失去能力」，预检也会自相矛盾；
  *   · 三个概念（personalWords / knownWords / minKnown）不会被混用。
  */
@@ -36,26 +37,35 @@ describe('knownFloorFor', () => {
   })
 })
 
-describe('minKnownFor — 实测点', () => {
-  it('hard 的六个实测点与 md/30 §5 一致', () => {
-    expect(minKnownFor(100, 'hard')).toBe(638)
+describe('minKnownFor — 三倍规则（md/57）', () => {
+  it('hard：100 / 200 由 A 门接管，300 起由 3N 接管', () => {
+    expect(minKnownFor(100, 'hard')).toBe(633)
     expect(minKnownFor(200, 'hard')).toBe(647)
-    expect(minKnownFor(300, 'hard')).toBe(661)
-    expect(minKnownFor(400, 'hard')).toBe(676)
-    expect(minKnownFor(500, 'hard')).toBe(690)
-    expect(minKnownFor(600, 'hard')).toBe(704)
+    expect(minKnownFor(300, 'hard')).toBe(900)
+    expect(minKnownFor(400, 'hard')).toBe(1200)
+    expect(minKnownFor(500, 'hard')).toBe(1500)
+    expect(minKnownFor(600, 'hard')).toBe(1800)
   })
 
-  it('100 词取 638 而不是 A 门折算的 633：全局下限 20 让 15 词的样本跑不起来', () => {
-    // ceil(10 ÷ 0.7) = 15 → 618 + 15 = 633，但实测下限更高
-    expect(minKnownFor(100, 'hard')).toBeGreaterThan(KNOWN_FLOOR + 15)
+  it('300 以上三档收敛到 3N：难度只影响语言复杂度，不影响力门槛', () => {
+    for (const level of ['easy', 'medium', 'hard']) {
+      // easy 的最大篇幅就是 300，所以三档在 300 这个词上同值
+      expect(minKnownFor(300, level)).toBe(300 * CAPACITY_RATIO)
+    }
+
+    expect(minKnownFor(450, 'medium')).toBe(450 * CAPACITY_RATIO)
+    expect(minKnownFor(600, 'hard')).toBe(600 * CAPACITY_RATIO)
   })
 
-  it('easy / medium 没有实测表，按 A 门折算（更严）', () => {
-    // easy: ceil(10 ÷ 0.35) = 29；medium: ceil(10 ÷ 0.5) = 20
+  it('100 / 200 词维持原有 A 门口径，低端用户不受影响', () => {
+    // easy: ceil(10 ÷ 0.35) = 29；medium: ceil(10 ÷ 0.5) = 20；easy 200: ceil(20 ÷ 0.35) = 58
     expect(minKnownFor(100, 'easy')).toBe(KNOWN_FLOOR + 29)
     expect(minKnownFor(100, 'medium')).toBe(KNOWN_FLOOR + 20)
-    expect(minKnownFor(600, 'easy')).toBe(KNOWN_FLOOR + Math.ceil(60 / 0.35))
+    expect(minKnownFor(200, 'easy')).toBe(KNOWN_FLOOR + 58)
+  })
+
+  it('600 词的旧实测值 704 不再放行', () => {
+    expect(minKnownFor(600, 'hard')).toBeGreaterThan(704)
   })
 })
 
@@ -71,9 +81,10 @@ describe('minKnownFor — 形状', () => {
     }
   })
 
-  it('实测点之间插值取「不超过 N 的最大实测点」，不跳水也不虚高', () => {
-    // 250 落在 200–300 之间，取 200 的实测下限 647（A 门折算 651 更高，取 max）
-    expect(minKnownFor(250, 'hard')).toBe(Math.max(647, KNOWN_FLOOR + Math.ceil(25 / 0.7)))
+  it('落在 200–300 之间时取 3N，不沿用上一档的门槛', () => {
+    // A 门折算 618 + ceil(25 ÷ 0.7) = 654，低于 250 × 3 = 750
+    expect(minKnownFor(250, 'hard')).toBe(250 * CAPACITY_RATIO)
+    expect(minKnownFor(250, 'hard')).toBeGreaterThan(KNOWN_FLOOR + Math.ceil(25 / 0.7))
   })
 
   it('hard 超过 600 返回 618 + 3000 = 3618，只为 /capacity 能用一个字段表达差额', () => {
@@ -194,7 +205,7 @@ describe('lengthLadder', () => {
     ])
   })
 
-  it('20 个词、638 个已知词：100/200 可用（200 走冷启动），300+ 仍是 known_words', () => {
+  it('20 个词、638 个已知词：100/200 可用（200 走冷启动），300+ 是 known_words', () => {
     const ladder = lengthLadder({ level: 'hard', knownWords: 638, personalWords: 20 })
 
     expect(ladder[0]).toMatchObject({ targetWords: 100, unlocked: true, blockedBy: null })
@@ -205,7 +216,8 @@ describe('lengthLadder', () => {
       blockedBy: null,
       minKnown: KNOWN_FLOOR,
     })
-    expect(ladder[2]).toMatchObject({ targetWords: 300, blockedBy: 'known_words', shortage: 661 - 638 })
+    // md/57：300 词起门槛是 3N = 900，不再是实测表的 661
+    expect(ladder[2]).toMatchObject({ targetWords: 300, blockedBy: 'known_words', shortage: 900 - 638 })
     expect(ladder[5]).toMatchObject({ targetWords: 600, blockedBy: 'known_words' })
     // 601+ 即便词够也先看解锁；这里是词不够 + 没解锁，解锁更根本
     expect(ladder[6]).toMatchObject({

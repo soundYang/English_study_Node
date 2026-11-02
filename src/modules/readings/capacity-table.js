@@ -4,6 +4,12 @@
  * 取代旧的 B 门（easy 1000 / medium 1900 / hard 3778）。旧门槛没有能力依据：
  * 实测 200 词只要 647 个已知词、600 词只要 704 个，而旧表要求 3778 个（高 5.2 倍）。
  *
+ * md/57（2026-11-01）起 300 词以上改为**词汇量 3 倍**：
+ * `minKnown(N) = max(3N, 用户地板 + A 门折算)`。
+ * 704 那一组实测值只对「按词频背单词」的用户成立——组成差的用户 785 个词写 600 词
+ * 也会连续失败（10 段全被词汇校验拒绝）。3 倍是产品上的保守线：
+ * 宁可把人挡在门外，也不要让用户点下去再收到 502。
+ *
  * 三个概念必须分清（混用是这张表最容易出错的地方）：
  *
  *   personalWords  个人词库里状态为 learning / mastered 的词数       ← 解锁最终模式看这个
@@ -43,18 +49,15 @@ const DEFAULT_LEVEL = 'easy'
 const HARD = 'hard'
 
 /**
- * 实测下限（md/27 §4.6–§4.8 + md/30 §5）：
- * 「这个 knownWords 下，同一参数跑 3 次能有 ≥ 2 次落在 ±15% 内」。
+ * 篇幅倍率（md/57）：写 N 词至少要认识 `3N` 个词（knownWords 口径，含基础词表）。
  *
- * 只有 hard 有实测值——三档共用同一份基础词表之后，hard 的候选池最大、最容易成立，
- * 其余两档按 A 门公式折算（更严），不需要单独采样。
+ * 为什么不再用实测表：704 是「从最高频开始背单词」的样本测出来的，
+ * 组成一般的用户 785 个词写 600 词仍会 2/3 失败。3 倍与三个已知点共线
+ * （100→300、600→1800、1000→3000），是产品上可解释的一条线。
  *
- * 100 这一行是 638 而不是 A 门的 633：全局下限 `VOCABULARY_THRESHOLD = 20`
- * 比 100 词的 A 门（15 个个人词）更高，15 词的样本连模型都调不到（md/30 §8.1）。
+ * 100 / 200 词的 A 门折算（633 / 647）比 3N 更高，那两个点由 `max` 自然接管。
  */
-const MEASURED_MIN_KNOWN = Object.freeze({
-  [HARD]: Object.freeze({ 100: 638, 200: 647, 300: 661, 400: 676, 500: 690, 600: 704 }),
-})
+export const CAPACITY_RATIO = 3
 
 /**
  * knownWords 的地板：基础词表 ∪ 日历词（个人词库为空时的并集大小）。
@@ -125,20 +128,6 @@ export function maxTargetWordsFor(level = HARD, personalWords = 0) {
   return base
 }
 
-/** 实测点里「不超过 n 的最大那一档」；n 比最小实测点还小时用最小实测点 */
-function measuredFloorFor(targetWords, level) {
-  const table = MEASURED_MIN_KNOWN[level]
-  if (!table) return 0
-
-  const keys = Object.keys(table).map(Number).sort((left, right) => left - right)
-  let picked = keys[0]
-  for (const key of keys) {
-    if (key <= targetWords) picked = key
-  }
-
-  return table[picked]
-}
-
 /**
  * 冷启动判定（md/39）：篇幅 ≤ 200 且个人词库凑不齐这次的目标词。
  *
@@ -158,18 +147,21 @@ export function isColdStart({ level = HARD, targetWords, personalWords = 0 }) {
 /**
  * 写 `targetWords` 词的文章至少要认识多少词。
  *
- *   minKnown(N) = max(实测下限, 618 + A 门折算)
+ *   minKnown(N) = max(CAPACITY_RATIO × N, 用户地板 + A 门折算)
  *
  * A 门是硬地板：候选池都凑不齐目标词时，写得更长只会更糟。
  * 两项都随 N 单调不减，取 max 之后整张表也单调不减。
  *
- * **冷启动例外（md/39）**：`targetWords ≤ 200` 且个人词库凑不齐目标词时，
- * 门槛退回**该用户自己的**地板「他的基础词表 ∪ 日历词」（md/56 §18）——
- * 0 词用户也能写 100 / 200 词。
- * 调用方要把 `personalWords` 与 `personalBasicWords` 传进来；不传（老脚本）则维持原口径。
+ * 为什么是 3 倍（md/57）：实测表（600 → 704）只对「从最高频开始背单词」的用户成立。
+ * 组成一般的用户 785 个词写 600 词会 10 段全被词汇校验拒绝（502 ARTICLE_TOO_INCOMPLETE），
+ * 而 3N 在三个已知点上共线：100→300、600→1800、1000→3000（最终模式解锁线）。
  *
- * 为什么不能用全量地板：`knownWords` 是按用户排除过的词算的，全量地板没有扣，
- * 用户每标一个「不认识」，门槛就离他远一分——标 3 个，就永远差 3 个。
+ * **地板按用户自己算**：他的基础词表（已扣掉标「不认识」的词）∪ 日历词。
+ * 用全量地板会让他「标一个不认识就永远差一个」（md/56 §18）。
+ *
+ * **冷启动例外（md/39）**：`targetWords ≤ 200` 且个人词库凑不齐目标词时，
+ * 门槛退回该用户自己的地板——0 词用户、基础词只剩 300 的用户都能写 100 / 200 词。
+ * 调用方要把 `personalWords` 与 `personalBasicWords` 传进来；不传（老脚本）则维持原口径。
  *
  * 超过常规上限（601–1000）分两种：
  *   · hard → 折算值 618 + 3000 = 3618。最终模式的真实闸门是 personalWords，
@@ -200,9 +192,11 @@ export function minKnownFor(
     return coldStartFloor(level, personalBasicWords)
   }
 
-  const byGate = knownFloorFor(level) + neededVocabulary({ targetWords: n, level })
+  const ownFloor = coldStartFloor(level, personalBasicWords)
+  const byGate = ownFloor + neededVocabulary({ targetWords: n, level })
 
-  return Math.max(measuredFloorFor(n, level), byGate)
+  // 100 / 200 词的 A 门（633 / 647）本来就比 3N 高，取 max 让低端口径保持不变
+  return Math.max(byGate, CAPACITY_RATIO * n)
 }
 
 /**

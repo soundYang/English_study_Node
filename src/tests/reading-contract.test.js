@@ -124,7 +124,7 @@ describe('篇幅门槛 — 已知词不够写这么长（md/30 §7.4）', () => 
     const error = knownWordsBelowLength({
       level: 'medium',
       targetWords: 400,
-      required: 690,
+      required: 1200,
       available: 658,
     })
 
@@ -137,13 +137,13 @@ describe('篇幅门槛 — 已知词不够写这么长（md/30 §7.4）', () => 
       kind: 'known_words',
       level: 'medium',
       targetWords: 400,
-      required: 690,
+      required: 1200,
       available: 658,
-      shortage: 32,
+      shortage: 542,
     })
     // 与界面按钮同一套叫法（进阶 / 挑战），不是「中等 / 困难」
-    expect(error.message).toContain('写 400 词的文章需要认识约 690 个单词')
-    expect(error.message).toContain('当前已有 658 个（还差 32 个）')
+    expect(error.message).toContain('写 400 词的文章需要认识约 1200 个单词')
+    expect(error.message).toContain('当前已有 658 个（还差 542 个）')
     expect(error.message).toContain('请缩短篇幅，或添加更多单词')
     expect(error.message).not.toContain('medium')
   })

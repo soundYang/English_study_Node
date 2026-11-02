@@ -69,6 +69,9 @@ export const basicWordsByLevel = Object.freeze(
  * 它不随篇幅变化，实测 600 词只要 704 个已知词。基础表 600 带来的「地板」效应
  * 现在只体现在 `knownWords = personalWords + 618` 这一层。
  *
+ * md/57 起 300 词以上的产品门槛改为 3N（600 词 → 1800）。那是**保守的产品线**，
+ * 不是能力实测值——704 只对「从最高频开始背单词」的用户成立。
+ *
  * 参数保留只是为了让旧的调用点与测试不必同步改签名。
  */
 export function getBasicWords() {

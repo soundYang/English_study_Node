@@ -90,7 +90,7 @@ describe('生成失败留痕 · 只有生成流程内的失败才入库', () => 
   it('已知词不够写这么长 → 422 且留痕，带篇幅门槛数字但没有模型轮次', async () => {
     await seedWords(45)
 
-    // hard + 600 词：minKnown(600) = 704 > 45 + 618 = 663
+    // hard + 600 词：minKnown(600) = 1800 > 45 + 618 = 663（md/57）
     const res = await generate({ level: 'hard', targetWords: 600, questionCount: 3 })
 
     expect(res.status).toBe(422)
@@ -102,8 +102,8 @@ describe('生成失败留痕 · 只有生成流程内的失败才入库', () => 
     expect(failure.errorCode).toBe('VOCABULARY_TOO_SMALL')
     expect(failure.level).toBe('hard')
     expect(failure.targetWords).toBe(600)
-    // md/30 §7 之后：失败样本记的是篇幅门槛，不再是按难度写死的 requiredKnown
-    expect(failure.minKnown).toBe(704)
+    // 失败样本记的是篇幅门槛（md/57：3N），不再是按难度写死的 requiredKnown
+    expect(failure.minKnown).toBe(1800)
     expect(failure.knownWords).toBe(45 + BASE_UNION)
     expect(failure.personalWords).toBe(45)
     expect(failure.finalMode).toBe(false)

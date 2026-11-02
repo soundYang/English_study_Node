@@ -52,7 +52,7 @@ const reply = (payload) => ({
   usage: { prompt_tokens: 100, completion_tokens: 200 },
 })
 
-/** medium / hard 100 词的已知词门槛都在 638 上下，1300 个词足够越过 */
+/** medium / hard 100 词的已知词门槛在 633–638，1300 个词足够越过（md/57 未改变低端） */
 function seedWords(count = 1300) {
   return Word.insertMany(
     Array.from({ length: count }, (_, index) => ({
