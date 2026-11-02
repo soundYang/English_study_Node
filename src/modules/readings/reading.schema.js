@@ -137,7 +137,7 @@ const readingShape = {
   vocabScope: z
     .array(
       z.enum(VOCAB_SCOPES, {
-        error: 'vocabScope 只能是 today_new / today_reviewed / all',
+        error: 'vocabScope 只能是 today_new / today_reviewed / reviewing / all',
       }),
     )
     .min(1, 'vocabScope 不能为空数组')

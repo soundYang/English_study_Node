@@ -24,7 +24,7 @@ export const TARGET_WORD_RATIO = 0.1
 export const REVIEW_STALE_DAYS = 7
 
 /** 词源选项；'all' 与其它值同时出现时按全选处理 */
-export const VOCAB_SCOPES = Object.freeze(['today_new', 'today_reviewed', 'all'])
+export const VOCAB_SCOPES = Object.freeze(['today_new', 'today_reviewed', 'reviewing', 'all'])
 
 /**
  * 归一化 scope。
@@ -113,6 +113,11 @@ export function sortCandidates(words, level, now = new Date()) {
  *
  * 「今天复习」依赖 lastReviewedAt，而这个字段只在**提交练习**时回写，
  * 所以刚生成、还没答题时它一定是空的——这是有意为之（方案 §4.1）。
+ *
+ * 「复习中」（md/22 #109）与 `deriveStudyState` 同口径：
+ * `status === 'learning'`、不是 `basic-removed` 墓碑、且不是今天新建的。
+ * 池子本身只查 learning / mastered（`findVocabulary`），这里再判一次
+ * status 与 source 是为了让纯函数在独立调用时也自洽。
  */
 export function filterByScope(words, scope, now = new Date()) {
   const normalized = normalizeScope(scope)
@@ -126,6 +131,15 @@ export function filterByScope(words, scope, now = new Date()) {
     if (
       normalized.includes('today_reviewed') &&
       isSameLocalDay(word.lastReviewedAt, now)
+    ) {
+      return true
+    }
+
+    if (
+      normalized.includes('reviewing') &&
+      word.status === 'learning' &&
+      word.source !== 'basic-removed' &&
+      !isSameLocalDay(word.createdAt, now)
     ) {
       return true
     }

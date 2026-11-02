@@ -524,6 +524,8 @@ describe('词库规模的产品含义（md/30 §7 / md/57）', () => {
 })
 
 describe('词源筛选', () => {
+  const capacity = (query) => request(app).get('/api/readings/capacity').query(query)
+
   it('vocabScope=today_new 时只从今天新增的词里取', async () => {
     await seedWords(200, 'old')
     // 时间戳由 Mongoose 自动写入，绕过它把老词挪到过去
@@ -546,6 +548,79 @@ describe('词源筛选', () => {
     expect(res.body.error.details.available).toBe(3)
     expect(res.body.error.details.scope).toEqual(['today_new'])
     expect(chatJson).not.toHaveBeenCalled()
+  })
+
+  it('vocabScope=reviewing 只从复习中的词里取，预检与生成同一个数', async () => {
+    await seedWords(20, 'old')
+    await Word.collection.updateMany(
+      { userId: config.defaultUserId },
+      { $set: { createdAt: new Date('2020-01-01T00:00:00Z') } },
+    )
+    // 今天新建的 10 个属于「新词」，不算「复习中」
+    await seedWords(10, 'fresh')
+
+    const forecast = await capacity({ targetWords: 100, vocabScope: 'reviewing' })
+    expect(forecast.body.levels.easy).toMatchObject({
+      available: 20,
+      required: 29,
+      sufficient: false,
+      shortage: 9,
+    })
+
+    const res = await generate({
+      level: 'easy',
+      targetWords: 100,
+      questionCount: 3,
+      vocabScope: ['reviewing'],
+    })
+
+    expect(res.status).toBe(422)
+    expect(res.body.error.code).toBe('VOCABULARY_TOO_SMALL')
+    expect(res.body.error.details.available).toBe(20)
+    expect(res.body.error.details.scope).toEqual(['reviewing'])
+    // 预检说不够，生成也在调模型之前拦下
+    expect(chatJson).not.toHaveBeenCalled()
+  })
+
+  it('reviewing 与 today_new 取并集', async () => {
+    await seedWords(20, 'old')
+    await Word.collection.updateMany(
+      { userId: config.defaultUserId },
+      { $set: { createdAt: new Date('2020-01-01T00:00:00Z') } },
+    )
+    await seedWords(10, 'fresh')
+
+    const forecast = await capacity(
+      'targetWords=100&vocabScope=reviewing&vocabScope=today_new',
+    )
+    expect(forecast.body.levels.easy.available).toBe(30)
+
+    // 30 个 ≥ A 门需要的 29 个，预检说能，真的点下去也能
+    chatJson.mockResolvedValue(reply)
+    const res = await generate({
+      level: 'easy',
+      targetWords: 100,
+      questionCount: 3,
+      vocabScope: ['reviewing', 'today_new'],
+    })
+    expect(res.status).toBe(201)
+  })
+
+  it('all 与 reviewing 同时出现时按全选处理', async () => {
+    await seedWords(20, 'old')
+    await Word.collection.updateMany(
+      { userId: config.defaultUserId },
+      { $set: { createdAt: new Date('2020-01-01T00:00:00Z') } },
+    )
+    await seedWords(10, 'fresh')
+
+    const onlyReviewing = await capacity({ targetWords: 100, vocabScope: 'reviewing' })
+    const withAll = await capacity(
+      'targetWords=100&vocabScope=reviewing&vocabScope=all',
+    )
+
+    expect(onlyReviewing.body.levels.easy.available).toBe(20)
+    expect(withAll.body.levels.easy.available).toBe(30)
   })
 
   it('空数组 → 400，field 指向 vocabScope', async () => {

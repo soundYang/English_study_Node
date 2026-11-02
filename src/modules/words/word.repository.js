@@ -77,7 +77,8 @@ export const wordRepository = {
    */
   findVocabulary(userId) {
     return Word.find({ userId, status: { $in: ['learning', 'mastered'] } })
-      .select('word status cocaRank lastReviewedAt createdAt')
+      // source 供 vocabScope=reviewing 排除 basic-removed 墓碑（md/22 #109）
+      .select('word status cocaRank lastReviewedAt createdAt source')
       .lean()
   },
 

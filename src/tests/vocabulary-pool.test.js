@@ -57,6 +57,7 @@ describe('normalizeScope', () => {
 
   it('all 与其它值同时出现时只留 all', () => {
     expect(normalizeScope(['today_new', 'all'])).toEqual(['all'])
+    expect(normalizeScope(['reviewing', 'all'])).toEqual(['all'])
   })
 
   it('重复值去重，顺序保持', () => {
@@ -95,6 +96,30 @@ describe('filterByScope', () => {
     expect(
       filterByScope(words, ['today_new', 'today_reviewed'], NOW).map((w) => w.word),
     ).toEqual(['today-new', 'today-reviewed'])
+  })
+
+  it('reviewing 只留复习中：排除今天新建、已掌握与墓碑', () => {
+    const mixed = [
+      makeWord('old-learning'),
+      makeWord('today-learning', { createdAt: new Date('2026-10-27T01:00:00') }),
+      makeWord('mastered', { status: 'mastered' }),
+      makeWord('tombstone', { status: 'new', source: 'basic-removed' }),
+    ]
+
+    expect(filterByScope(mixed, ['reviewing'], NOW).map((w) => w.word)).toEqual([
+      'old-learning',
+    ])
+  })
+
+  it('reviewing 与 today_new 取并集', () => {
+    const mixed = [
+      makeWord('old-learning'),
+      makeWord('today-learning', { createdAt: new Date('2026-10-27T01:00:00') }),
+    ]
+
+    expect(
+      filterByScope(mixed, ['reviewing', 'today_new'], NOW).map((w) => w.word),
+    ).toEqual(['old-learning', 'today-learning'])
   })
 })
 

@@ -68,6 +68,13 @@ describe('generateReadingSchema — vocabScope', () => {
     expect(result.data.vocabScope).toEqual(['today_new', 'today_reviewed'])
   })
 
+  it('reviewing 是合法词源', () => {
+    const result = parse(body({ vocabScope: ['reviewing'] }))
+
+    expect(result.success).toBe(true)
+    expect(result.data.vocabScope).toEqual(['reviewing'])
+  })
+
   it('显式传空数组 → 400，且 field 指向 vocabScope', () => {
     const result = parse(body({ vocabScope: [] }))
 
