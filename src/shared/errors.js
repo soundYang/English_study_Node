@@ -328,6 +328,9 @@ export const finalModeLocked = ({ targetWords, available, unlockAt }) => {
  *
  * 与 AI_INVALID_RESPONSE 分开报，是因为「结构没问题、只是没写完」和
  * 「模型返回了非法 JSON」对用户是两件事：前者缩短篇幅有用，后者只能重试。
+ *
+ * 判别值放在 `reason` 而不是 `kind`：前端把 `details.kind` 当成词汇类错误的
+ * 专用字段，复用会让这个可重试的 502 被显示成「词汇量不够」（md/58）。
  */
 export const articleTooIncomplete = ({ accepted, total, actualWords, minAcceptance }) =>
   new ApiError(
@@ -336,7 +339,7 @@ export const articleTooIncomplete = ({ accepted, total, actualWords, minAcceptan
     `这篇文章只写出来 ${accepted} / ${total} 段（${actualWords} 个英文单词），内容不完整。`
       + '请缩短篇幅后重试。',
     'targetWords',
-    { kind: 'segment_acceptance', accepted, total, actualWords, minAcceptance },
+    { reason: 'segment_acceptance', accepted, total, actualWords, minAcceptance },
   )
 
 /**

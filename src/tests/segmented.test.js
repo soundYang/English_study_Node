@@ -410,10 +410,12 @@ describe('分段路径 · 降级链', () => {
     expect(res.status).toBe(502)
     expect(res.body.error.code).toBe('ARTICLE_TOO_INCOMPLETE')
     expect(res.body.error.details).toMatchObject({
-      kind: 'segment_acceptance',
+      reason: 'segment_acceptance',
       accepted: 1,
       total: 3,
     })
+    // 不能再出现 kind：前端会把它当成词汇不足的判别字段（md/58）
+    expect(res.body.error.details.kind).toBeUndefined()
 
     // 正文注定不完整，不该再花一次收尾调用
     const finishCalled = chatJson.mock.calls.some(

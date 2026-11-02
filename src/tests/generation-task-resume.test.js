@@ -148,6 +148,9 @@ describe('分段任务的失败与续跑', () => {
     expect(failed.body.status).toBe('failed')
     expect(failed.body.error.code).toBe('ARTICLE_TOO_INCOMPLETE')
     expect(failed.body.retryable).toBe(true)
+    // 任务路径同样用 reason，不能复用 kind（md/58）
+    expect(failed.body.error.details.reason).toBe('segment_acceptance')
+    expect(failed.body.error.details.kind).toBeUndefined()
 
     // 失败前已经落库的东西：计划（含提示词与段级预算）+ 第 1 段正文
     const stored = await GenerationTask.findById(body.taskId)
