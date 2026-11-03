@@ -3,6 +3,8 @@
 Word Reading 的 API 服务：Express 5 + MongoDB + 本地 COCA 词库 + DeepSeek。
 主要能力是「按用户的个人词库，用受限词表生成一篇英语短文 + 阅读理解题」。
 
+配套前端：[English_study_vue](https://github.com/soundYang/English_study_vue)（Vue 3 + Vite）。本仓库负责 API、生成链路与数据口径；页面、交互与前端验收在前端仓库，两边按接口契约协作。
+
 设计、实施与缺陷文档属于项目内部资料，不随公开仓库提供。接口与行为以代码、`.env.example` 和本文档为准。
 
 ## 启动步骤
