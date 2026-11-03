@@ -3,6 +3,9 @@ node_modules/
 *.log
 coverage/
 
+# 设计文档只在本地保留，不随公开仓库发布
+md/
+
 # 文档改动前的临时备份
 *.bak
 

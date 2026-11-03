@@ -3,31 +3,7 @@
 Word Reading 的 API 服务：Express 5 + MongoDB + 本地 COCA 词库 + DeepSeek。
 主要能力是「按用户的个人词库，用受限词表生成一篇英语短文 + 阅读理解题」。
 
-接口字段见 [md/05_后端接口说明.md](md/05_后端接口说明.md)，
-任务化生成（建任务 + 轮询进度）见 [md/31_生成任务化_方案.md](md/31_生成任务化_方案.md)，
-生成动画能用到哪些字段见 [md/32_生成动画_后端支撑.md](md/32_生成动画_后端支撑.md)，
-用户与鉴权（个人中心）的口径见 [md/33_用户与鉴权_方案.md](md/33_用户与鉴权_方案.md)，
-登录/注册/个人中心接口怎么调见 [md/34_用户与鉴权_接口文档.md](md/34_用户与鉴权_接口文档.md)，
-每日生成额度与设备识别（防薅羊毛）的方案见 [md/35_每日额度与设备识别_方案.md](md/35_每日额度与设备识别_方案.md)，
-全局免费 token 预算（2 亿封顶）见 [md/36_全局免费额度预算_方案.md](md/36_全局免费额度预算_方案.md)，
-管理员后台（用户台账 + 反馈）见 [md/37_管理员后台_方案.md](md/37_管理员后台_方案.md)，
-冷启动生成（0 词也能写 100 / 200 词）见 [md/39_冷启动生成_方案.md](md/39_冷启动生成_方案.md)，
-管理员后台页面（`/admin`，配色与用户端一致）见 [md/40_管理员后台页面_方案.md](md/40_管理员后台页面_方案.md)，
-生词容忍开关（easy 固定 0，medium / hard 可选）见 [md/41_生词容忍开关_方案.md](md/41_生词容忍开关_方案.md)，
-最终模式下生词容忍默认开启见 [md/42_最终模式生词默认开启.md](md/42_最终模式生词默认开启.md)，
-用户自备 DeepSeek API Key 见 [md/43_用户自备API_Key_方案.md](md/43_用户自备API_Key_方案.md)，
-代码结构与不变量见 [md/24_后端代码说明.md](md/24_后端代码说明.md)，
-功能边界与已知限制见 [md/13_AI生成文章_功能与限制.md](md/13_AI生成文章_功能与限制.md)，
-现存缺陷台账见 [md/23_核心功能现存不足.md](md/23_核心功能现存不足.md)，
-后端缺陷与安全审查见 [md/45_后端缺陷与安全审查.md](md/45_后端缺陷与安全审查.md)，
-管理端查看「谁接入了自备 Key」见 [md/47_管理端自备Key可见性.md](md/47_管理端自备Key可见性.md)，
-文件（Word / Excel / 图片）导入单词的方案见 [md/48_单词导入_Word_Excel_图片_方案.md](md/48_单词导入_Word_Excel_图片_方案.md)，
-导入时用自备 Key 走 AI 识别（默认关）见 [md/49_单词导入_AI识别_自备Key方案.md](md/49_单词导入_AI识别_自备Key方案.md)，
-基础词汇库对游客开放（只读公开接口）见 [md/50_基础词汇库_游客只读_方案.md](md/50_基础词汇库_游客只读_方案.md)，
-手填单词也自动补词库快照（音标 / 词性 / 完整义项）见 [md/51_手填单词_词库快照补全_方案.md](md/51_手填单词_词库快照补全_方案.md)，
-基础词页的类型徽标与「未标记 / 认识 / 不认识」三态标记见 [md/52_基础词类型标签与三态标记_方案.md](md/52_基础词类型标签与三态标记_方案.md)，
-访问 / 报错 / 登录日志落库与后台查询（含用户 IP、登录记录、汇总）见 [md/53_访问日志与报错日志落库_方案.md](md/53_访问日志与报错日志落库_方案.md)，
-用户自选单词生成文章（`focusWords` 契约、目标词计划合并、任务幂等与命中反馈）见 [md/54_用户自选单词生成文章_方案.md](md/54_用户自选单词生成文章_方案.md)。
+设计、实施与缺陷文档属于项目内部资料，不随公开仓库提供。接口与行为以代码、`.env.example` 和本文档为准。
 
 ## 启动步骤
 
@@ -93,28 +69,28 @@ Mongo 断开时返回 **503** + `status: "degraded"`，这是唯一的健康判�
 | `MAX_REPAIR_ROUNDS` | 2 | 整篇路径的用词修正轮 |
 | `MAX_LENGTH_ROUNDS` | 1 | 超长时的压缩轮 |
 | `MAX_EXPAND_ROUNDS` | 0 | 偏短时的补写轮；默认关闭，只记录 `lengthStatus` |
-| `WORD_LIBRARY_LIMIT` | 5000 | 个人词库上限，只对新建计数；合并已有词不受限。`0` = 不限制。超限返回 409 `WORD_LIMIT_REACHED`（md/44） |
+| `WORD_LIBRARY_LIMIT` | 5000 | 个人词库上限，只对新建计数；合并已有词不受限。`0` = 不限制。超限返回 409 `WORD_LIMIT_REACHED` |
 | `RATE_LIMIT_ENABLED` | 非 test 环境为 true | 影响 `POST /readings/generate` 与 `POST /api/words/check` |
 | `RATE_LIMIT_GENERATE` | 20 次/分钟 | 按 IP 计 |
 | `DAILY_QUOTA_ENABLED` | true | 每日额度总开关。前端 `X-Device-Id` 已上线，默认打开；**批量采样实例要显式设 false**，否则网络指纹桶（10 次/天）会把 3100–3102 打成 429 |
-| `DAILY_QUOTA_ACCOUNT` / `_DEVICE` / `_NETWORK` | 3 / 3 / 10 | 账号 / 设备 / 网络指纹的每日次数（md/35） |
+| `DAILY_QUOTA_ACCOUNT` / `_DEVICE` / `_NETWORK` | 3 / 3 / 10 | 账号 / 设备 / 网络指纹的每日次数 |
 | `TRUST_PROXY` | false | 部署在 nginx / CDN 后面时必须配（`1` 或 `loopback`），否则 `req.ip` 全是反代地址 |
-| `TOKEN_BUDGET_ENABLED` | true | 全局免费池总开关；到顶后所有生成返回 503（md/36） |
+| `TOKEN_BUDGET_ENABLED` | true | 全局免费池总开关；到顶后所有生成返回 503 |
 | `FREE_TOKEN_BUDGET` | 200000000 | 免费池总量（token）。到顶是**永久停服**，不是每日恢复 |
-| `ADMIN_USERNAME` | 空 | 管理员账号（只有一个）。留空则 `/api/admin/*` 整体 404（md/37） |
+| `ADMIN_USERNAME` | 空 | 管理员账号（只有一个）。留空则 `/api/admin/*` 整体 404 |
 | `ADMIN_PASSWORD_HASH` | 空 | scrypt 哈希，用 `node scripts/hash-admin-password.mjs '密码'` 生成；明文永不入库 |
-| `USER_API_KEY_ENABLED` | true | 自备 Key 总开关；**生效还需要 `USER_API_KEY_SECRET`**，缺任一项时 `GET /api/profile/api-key` 返回 `enabled: false`（md/43） |
+| `USER_API_KEY_ENABLED` | true | 自备 Key 总开关；**生效还需要 `USER_API_KEY_SECRET`**，缺任一项时 `GET /api/profile/api-key` 返回 `enabled: false` |
 | `USER_API_KEY_SECRET` | 空 | 加密主密钥，`node scripts/gen-user-key-secret.mjs` 生成；丢失后存量 Key 全部无法解密 |
 | `USER_API_KEY_SECRET_PREVIOUS` | 空 | 轮换期间保留的旧主密钥；两张表都匹配不上时按免费路径处理 |
 | `USER_API_KEY_VERIFY_TIMEOUT_MS` | 8000 | 导入时请求上游 `/models` 的超时，不重试 |
 | `RATE_LIMIT_API_KEY` | 5 次/分钟 | `PUT` / `DELETE` / `verify` 共用同一个桶（按 IP） |
-| `OCR_ENABLED` | true | 图片导入总开关；关掉后图片返回 422 `OCR_FAILED`，Word / Excel 不受影响（md/48） |
+| `OCR_ENABLED` | true | 图片导入总开关；关掉后图片返回 422 `OCR_FAILED`，Word / Excel 不受影响 |
 | `OCR_LANG` | `eng` | 识别语言，多个用 `+` 连接。仓库只带 `eng`：快速模式只取英文词，释义留空由词库补 |
 | `OCR_LANG_PATH` | 空 | 模型目录。留空 = 用仓库自带的 `data/ocr`；目录不存在时退回 CDN（首次要下 2MB） |
 | `OCR_CACHE_PATH` | 空 | 留空 = 不写缓存。模型已在本地，缓存只会再占 4MB |
 | `OCR_TIMEOUT_MS` | 20000 | 单张图识别超时；超时的 worker 直接销毁，不放回池 |
 | `OCR_WORKERS` | 2 | 常驻 worker 数 = 同时识别几张图；每个约 50–80MB 内存 |
-| `IMPORT_AI_ENABLED` | true | 导入 AI 识别的**能力**开关。请求默认 `mode=local`，只有显式 `mode=ai` 且账号接了自备 Key 才会调模型；关掉后 `mode=ai` 一律 403（md/49） |
+| `IMPORT_AI_ENABLED` | true | 导入 AI 识别的**能力**开关。请求默认 `mode=local`，只有显式 `mode=ai` 且账号接了自备 Key 才会调模型；关掉后 `mode=ai` 一律 403 |
 | `IMPORT_AI_MAX_ROWS_PER_CALL` | 150 | 每片最多多少行，也是输出 token 的主要闸门（150 × 约 28 token） |
 | `IMPORT_AI_MAX_CHARS_PER_CALL` | 6000 | 文本形态下每片最多多少字符；不会把一行从中间劈开 |
 | `IMPORT_AI_MAX_CALLS` | 4 | 单次导入最多调几次模型；4 × 150 = 600 ≥ 500 行上限 |
@@ -122,8 +98,8 @@ Mongo 断开时返回 **503** + `status: "degraded"`，这是唯一的健康判�
 | `IMPORT_AI_USER_LIMIT` | 10 次/小时 | 按用户限流（内存计数，单实例）；不按 IP，避免共享出口互相误伤 |
 
 `MAX_UNKNOWN_WORDS` 默认留空：只有生词容忍生效时，预算才按难度取
-（medium 3 / hard 5；easy 恒为 0，md/41）。生词容忍不传时为「自动」：
-**最终模式默认开**，其余默认关（md/42）；显式 `true` / `false` 始终优先。
+（medium 3 / hard 5；easy 恒为 0）。生词容忍不传时为「自动」：
+**最终模式默认开**，其余默认关；显式 `true` / `false` 始终优先。
 显式设置会把它变成**全局覆盖**，三档压成同一个数，只用于调试与回放对比——
 它不能凭空打开开关，开关没开时预算仍是 0。
 
@@ -167,7 +143,7 @@ node scripts/build-word-ranks.mjs        # 生成 data/word-ranks.json
 三档基础词表 `data/basic-words.{easy,medium,hard}.json` 是**人工确认过的成品**，
 `build-basic-words.mjs` 默认只写 `*.candidate.json`；扩容用
 `extend-basic-words.mjs`（默认以 hard 为基数写回）。误覆盖会让整条生成链路的
-词表口径变化，改之前先看 `md/21` §2。
+词表口径变化，改之前先确认三档词表的选取口径。
 
 ## 运维与采样脚本
 
@@ -179,7 +155,7 @@ node scripts/build-word-ranks.mjs        # 生成 data/word-ranks.json
 | `node scripts/summarize-runs.mjs` | 只读汇总：成功率、P95、token、费用 | 只读 |
 | `npm run replay` | 用离线夹具回放词表校验，验证「改校验器没引入回归」 | 只读 |
 | `npm run calibrate` | 诊断历史成功正文的表外词分布；门槛数字已作废，现行值看 `capacity-table.js` | 只读 |
-| `node scripts/hash-admin-password.mjs '密码'` | 生成 `ADMIN_PASSWORD_HASH`，只打印可直接粘进 `.env` 的一行（md/37） | 只读，不打印明文 |
+| `node scripts/hash-admin-password.mjs '密码'` | 生成 `ADMIN_PASSWORD_HASH`，只打印可直接粘进 `.env` 的一行 | 只读，不打印明文 |
 | `node scripts/backfill-token-usage.mjs` | 把历史 `readings` / `generationfailures` 的 token 写成 `legacy` 流水；**默认 dry-run**，`--yes` 才写 | 写库；按 `(userId, totalTokens, createdAt)` 判重，可重复执行 |
 
 **费用提示**：所有价格按 token 计，DeepSeek 牌价会变，代码里只有默认值。
@@ -199,18 +175,17 @@ src/
   modules/
     health/             健康检查
     words/              个人词库 CRUD 与选池排序
-      import/           文件抽取：嗅探 → docx / xlsx / csv / txt / 图片（md/48）
+      import/           文件抽取：嗅探 → docx / xlsx / csv / txt / 图片
     dictionary/         COCA 词库加载与前缀检索
     readings/           生成编排、分段闭环、校验、判分、历史
-    quota/              每日额度：账号 / 设备 / 网络指纹三档计数（md/35）
-    budget/             全局免费 token 池：每次模型调用累加，到顶即停（md/36）
-    usage/              token 流水（每次模型调用一条，按用户 / 任务 / 天归类，md/37）
-    feedback/           用户反馈：用户侧提交 + 管理端回复（md/37）
-    admin/              管理员后台：单账号鉴权 + 只读用户台账（md/37）
+    quota/              每日额度：账号 / 设备 / 网络指纹三档计数
+    budget/             全局免费 token 池：每次模型调用累加，到顶即停
+    usage/              token 流水（每次模型调用一条，按用户 / 任务 / 天归类）
+    feedback/           用户反馈：用户侧提交 + 管理端回复
+    admin/              管理员后台：单账号鉴权 + 只读用户台账
   tests/                vitest（每个文件独立内存 Mongo）
 data/                   词库、三档基础词表、不规则词形、词频排名、OCR 语言模型
 scripts/                构建、采样、回放、清理
-md/                     设计、实施、限制与缺陷文档
 ```
 
 ## 常见错误
@@ -226,20 +201,20 @@ md/                     设计、实施、限制与缺陷文档
 | 生成 429 `RATE_LIMITED` | 同一 IP 超过 20 次/分 | 等窗口结束；批量脚本要设 `RATE_LIMIT_ENABLED=false` |
 | 生成 429 `QUOTA_EXCEEDED` | 当天额度用完（账号、设备或网络指纹任一档） | 等北京时间 0 点；`details.scope` 说明是哪一档，`Retry-After` 是到重置的秒数 |
 | 生成 503 `FREE_BUDGET_EXHAUSTED` | 全局免费池（`FREE_TOKEN_BUDGET`）用完了 | **不会自己恢复**：加预算（改 `.env` 或调计数器）后重启；`details` 里有上限与已用量 |
-| `/api/admin/*` 一律 404 | 没配 `ADMIN_USERNAME` 或 `ADMIN_PASSWORD_HASH` | 生成哈希写进 `.env` 后**重启**；改密码同样要重启（md/37 §2.1） |
-| 自备 Key 接口 503 `USER_API_KEY_DISABLED` | `USER_API_KEY_ENABLED=false` 或 `USER_API_KEY_SECRET` 为空 | 跑 `node scripts/gen-user-key-secret.mjs` 填进 `.env` 后重启（md/43 §8） |
+| `/api/admin/*` 一律 404 | 没配 `ADMIN_USERNAME` 或 `ADMIN_PASSWORD_HASH` | 生成哈希写进 `.env` 后**重启**；改密码同样要重启 |
+| 自备 Key 接口 503 `USER_API_KEY_DISABLED` | `USER_API_KEY_ENABLED=false` 或 `USER_API_KEY_SECRET` 为空 | 跑 `node scripts/gen-user-key-secret.mjs` 填进 `.env` 后重启 |
 | 生成 403 `USER_API_KEY_INVALID` | 生成中途上游拒绝了用户的自备 Key（余额 / 吊销） | 不是登录问题，不会踢回登录页：引导用户去个人中心重新导入；该 Key 已自动标为 `invalid` |
-| 任务 `failed` + `USER_API_KEY_MISSING` | 创建时用了自备 Key，执行前被删 / 解不开 | 重新导入 Key 后 `retry`；**不会**悄悄改花免费池（md/43 §6.3） |
+| 任务 `failed` + `USER_API_KEY_MISSING` | 创建时用了自备 Key，执行前被删 / 解不开 | 重新导入 Key 后 `retry`；**不会**悄悄改花免费池 |
 | 个人中心显示 `unreadable` | 主密钥换过且旧值没留在 `_PREVIOUS` | 把旧值补到 `USER_API_KEY_SECRET_PREVIOUS` 并重启，或让用户重新导入 |
 | 管理端 401 `ADMIN_AUTH_REQUIRED` | 没带管理员令牌 / 过期（12 小时）/ 登出过 | 重新登录；用户令牌与管理端令牌不通用 |
 | 管理端登录 429 | 15 分钟内失败 5 次 / 同一 IP | 等窗口结束；成功登录不占配额 |
 | 用户反馈 429 `RATE_LIMITED`（`scope=feedback`） | 同一设备当天已提交 5 条 | 明天再来；计数按北京时间自然日 |
 | 文件导入 422 `OCR_FAILED`「图片识别未就绪」 | `data/ocr/` 里没有对应语言的模型 | `npm run fetch:ocr`（或按提示设 `OCR_LANG_PATH`）；Word / Excel 不受影响 |
 | 文件导入 422 `OCR_FAILED`「图片识别暂时不可用」 | 上一次起 worker 失败，60 秒冷却中 | 等一分钟；持续失败看日志里的 `ocr worker error` |
-| 文件导入 422 `OCR_FAILED`「图片尺寸太大」 | 超过 4000 万像素或单边 3 万；文件可能只有几百 KB | 压缩 / 裁剪后再传。这是**解码前**的拦截：一张 20000×20000 的纯白 PNG 只有 380KB，解码却要 1.2GB（md/48 §16） |
+| 文件导入 422 `OCR_FAILED`「图片尺寸太大」 | 超过 4000 万像素或单边 3 万；文件可能只有几百 KB | 压缩 / 裁剪后再传。这是**解码前**的拦截：一张 20000×20000 的纯白 PNG 只有 380KB，解码却要 1.2GB |
 | 文件导入 415 `UNSUPPORTED_MEDIA_TYPE` | `.doc` / `.xls` / `.pdf` 等旧格式，或不是 Office 文件 | 按提示另存为 `.docx` / `.xlsx`；txt / csv 直接传 |
 | 生成 422 `VOCABULARY_TOO_SMALL` | 已知词不够写这么长（门槛随篇幅走，见 `capacity-table.js` 的 `minKnownFor`） | 缩篇幅或加词；这是预期拦截，不是故障 |
-| 任务变成 `failed` + `TASK_INTERRUPTED` | 执行实例失联（重启 / kill -9 / OOM），心跳过期后被回收 | 调 `POST /generate/tasks/:id/retry`：已收下的段会复用，只补失败的段（md/31 §11） |
-| 生成 400 `final_mode_locked` | hard 写 601–1000 词，但个人词库不足 3000 | 继续攒词；解锁后上限从 600 抬到 1000（md/30 §2.2） |
+| 任务变成 `failed` + `TASK_INTERRUPTED` | 执行实例失联（重启 / kill -9 / OOM），心跳过期后被回收 | 调 `POST /generate/tasks/:id/retry`：已收下的段会复用，只补失败的段 |
+| 生成 400 `final_mode_locked` | hard 写 601–1000 词，但个人词库不足 3000 | 继续攒词；解锁后上限从 600 抬到 1000 |
 | 生成 400 `target_words_cap` | 篇幅超过该难度上限（300 / 450 / 600；hard 已解锁时 1000） | 前端滑块上限读 `/capacity` 的 `levels[level].maxTargetWords` |
 | 测试首次跑卡住几分钟 | 正在下载 mongodb-memory-server 二进制 | 等它下完；断网环境需要预置缓存 |
