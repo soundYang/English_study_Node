@@ -136,7 +136,7 @@ function classify(messages) {
 }
 
 /** 默认打桩：规划 3 段、每段一次过、收尾成功；overrides 按段号改行为 */
-function mockHappyPath(overrides = {}) {
+function mockHappyPath(overrides = {}, finish = FINISH) {
   const calls = {}
 
   chatJson.mockImplementation(async ({ messages }) => {
@@ -145,7 +145,7 @@ function mockHappyPath(overrides = {}) {
     calls[key] = (calls[key] ?? 0) + 1
 
     if (step.type === 'plan') return json(PLAN)
-    if (step.type === 'finish') return json(FINISH)
+    if (step.type === 'finish') return json(finish)
 
     const override = overrides[step.index]?.(step, calls[key])
     if (override) return json({ text: override })
@@ -194,6 +194,23 @@ describe('分段路径 · 正常闭环', () => {
 
     // 分段路径统一用 0.5 的温度
     expect(chatJson.mock.calls.every(([args]) => args.temperature === 0.5)).toBe(true)
+  })
+
+  it('收尾返回逐段 translations 时，按正文段落数落库', async () => {
+    await seedWords(400)
+    const finish = {
+      ...FINISH,
+      translations: ['第一段中文。', '第二段中文。', '第三段中文。'],
+    }
+    delete finish.translation
+    mockHappyPath({}, finish)
+
+    const res = await generate({ level: 'easy', targetWords: 100, questionCount: 3 })
+
+    expect(res.status).toBe(201)
+    const doc = await Reading.findById(res.body.id).lean()
+    expect(doc.translations).toEqual(['第一段中文。', '第二段中文。', '第三段中文。'])
+    expect(doc.translation).toBe('第一段中文。\n\n第二段中文。\n\n第三段中文。')
   })
 
   it('某段首轮有表外词，重写后通过 → 只多调一次模型', async () => {

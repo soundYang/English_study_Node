@@ -2,7 +2,7 @@ import { ApiError, ERROR_CODES, articleTooIncomplete } from '../../shared/errors
 import { logger } from '../../shared/logger.js'
 import { config } from '../../config/index.js'
 import { freeAiKey } from '../ai-keys/ai-key.service.js'
-import { parseAiContent } from './ai.schema.js'
+import { normalizeTranslations, parseAiContent } from './ai.schema.js'
 import {
   buildFinishMessages,
   buildSegmentMessages,
@@ -323,7 +323,14 @@ function parseFinish(content) {
  * 跑完整条分段链路：并发写段 → 拼装 → 收尾。
  *
  * @returns {Promise<{
- *   data: { title: string, article: string, translation: string, names: string[], questions: Array },
+ *   data: {
+ *     title: string,
+ *     article: string,
+ *     translation: string,
+ *     translations: string[],
+ *     names: string[],
+ *     questions: Array,
+ *   },
  *   stats: Array,
  *   repairCount: number,
  *   finishReason: string|null,
@@ -623,6 +630,19 @@ export async function generateSegmented({
     )
   }
 
+  // 收尾模型只拿到拼好的正文，翻译必须按同样段落数返回。
+  // 对不上时只保留整篇翻译（translations 为空），前端退回整段展示，
+  // 不因为翻译分段就让整篇生成失败。
+  const aligned = normalizeTranslations({ article, ...parsed })
+
+  if (!aligned) {
+    throw new ApiError(
+      502,
+      ERROR_CODES.AI_INVALID_RESPONSE,
+      'AI 返回结构不合法，请稍后重试。',
+    )
+  }
+
   const declaredNames = Array.isArray(parsed.names)
     ? parsed.names.filter((name) => typeof name === 'string' && name.trim())
     : []
@@ -654,7 +674,8 @@ export async function generateSegmented({
     data: {
       title: parsed.title,
       article,
-      translation: parsed.translation,
+      translation: aligned.translation,
+      translations: aligned.translations,
       names: mergedNames,
       questions: parsed.questions,
     },

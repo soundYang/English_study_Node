@@ -124,6 +124,43 @@ describe('GET /api/readings/:id · 已提交分支', () => {
     expect(res.text).not.toContain('vocabularySnapshot')
     expect(res.text).not.toContain('aiMeta')
   })
+
+  it('返回逐段翻译，下标与正文段落一一对应', async () => {
+    const reading = await makeSubmitted({
+      article: 'Tom is a good boy.\n\nHis dog is big.',
+      translation: '汤姆是个好男孩。\n\n他的狗很大。',
+      translations: ['汤姆是个好男孩。', '他的狗很大。'],
+    })
+
+    const res = await detail(reading._id)
+
+    expect(res.body.translations).toEqual(['汤姆是个好男孩。', '他的狗很大。'])
+    // 整篇翻译继续保留，老前端不受影响
+    expect(res.body.translation).toContain('汤姆')
+  })
+
+  it('老文档没有 translations 时，整篇翻译按空行回退拆段', async () => {
+    const reading = await makeSubmitted({
+      article: 'Tom is a good boy.\n\nHis dog is big.',
+      translation: '汤姆是个好男孩。\n\n他的狗很大。',
+    })
+
+    const res = await detail(reading._id)
+
+    expect(res.body.translations).toEqual(['汤姆是个好男孩。', '他的狗很大。'])
+  })
+
+  it('翻译与正文段数对不上时回空数组，不硬拆句子', async () => {
+    const reading = await makeSubmitted({
+      article: 'Tom is a good boy.\n\nHis dog is big.',
+      translation: '汤姆是个好男孩，他的狗很大。',
+    })
+
+    const res = await detail(reading._id)
+
+    expect(res.body.translations).toEqual([])
+    expect(res.body.translation).toContain('汤姆')
+  })
 })
 
 describe('GET /api/readings/:id · 404', () => {

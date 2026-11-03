@@ -17,7 +17,10 @@ export const QUESTION_TYPES = Object.freeze(['detail', 'paraphrase', 'inference'
 export const aiReadingSchema = z.object({
   title: z.string().trim().min(1).max(120),
   article: z.string().trim().min(100).max(6000),
-  translation: z.string().trim().min(20),
+  // 逐段中文翻译与整篇翻译二选一：新提示词只要求 translations，
+  // translation 保留给老样本 / 老提示词的输出，两者在 normalizeTranslations 里合并。
+  translation: z.string().trim().min(20).optional(),
+  translations: z.array(z.string().trim().min(1)).optional(),
   names: z.array(z.string().trim().min(1).max(30)).max(3).default([]),
   questions: z
     .array(
@@ -182,6 +185,62 @@ export function checkQuestionWarnings(questions) {
 const articleLevelSchema = aiReadingSchema.omit({ questions: true })
 
 /**
+ * 按空行切段。正文落库时就是用 `\n\n` 拼的（分段生成 / 整篇生成同一口径），
+ * 翻译对齐也以这个切法为准，避免前后端各写一套正则。
+ */
+export function splitParagraphs(text) {
+  return String(text ?? '')
+    .split(/\n{2,}/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
+/**
+ * 把模型返回的中文翻译整理成「与正文段落一一对应」的数组。
+ *
+ * 三种来源，按可靠性排序：
+ *   1. `translations` 条数正好等于正文段落数 —— 直接用；
+ *   2. 只有整篇 `translation`，但它按空行切出来的段数也对得上 —— 拆开用；
+ *   3. 对不上 —— 保留整篇翻译，`translations` 留空，前端退回整段展示。
+ *
+ * 第 3 种只用于兼容老文档 / 模型没按新提示词返回的情况，
+ * 不会硬拆句子把第二段的翻译配到第三段英文上。
+ *
+ * @returns {{ translation: string, translations: string[] } | null}
+ *   两种翻译都没有时返回 null，由调用方判为结构不合法。
+ */
+export function normalizeTranslations({ article, translation, translations }) {
+  const paragraphs = splitParagraphs(article)
+  const list = Array.isArray(translations)
+    ? translations.map((item) => String(item ?? '').trim()).filter(Boolean)
+    : []
+
+  if (paragraphs.length > 0 && list.length === paragraphs.length) {
+    return { translation: list.join('\n\n'), translations: list }
+  }
+
+  const text = String(translation ?? '').trim()
+
+  if (text) {
+    const parts = splitParagraphs(text)
+
+    if (paragraphs.length > 0 && parts.length === paragraphs.length) {
+      return { translation: text, translations: parts }
+    }
+
+    return { translation: text, translations: [] }
+  }
+
+  // 只给了 translations 但条数对不上：拼成整篇保留，逐段数组留空。
+  // 文章已经写完了，不因为翻译分段失败把整篇作废。
+  if (list.length > 0) {
+    return { translation: list.join('\n\n'), translations: [] }
+  }
+
+  return null
+}
+
+/**
  * zod 之外的派生校验。
  *
  * `kind` 让调用方区分两类失败：`questions` 只需要重出题目，
@@ -201,7 +260,13 @@ export function validateAiReading(raw, { questionCount, level, checkQuestions = 
       return { ok: false, reason: `${issue.path.join('.') || '结构'}：${issue.message}` }
     }
 
-    return { ok: true, data: articleOnly.data, warnings: [] }
+    const aligned = normalizeTranslations(articleOnly.data)
+
+    if (!aligned) {
+      return { ok: false, reason: 'translation：缺少中文翻译' }
+    }
+
+    return { ok: true, data: { ...articleOnly.data, ...aligned }, warnings: [] }
   }
 
   const parsed = aiReadingSchema.safeParse(raw)
@@ -211,7 +276,13 @@ export function validateAiReading(raw, { questionCount, level, checkQuestions = 
     return { ok: false, reason: `${issue.path.join('.') || '结构'}：${issue.message}` }
   }
 
-  const data = parsed.data
+  const aligned = normalizeTranslations(parsed.data)
+
+  if (!aligned) {
+    return { ok: false, reason: 'translation：缺少中文翻译' }
+  }
+
+  const data = { ...parsed.data, ...aligned }
 
   if (data.questions.length !== questionCount) {
     return {

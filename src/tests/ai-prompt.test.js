@@ -146,6 +146,9 @@ describe('分段路径提示词', () => {
     expect(content).toContain('"evidence"')
     expect(content).toContain('原样复制')
     expect(content).toContain('至少 2 道 detail')
+    // 逐段翻译：收尾任务知道正文段数，必须按段落数约束输出
+    expect(content).toContain('"translations"')
+    expect(content).toContain('正好 1 条')
   })
 })
 
@@ -217,7 +220,7 @@ describe('buildRepairMessages', () => {
     const content = repaired.at(-1).content
 
     expect(content).toContain('只重写 questions')
-    expect(content).toContain('title、article、translation 与 names 完全不变')
+    expect(content).toContain('title、article、translations 与 names 完全不变')
     // 配额口径跟难度走
     expect(content).toContain('至少 2 道 detail')
     // 题目是改在上一轮输出上的，必须把它放回上下文

@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   checkQuestionQuality,
   checkQuestionWarnings,
+  normalizeTranslations,
   validateAiReading,
 } from '../modules/readings/ai.schema.js'
 
@@ -215,5 +216,70 @@ describe('validateAiReading · 失败类型的区分', () => {
     expect(result.warnings).toEqual([
       expect.objectContaining({ questionId: 1, code: 'detail_answer_overlap' }),
     ])
+  })
+})
+
+describe('normalizeTranslations · 逐段翻译对齐', () => {
+  const article = 'First paragraph.\n\nSecond paragraph.\n\nThird paragraph.'
+
+  it('translations 条数等于段落数时直接采用，并拼出整篇 translation', () => {
+    const result = normalizeTranslations({
+      article,
+      translations: ['第一段。', '第二段。', '第三段。'],
+    })
+
+    expect(result).toEqual({
+      translation: '第一段。\n\n第二段。\n\n第三段。',
+      translations: ['第一段。', '第二段。', '第三段。'],
+    })
+  })
+
+  it('只有整篇 translation 时按空行拆开', () => {
+    const result = normalizeTranslations({
+      article,
+      translation: '第一段。\n\n第二段。\n\n第三段。',
+    })
+
+    expect(result.translations).toEqual(['第一段。', '第二段。', '第三段。'])
+    expect(result.translation).toBe('第一段。\n\n第二段。\n\n第三段。')
+  })
+
+  it('段数对不上时保留整篇翻译，translations 回空，不硬拆句子', () => {
+    const result = normalizeTranslations({
+      article,
+      translation: '一整段没有分行的翻译。',
+    })
+
+    expect(result.translation).toBe('一整段没有分行的翻译。')
+    expect(result.translations).toEqual([])
+  })
+
+  it('只有 translations 且条数对不上：拼成整篇保留，不让整篇生成失败', () => {
+    const result = normalizeTranslations({ article, translations: ['第一段。', '第二段加第三段。'] })
+
+    expect(result.translation).toBe('第一段。\n\n第二段加第三段。')
+    expect(result.translations).toEqual([])
+  })
+
+  it('两种翻译都没有 → null', () => {
+    expect(normalizeTranslations({ article })).toBeNull()
+    expect(normalizeTranslations({ article, translations: [] })).toBeNull()
+  })
+
+  it('validateAiReading 接受只返回 translations 的新格式', () => {
+    const result = validateAiReading(
+      {
+        title: 'A Good Day',
+        article: ARTICLE,
+        translations: ['汤姆是个好男孩，他的书很大，他们是非常好的朋友。'],
+        names: ['Tom'],
+        questions: detailSet(),
+      },
+      { questionCount: 3, level: 'easy' },
+    )
+
+    expect(result.ok).toBe(true)
+    expect(result.data.translation).toBe('汤姆是个好男孩，他的书很大，他们是非常好的朋友。')
+    expect(result.data.translations).toEqual(['汤姆是个好男孩，他的书很大，他们是非常好的朋友。'])
   })
 })

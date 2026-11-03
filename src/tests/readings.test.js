@@ -266,6 +266,24 @@ describe('POST /api/readings/generate · 正常生成', () => {
     })
   })
 
+  it('逐段翻译按正文段落落库，整篇 translation 由数组拼回', async () => {
+    await seedWords(400)
+    const article =
+      'Tom is a good boy. His book is big and the boy is small.\n\n'
+      + 'Tom and his book play in the house. They are good friends. Tom likes his book very much.'
+    const payload = makePayload({ article })
+    delete payload.translation
+    payload.translations = ['第一段：汤姆是个好男孩。', '第二段：汤姆和书在房子里玩。']
+    chatJson.mockResolvedValue(reply(payload))
+
+    const res = await generate(VALID_BODY)
+
+    expect(res.status).toBe(201)
+    const doc = await Reading.findById(res.body.id).lean()
+    expect(doc.translations).toEqual(['第一段：汤姆是个好男孩。', '第二段：汤姆和书在房子里玩。'])
+    expect(doc.translation).toBe('第一段：汤姆是个好男孩。\n\n第二段：汤姆和书在房子里玩。')
+  })
+
   it('detail 答案与依据重合不足时仍然 201，警告落进 aiMeta', async () => {
     await seedWords(400)
     const payload = makePayload()

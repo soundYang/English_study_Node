@@ -60,7 +60,7 @@ ${targetRule}
     - evidence：从正文**原样复制**一句作为依据，不要改写、不要加引号之外的内容。
     ${questionTypeRule(level)}
     detail 题的正确答案最好能在 evidence 里找到对应词（同义改写、反义表达也算），不能只靠常识判断。
-11. 中文翻译必须与英文正文逐段对应，不得增删内容。
+11. translations 必须与英文正文逐段对应：条数等于正文段落数，第 i 条对应第 i 段，不得增删段落。
 12. 如果三份清单里的词太少、确实无法写出通顺文章，返回 {"error": "INSUFFICIENT_VOCABULARY"}，不要强行编造。
 13. 只输出一个 JSON 对象，不要输出 Markdown 代码块标记或任何解释性文字。`
 }
@@ -172,12 +172,14 @@ ${sections}
 {
   "title": "string",
   "article": "string",
-  "translation": "string",
+  "translations": ["第 1 段的中文翻译", "第 2 段的中文翻译"],
   "names": ["string"],
   "questions": [
     { "id": 1, "question": "string", "type": "detail", "evidence": "正文里原样的一句", "options": ["…","…","…","…"], "correctAnswer": 0, "explanation": "string" }
   ]
-}`
+}
+
+article 用空行分段（段落之间两个换行）；translations 的条数必须与 article 的段落数完全相等，第 1 条对应第 1 段，不得增删段落。`
 
   return [
     { role: 'system', content: systemPrompt(range, level, freeForm) },
@@ -235,7 +237,7 @@ ${targetRule}
 8. 需要人名时最多使用 3 个，并在 names 字段里声明；除人名和星期、月份名称外，不得出现其他专有名词。
 9. 题目必须能根据文章内容回答，每题只有一个正确答案，四个选项互不重复。
 10. 每道题必须给出 type（detail / paraphrase / inference / main_idea）与 evidence（从正文原样复制的一句）。${questionTypeRule(level)}detail 题的正确答案最好能在 evidence 里找到对应词（同义改写也算）。
-11. 中文翻译必须与英文正文逐段对应，不得增删内容。
+11. translations 必须与英文正文逐段对应：条数等于正文段落数，第 i 条对应第 i 段，不得增删段落。
 12. 只输出当前步骤要求的 json 对象，不要输出 Markdown 代码块标记或任何解释性文字。
 
 ${sections}`
@@ -394,10 +396,10 @@ export function buildFinishMessages(system, { article, questionCount, paragraphC
 ${article}
 """
 
-请只输出标题、中文翻译、题目与 names：
-{"title":"…","translation":"…","names":["…"],"questions":[{"id":1,"question":"…","type":"detail","evidence":"正文里原样的一句","options":["…","…","…","…"],"correctAnswer":0,"explanation":"…"}]}
+请只输出标题、逐段中文翻译、题目与 names：
+{"title":"…","translations":["第 1 段中文","第 2 段中文"],"names":["…"],"questions":[{"id":1,"question":"…","type":"detail","evidence":"正文里原样的一句","options":["…","…","…","…"],"correctAnswer":0,"explanation":"…"}]}
 
-要求：翻译与正文逐段对应；题目共 ${questionCount} 道，id 从 1 开始连续，四个选项互不重复，答案必须能在正文中找到依据。
+要求：translations 必须正好 ${paragraphCount} 条，第 i 条对应正文第 i 段，不得增删段落；题目共 ${questionCount} 道，id 从 1 开始连续，四个选项互不重复，答案必须能在正文中找到依据。
 每道题的 evidence 必须从上面正文里原样复制一句；${questionTypeRule(level)}`,
     },
   ]
@@ -473,7 +475,7 @@ export function buildRepairMessages(
     // 只重写题目：正文已经通过词表与篇幅校验，重写整篇等于把两次调用的成果丢掉，
     // 还会带出新的表外词。evidence 编造这类问题模型完全有能力只改题目就修好。
     instruction = `你上一次的题目不符合要求：${reason}。\n\n`
-      + '请保持 title、article、translation 与 names 完全不变，只重写 questions：\n'
+      + '请保持 title、article、translations 与 names 完全不变，只重写 questions：\n'
       + '- 每道题都要有 type 与 evidence；evidence 必须从正文里**原样复制**一句，不要改写\n'
       + `- ${questionTypeRule(level)}\n`
       + '- detail 题的正确答案最好能在 evidence 里找到对应词（同义改写也算）\n'
@@ -491,7 +493,7 @@ export function buildRepairMessages(
       + '【目标词】必须全部出现，情节可以重新安排。'
       // 无锚定重写等于重编故事，实测会带出 14 个表外词；开头就把用词边界钉死
       + '情节只能围绕【目标词】【补充可用词】【基础词】三份清单里的词安排，不要引入表外词。'
-      + '标题、中文翻译和题目要与新正文对应，重新输出完整的 json 对象。'
+      + '标题、translations 和题目要与新正文对应（translations 条数等于新正文段落数），重新输出完整的 json 对象。'
   } else if (type === 'vocabulary' && violations.length > INLINE_VIOLATION_LIMIT) {
     // 十几处以上时逐句替换没有意义：模型按下葫芦浮起瓢（实测 59→53→47）。
     // 改成全文重写，但把违规词全量列出来，告诉它哪些必须消失。
@@ -554,7 +556,7 @@ export function buildExpandMessages(
     + '- 不要删掉已有的句子，也不要靠重复同一句话凑字数\n'
     + '- 补写的部分只能使用【目标词】【补充可用词】【基础词】里的词\n'
     + `- 改完后全文要落在 ${range.min}–${range.max} 个英文单词之间（目标约 ${range.target} 词）\n`
-    + '- 标题保持不变，中文翻译和题目跟着正文更新，重新输出完整的 json 对象'
+    + '- 标题保持不变，translations（条数等于新正文段落数）和题目跟着正文更新，重新输出完整的 json 对象'
 
   return [
     ...messages,

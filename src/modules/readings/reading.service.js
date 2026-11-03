@@ -1227,6 +1227,7 @@ async function generateReadingInner({ userId, body, signal, diag, onProgress, re
     title: data.title,
     article: data.article,
     translation: data.translation,
+    translations: data.translations,
     level: params.level,
     targetWords: params.targetWords,
     questionCount: params.questionCount,

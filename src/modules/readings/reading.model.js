@@ -177,7 +177,9 @@ const readingSchema = new Schema(
     userId: { type: String, required: true }, // 所属用户
     title: { type: String, required: true }, // 文章标题
     article: { type: String, required: true }, // 英文正文，段落用 \n\n 分隔
-    translation: { type: String, required: true }, // 中文翻译，仅结果页返回
+    translation: { type: String, required: true }, // 中文翻译（整篇，段落间用 \n\n 分隔），仅结果页返回
+    // 逐段中文翻译，下标与 article 按 \n\n 切出的段落一一对应；老文档为空，DTO 会尝试用 translation 拆
+    translations: { type: [String], default: [] },
     level: {
       type: String,
       enum: ['easy', 'medium', 'hard'], // 难度，与前端 choices 一致

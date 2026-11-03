@@ -1,3 +1,4 @@
+import { splitParagraphs } from './ai.schema.js'
 import { toVocabFallbackDto } from './vocab-fallback.schema.js'
 import { countWords } from './word-count.js'
 
@@ -124,6 +125,29 @@ export function buildResults(doc) {
 }
 
 /**
+ * 逐段中文翻译：下标与 article 按空行切出的段落一一对应。
+ *
+ * 新文档直接读 `translations`；老文档没有这个字段，若整篇 `translation`
+ * 恰好也按空行分段且段数一致就拆开用，否则回空数组——前端退回整段展示。
+ * 不在读取时按句子硬拆，避免「第 2 段中文配到第 3 段英文」。
+ */
+function resultTranslations(doc) {
+  const paragraphs = splitParagraphs(doc.article)
+
+  if (!paragraphs.length) return []
+
+  const stored = (doc.translations ?? [])
+    .map((item) => String(item ?? '').trim())
+    .filter(Boolean)
+
+  if (stored.length === paragraphs.length) return stored
+
+  const parts = splitParagraphs(doc.translation)
+
+  return parts.length === paragraphs.length ? parts : []
+}
+
+/**
  * 已提交后的完整结果 DTO（提交响应与 GET /:id 的 submitted 分支共用）。
  *
  * 在安全 DTO 之上追加翻译、成绩与逐题解析——
@@ -141,6 +165,8 @@ export function toResultDto(doc) {
     totalQuestions: (doc.questions || []).length,
     accuracy: doc.score,
     translation: doc.translation,
+    // 逐段翻译与 article 段落一一对应；老文档可能回空数组
+    translations: resultTranslations(doc),
     results,
   }
 }
