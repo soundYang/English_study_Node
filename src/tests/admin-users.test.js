@@ -163,8 +163,8 @@ describe('GET /api/admin/users', () => {
     expect(row.username).toBe('Alice')
     expect(row.nickname).toBe('爱丽丝')
 
-    // 只算 learning / mastered：new 与 basic-removed 都不计入
-    expect(row.vocabulary.personalWords).toBe(2)
+    // md/60：learning / mastered / 非墓碑 new 都算；basic-removed 仍排除
+    expect(row.vocabulary.personalWords).toBe(3)
     // 列表页不现算 knownWords（§7）
     expect(row.vocabulary.knownWords).toBeUndefined()
 
@@ -293,7 +293,7 @@ describe('GET /api/admin/users/:dataKey', () => {
     expect(res.status).toBe(200)
     // 详情页要能联系用户，给全量
     expect(res.body.phone).toBe('13800000000')
-    expect(res.body.vocabulary.personalWords).toBe(2)
+    expect(res.body.vocabulary.personalWords).toBe(3)
     for (const level of ['easy', 'medium', 'hard']) {
       expect(typeof res.body.vocabulary.knownWords[level]).toBe('number')
       // 基础词表 + 日历词的地板（空个人词库也有几百）

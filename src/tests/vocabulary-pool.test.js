@@ -234,3 +234,180 @@ describe('selectVocabularyPool', () => {
     expect(typeof result.pool[0]).toBe('string')
   })
 })
+
+describe('selectVocabularyPool · 词源不足时从全部词汇兜底（md/60）', () => {
+  const todayWords = (n, prefix = 'fresh') =>
+    Array.from({ length: n }, (_, i) =>
+      makeWord(`${prefix}${i}`, {
+        createdAt: new Date('2026-10-27T02:00:00'),
+        cocaRank: 500 + i,
+      }),
+    )
+  const oldWords = (n, prefix = 'old') =>
+    Array.from({ length: n }, (_, i) =>
+      makeWord(`${prefix}${i}`, {
+        createdAt: new Date('2026-10-01T00:00:00'),
+        cocaRank: i + 1,
+      }),
+    )
+
+  it('today_new 首次不够时补，并保持 scope 词在池子前面', () => {
+    const words = [...todayWords(10), ...oldWords(100)]
+    const result = pool({
+      words,
+      level: 'easy',
+      targetWords: 100,
+      scope: ['today_new'],
+      fallbackToAll: true,
+    })
+
+    expect(result.available).toBe(10)
+    expect(result.sufficient).toBe(true)
+    expect(result.fallback).toMatchObject({
+      used: true,
+      requestedScope: ['today_new'],
+      scopeAvailable: 10,
+      allAvailable: 110,
+      needed: 29,
+    })
+    expect(result.fallback.supplemented).toBeGreaterThan(0)
+    expect(result.fallback.message).toContain('「今天新学」只有 10 个可用词')
+    expect(result.fallback.message).toContain('已从「全部词汇」补充')
+    // 今天新学的词优先，不能被补充词挤到后面
+    expect(result.pool.slice(0, 10).every((word) => word.startsWith('fresh'))).toBe(true)
+    expect(result.pool).toHaveLength(39) // max(10, ceil(110 × 0.35), 29)
+  })
+
+  it('today_reviewed 首次不够时补', () => {
+    const reviewed = Array.from({ length: 10 }, (_, i) =>
+      makeWord(`reviewed${i}`, {
+        createdAt: new Date('2026-10-01T00:00:00'),
+        lastReviewedAt: new Date('2026-10-27T09:00:00'),
+        cocaRank: 500 + i,
+      }),
+    )
+    const result = pool({
+      words: [...reviewed, ...oldWords(100)],
+      level: 'easy',
+      targetWords: 100,
+      scope: ['today_reviewed'],
+      fallbackToAll: true,
+    })
+
+    expect(result.fallback).toMatchObject({
+      used: true,
+      requestedScope: ['today_reviewed'],
+      scopeAvailable: 10,
+      allAvailable: 110,
+      needed: 29,
+    })
+  })
+
+  it('reviewing 首次不够时补；今天新建的词只算补充，不算 reviewing', () => {
+    const reviewing = oldWords(10, 'reviewing')
+    const today = todayWords(20)
+    const result = pool({
+      words: [...reviewing, ...today],
+      level: 'easy',
+      targetWords: 100,
+      scope: ['reviewing'],
+      fallbackToAll: true,
+    })
+
+    expect(result.available).toBe(10)
+    expect(result.fallback).toMatchObject({
+      used: true,
+      requestedScope: ['reviewing'],
+      scopeAvailable: 10,
+      allAvailable: 30,
+      needed: 29,
+    })
+    expect(result.fallback.supplemented).toBeGreaterThan(0)
+  })
+
+  it('首次已经够时不补，fallback 为 null', () => {
+    const result = pool({
+      words: todayWords(50),
+      level: 'easy',
+      targetWords: 100,
+      scope: ['today_new'],
+      fallbackToAll: true,
+    })
+
+    expect(result.sufficient).toBe(true)
+    expect(result.fallback).toBeNull()
+  })
+
+  it('all 不触发兜底', () => {
+    const result = pool({
+      words: todayWords(10),
+      level: 'easy',
+      targetWords: 100,
+      scope: ['all'],
+      fallbackToAll: true,
+    })
+
+    expect(result.sufficient).toBe(false)
+    expect(result.fallback).toBeNull()
+  })
+
+  it('用户已选词占满配额时不触发兜底', () => {
+    const result = pool({
+      words: oldWords(100),
+      level: 'easy',
+      targetWords: 100,
+      scope: ['today_new'],
+      preselected: ['old0', 'old1', 'old2', 'old3', 'old4', 'old5', 'old6', 'old7', 'old8', 'old9'],
+      fallbackToAll: true,
+    })
+
+    expect(result.remainingRequired).toBe(0)
+    expect(result.fallback).toBeNull()
+  })
+
+  it('全库也没有更多词时，仍返回 fallback 说明并判不足', () => {
+    const result = pool({
+      words: todayWords(3),
+      level: 'easy',
+      targetWords: 100,
+      scope: ['today_new'],
+      fallbackToAll: true,
+    })
+
+    expect(result.sufficient).toBe(false)
+    expect(result.fallback).toMatchObject({
+      used: true,
+      scopeAvailable: 3,
+      allAvailable: 3,
+      needed: 29,
+      supplemented: 0,
+    })
+    expect(result.fallback.message).toContain('「全部词汇」也没有更多可用词')
+  })
+
+  it('墓碑不进入任何 scope，也不进入兜底池', () => {
+    const words = [
+      ...todayWords(10),
+      ...oldWords(100),
+      makeWord('tombstone', { status: 'new', source: 'basic-removed' }),
+    ]
+
+    const all = filterByScope(words, ['all'], NOW)
+    const today = filterByScope(words, ['today_new'], NOW)
+
+    expect(all.some((word) => word.word === 'tombstone')).toBe(false)
+    expect(today.some((word) => word.word === 'tombstone')).toBe(false)
+  })
+
+  it('fallbackToAll 默认关闭，保持旧的纯函数语义', () => {
+    const result = pool({
+      words: [...todayWords(10), ...oldWords(100)],
+      level: 'easy',
+      targetWords: 100,
+      scope: ['today_new'],
+    })
+
+    expect(result.sufficient).toBe(false)
+    expect(result.fallback).toBeNull()
+  })
+})

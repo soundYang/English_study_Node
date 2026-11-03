@@ -457,7 +457,8 @@ async function generateReadingInner({ userId, body, signal, diag, onProgress, re
 
   const rounds = diag.rounds
 
-  // 只有 learning / mastered 算可用词汇，new 不算
+  // 可用词汇 = learning / mastered / 非墓碑 new（md/60）。
+  // 今天刚加、还没开始复习的词也算，否则「今天新学」永远是空池。
   const vocabularyCount = await wordRepository.countVocabulary(userId)
 
   // 冷启动（md/39）：100 / 200 词且个人词库凑不齐目标词时，允许只用基础词表写。
@@ -478,9 +479,9 @@ async function generateReadingInner({ userId, body, signal, diag, onProgress, re
 
   const words = await wordRepository.findVocabulary(userId)
 
-  // md/54：用户显式选中的词必须已经在个人词库（learning / mastered）里。
+  // md/54：用户显式选中的词必须已经在个人词库（learning / mastered / 非墓碑 new）里。
   // 放在读完词库之后、选池之前——纯本地判断，不调模型，也不该白占一次额度。
-  // `new` 词不在 findVocabulary 的结果里，所以会一起被拒：它代表用户明确标了不认识。
+  // 只有 `source='basic-removed'` 的 new 墓碑会被拒：它代表用户明确标了不认识。
   const focusWordsRequested = params.focusWords ?? []
   const learnedWordSet = new Set(words.map((item) => item.word))
   const unknownFocusWords = focusWordsRequested.filter((word) => !learnedWordSet.has(word))
@@ -527,7 +528,7 @@ async function generateReadingInner({ userId, body, signal, diag, onProgress, re
   // 过不了，因为他真正缺的是「没解锁」这个状态。三道都在调模型之前。
   //
   // personalWords 用上面 countVocabulary 的结果：它和 findVocabulary 是同一个
-  // 查询条件的两个视图（learning + mastered），不必再查一次库。
+  // 查询条件的两个视图（learning + mastered + 非墓碑 new），不必再查一次库。
   const personalWords = vocabularyCount
   const finalMode = isFinalMode({
     level: params.level,
@@ -621,6 +622,8 @@ async function generateReadingInner({ userId, body, signal, diag, onProgress, re
     targetWords: params.targetWords,
     // md/54：用户选中的词已经占用目标词名额，A 门按剩余配额折算
     preselected: focusWordsRequested,
+    // md/60：今天新学 / 今天复习过 / 复习中首次不够时，从全部词汇补
+    fallbackToAll: true,
   })
 
   // 先记选池结果再判够不够：VOCABULARY_TOO_SMALL 恰恰最需要这组数字
@@ -632,6 +635,7 @@ async function generateReadingInner({ userId, body, signal, diag, onProgress, re
     selectedCount: selection.selectedCount,
     remainingRequired: selection.remainingRequired,
     supply: selection.supply,
+    fallback: selection.fallback,
   }
 
   // A 门：候选池装不下本次篇幅所需的目标词。调一次模型要几秒和几千 token，
@@ -651,6 +655,7 @@ async function generateReadingInner({ userId, body, signal, diag, onProgress, re
         neededVocab: selection.neededVocab,
         available: selection.available,
         supply: selection.supply,
+        fallback: selection.fallback,
       },
       'reading generate rejected: VOCABULARY_TOO_SMALL',
     )
@@ -663,6 +668,8 @@ async function generateReadingInner({ userId, body, signal, diag, onProgress, re
       level: params.level,
       selectedCount: selection.selectedCount,
       remainingRequired: selection.remainingRequired,
+      // md/60：全库也补不够时，让前端知道已经尝试过补充
+      fallback: selection.fallback,
     })
   }
 
@@ -702,6 +709,8 @@ async function generateReadingInner({ userId, body, signal, diag, onProgress, re
   await report({
     stage: 'planning',
     selectedWords,
+    // md/60：任务轮询在规划阶段就能展示「已从全部词汇补充」
+    vocabFallback: selection.fallback,
     progress: {
       done: 0,
       total: config.generationStrategy === 'segmented' ? planSegmentCount(params.targetWords) : 0,
@@ -741,6 +750,7 @@ async function generateReadingInner({ userId, body, signal, diag, onProgress, re
       scope: selection.scope,
       available: selection.available,
       poolSize: selection.poolSize,
+      fallback: selection.fallback,
       promptWordCount,
       allowedWordCount: allowedWords.size,
       requiredWords: plan.requiredWords,
@@ -1225,6 +1235,8 @@ async function generateReadingInner({ userId, body, signal, diag, onProgress, re
     vocabularySnapshot,
     usedWords,
     newWords,
+    // md/60：兜底说明随文章落库，阅读详情 DTO 会条件输出
+    vocabFallback: selection.fallback,
     targetPlan: {
       scope: selection.scope,
       poolSize: selection.poolSize,
@@ -1343,7 +1355,8 @@ export async function getCapacity({ userId, query }) {
   const validFocusWords = focusWords.filter((word) => learnedWordSet.has(word))
   const maxFocusWords = requiredTargetWords(targetWords)
 
-  // 解锁口径：个人词库条数（learning + mastered），与生成里 countVocabulary 同源
+  // 解锁口径：个人词库条数（learning + mastered + 非墓碑 new），
+  // 与生成里 countVocabulary 同源（md/60）
   const personalWords = words.length
   const finalModeUnlocked = isFinalModeUnlocked({ personalWords })
   const unlockAt = FINAL_MODE_PERSONAL_WORDS
@@ -1362,6 +1375,8 @@ export async function getCapacity({ userId, query }) {
       scope: vocabScope,
       targetWords,
       preselected: validFocusWords,
+      // md/60：预检与生成用同一套兜底，避免「预检说不够、点下去却成功」
+      fallbackToAll: true,
     })
     // 与 generateReadingInner 调的是同一个函数，预检数字和真实闸门不会分叉
     const known = measureKnownVocabulary({ level, learnedWords, removedBasicWords })
@@ -1404,6 +1419,9 @@ export async function getCapacity({ userId, query }) {
       // 顶层 available 是循环里最后一次赋值的 hard 口径，easy 的池子更小，
       // 用 hard 的数字解释 easy 说「不够」，用户会觉得系统在骗人
       available: selection.available,
+      // md/60：本次 scope 不够时是否从全部词汇补过。null = 没触发。
+      // `available` 仍是本次 scope 的数，不是补完后的全库数，避免用户误解
+      fallback: selection.fallback,
       // 篇幅门槛（md/30 §7.2）：写 targetWords 词至少要认识 minKnown 个
       knownWords: known.knownWords,
       personalWords,

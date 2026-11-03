@@ -18,6 +18,7 @@ import { createGenerationScheduler } from './generation-scheduler.js'
 import { generationTaskRepository as repo } from './generation-task.repository.js'
 import { createTaskSchema } from './reading.schema.js'
 import { generateReading } from './reading.service.js'
+import { toVocabFallbackDto } from './vocab-fallback.schema.js'
 
 /**
  * 生成任务的外壳（md/31）。
@@ -93,6 +94,7 @@ export function toTaskDto(task) {
         details: task.error.details ?? null,
       }
     : null
+  const vocabFallback = toVocabFallbackDto(task.vocabFallback)
 
   return {
     taskId: String(task._id),
@@ -114,6 +116,8 @@ export function toTaskDto(task) {
       status: item.status,
       words: item.words ?? 0,
     })),
+    // md/60：规划阶段就能确定是否补过词源；没有触发时整个字段不出现
+    ...(vocabFallback ? { vocabFallback } : {}),
     readingId: task.readingId ? String(task.readingId) : null,
     error,
     // 能不能调 POST /generate/tasks/:id/retry：
@@ -157,6 +161,9 @@ function makeProgressHandler(taskId, { onCancelled = null } = {}) {
     // 计划定型：续跑的全部依据。写在这里而不是失败之后，是因为
     // 「写了几段之后失败」才是最需要续跑的情况
     if (patch.plan) update.plan = patch.plan
+
+    // md/60：选池完成后立即写回，轮询不必等文章落库才知道补过词
+    if (patch.vocabFallback) update.vocabFallback = patch.vocabFallback
 
     if (patch.progress && Number.isFinite(patch.progress.total)) {
       total = patch.progress.total
@@ -724,6 +731,8 @@ export async function retryGenerationTask({ userId, id, identity = null }) {
         startedAt: null,
         finishedAt: null,
         durationMs: null,
+        // md/60：上一次尝试的兜底说明不能挂到新一次尝试上
+        vocabFallback: null,
         // 租约随状态一起重置：上一次的取消标记不能带进这次尝试
         cancelRequested: false,
         owner: INSTANCE_ID,

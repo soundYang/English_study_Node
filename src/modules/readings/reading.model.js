@@ -2,6 +2,7 @@ import mongoose from 'mongoose'
 
 import { QUESTION_TYPES } from './ai.schema.js'
 import { roundSchema } from './round.schema.js'
+import { vocabFallbackSchema } from './vocab-fallback.schema.js'
 
 const { Schema } = mongoose
 
@@ -191,6 +192,8 @@ const readingSchema = new Schema(
 
     // ——— P1 新增：生成计划与实际复现，老文档没有时分别取 null / [] ———
     targetPlan: { type: targetPlanSchema, default: null },
+    // md/60：本次是否从「全部词汇」补过词源。老文档为 null，DTO 不输出该字段
+    vocabFallback: { type: vocabFallbackSchema, default: null },
     usedWords: { type: [usedWordSchema], default: [] },
     // 放行给用户看的未学词（≤ 该难度的 unknownBudget），默认空数组，老文档不需要迁移
     newWords: { type: [newWordSchema], default: [] },
@@ -251,7 +254,7 @@ const readingSchema = new Schema(
       // 老文档上的 requiredKnown 保留原值（子文档是严格模式，新代码不再写它）
       requiredKnown: Number, // 旧字段，仅供历史样本对比
       minKnown: Number, // 写 targetWords 词所需的最低 knownWords
-      personalWords: Number, // 个人词库条数（learning + mastered），最终模式的解锁口径
+      personalWords: Number, // 个人词库条数（learning + mastered + 非墓碑 new），最终模式的解锁口径
       finalMode: Boolean, // true = 最终模式（无目标词）
       coldStart: Boolean, // true = 冷启动（≤ 200 词只用基础词，无目标词，md/39）
       allowNewWords: Boolean, // true = 用户打开「允许少量生词」（仅 medium / hard，md/41）

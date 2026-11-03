@@ -1,5 +1,7 @@
 import mongoose from 'mongoose'
 
+import { vocabFallbackSchema } from './vocab-fallback.schema.js'
+
 const { Schema } = mongoose
 
 /**
@@ -144,6 +146,8 @@ const generationTaskSchema = new Schema(
     },
 
     selectedWords: { type: [selectedWordSchema], default: [] },
+    // md/60：选池阶段就能确定是否补过词源；轮询时提前提示，不必等文章落库
+    vocabFallback: { type: vocabFallbackSchema, default: null },
     segments: { type: [segmentStateSchema], default: [] },
     // 续跑的输入；第一次跑到这里之前是 null
     plan: { type: planSchema, default: null },

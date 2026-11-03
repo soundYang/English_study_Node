@@ -124,6 +124,26 @@ describe('vocabularyTooSmall', () => {
   it('词比门槛多时差额不会变成负数', () => {
     expect(vocabularyTooSmall({ ...payload, available: 500 }).message).toContain('还差 0 个')
   })
+
+  it('触发兜底后 details 带 fallback，文案说明已经尝试补充', () => {
+    const fallback = {
+      used: true,
+      requestedScope: ['today_new'],
+      scopeAvailable: 3,
+      allAvailable: 3,
+      needed: 29,
+      supplemented: 0,
+      message: '「今天新学」只有 3 个可用词，不够本次篇幅（至少需要 29 个）；「全部词汇」也没有更多可用词，仍差 26 个。',
+    }
+    const error = vocabularyTooSmall({ ...payload, fallback })
+
+    expect(error.details.fallback).toEqual(fallback)
+    expect(error.message).toContain('已尝试从「全部词汇」补充，仍然不够')
+  })
+
+  it('没有触发兜底时 details 不出现 fallback', () => {
+    expect(vocabularyTooSmall(payload).details).not.toHaveProperty('fallback')
+  })
 })
 
 describe('篇幅门槛 — 已知词不够写这么长（md/30 §7.4）', () => {

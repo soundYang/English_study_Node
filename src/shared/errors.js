@@ -214,7 +214,8 @@ const LEVEL_LABELS = Object.freeze({ easy: '简单', medium: '进阶', hard: '�
  *   scope: string[],
  *   level: string,
  *   selectedCount?: number,    // md/54：用户显式选了几个（0 = 没选）
- *   remainingRequired?: number // md/54：还需要自动补几个
+ *   remainingRequired?: number,// md/54：还需要自动补几个
+ *   fallback?: object|null     // md/60：兜底尝试说明，只在触发时写进 details
  * }} payload
  */
 export const vocabularyTooSmall = ({
@@ -226,6 +227,7 @@ export const vocabularyTooSmall = ({
   level,
   selectedCount = 0,
   remainingRequired = requiredWords,
+  fallback = null,
 }) => {
   const intro = selectedCount > 0
     ? `${LEVEL_LABELS[level] ?? level}模式写 ${targetWords} 词的文章还需要约 ${remainingRequired} 个自动目标词`
@@ -234,11 +236,13 @@ export const vocabularyTooSmall = ({
     : `${LEVEL_LABELS[level] ?? level}模式写 ${targetWords} 词的文章需要约 ${requiredWords} 个目标词，`
       + `折算下来至少要有 ${required} 个已学单词，当前符合条件的只有 ${available} 个`
       + `（还差 ${Math.max(0, required - available)} 个）。`
+  // 已经试过全库补充还失败时，必须让用户看到「不是没补，是确实不够」
+  const fallbackNote = fallback?.used ? '已尝试从「全部词汇」补充，仍然不够。' : ''
 
   return new ApiError(
     422,
     ERROR_CODES.VOCABULARY_TOO_SMALL,
-    intro + '请添加更多单词，或缩短篇幅、降低难度。',
+    intro + fallbackNote + '请添加更多单词，或缩短篇幅、降低难度。',
     'targetWords',
     // kind 让前端区分两道 422：目标词凑不齐（缩篇幅/降难度）与已知词汇量不够（加词）。
     // selectedCount 只在真的有选词时才出现，保持老响应的 details 形状不变
@@ -251,12 +255,14 @@ export const vocabularyTooSmall = ({
       scope,
       level,
       ...(selectedCount > 0 ? { selectedCount, remainingRequired } : {}),
+      // md/60：只在真的触发兜底时出现，老调用方的 details 形状不变
+      ...(fallback?.used ? { fallback } : {}),
     },
   )
 }
 
 /**
- * 422：用户显式指定的词里有不在个人词库（learning / mastered）的（md/54）。
+ * 422：用户显式指定的词里有不在个人词库（learning / mastered / 非墓碑 new）的（md/54）。
  *
  * 与 `vocabularyTooSmall` 分开：那个是「你的词总量不够」，这个只需改选词或把词加进词库，
  * 前端要做的事情完全不同。`details.words` 只回前 20 个，`count` 是完整数量——
@@ -307,7 +313,7 @@ export const targetWordsTooLong = ({ level, targetWords, maxTargetWords, finalMo
  * 和 `targetWordsTooLong` 分开报：同样是 400，用户能做的动作完全不同——
  * 这个是「去背单词」，那个是「缩短篇幅」。合并成一个码，前端只能两句话都写。
  *
- * `metric: 'personal_words'` 强调口径：解锁看的是个人词库条数（learning + mastered），
+ * `metric: 'personal_words'` 强调口径：解锁看的是个人词库条数（learning + mastered + 非墓碑 new），
  * **不是** `knownWords`（那个还含 600 个基础词）。差 618 的两个数并列会让人以为算错了。
  */
 export const finalModeLocked = ({ targetWords, available, unlockAt }) => {

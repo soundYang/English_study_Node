@@ -12,7 +12,7 @@
  *
  * 三个概念必须分清（混用是这张表最容易出错的地方）：
  *
- *   personalWords  个人词库里状态为 learning / mastered 的词数       ← 解锁最终模式看这个
+ *   personalWords  个人词库 learning / mastered / 非墓碑 new（md/60） ← 解锁最终模式看这个
  *   knownWords     个人词 ∪ 基础词表 ∪ 日历词 的并集大小（≥ 618）    ← 篇幅门槛看这个
  *   minKnown(N)    写 N 词需要的最低 knownWords                      ← 本模块的核心产出
  *

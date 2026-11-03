@@ -1,3 +1,4 @@
+import { toVocabFallbackDto } from './vocab-fallback.schema.js'
 import { countWords } from './word-count.js'
 
 /**
@@ -33,13 +34,16 @@ function buildFocusWords(doc) {
  * `status` 必须有——前端拿它判断是否需要重定向到结果页，
  * 漏掉就会停在「答题中」却渲染不出内容。
  *
- * 新增四样都是给用户看的，不是内部数据：
- *   actualWords —— 文章页显示「全文 218 词」
- *   newWords    —— 折叠提示「本文含 4 个未学单词」
- *   focusWords  —— md/54：自选词的命中情况（requested / missing）
- *   tokenUsage  —— 显示「本次消耗 N tokens」
+ * 新增五样都是给用户看的，不是内部数据：
+ *   actualWords    —— 文章页显示「全文 218 词」
+ *   newWords       —— 折叠提示「本文含 4 个未学单词」
+ *   focusWords     —— md/54：自选词的命中情况（requested / missing）
+ *   tokenUsage     —— 显示「本次消耗 N tokens」
+ *   vocabFallback  —— md/60：本次是否从全部词汇补过词源（只在 used 时出现）
  */
 export function toSafeDto(doc) {
+  const vocabFallback = toVocabFallbackDto(doc.vocabFallback)
+
   return {
     id: String(doc._id),
     title: doc.title,
@@ -67,6 +71,8 @@ export function toSafeDto(doc) {
     // 那是词库此刻的状态，跟这篇历史文章没关系，塞进来会让同一篇文章两次刷新
     // 显示不同的结果。前端要显示当前状态，拿 `word` 去词汇页那份列表里查即可。
     usedWords: (doc.usedWords ?? []).map(({ word, count, kind }) => ({ word, count, kind })),
+    // md/60：只有真的补过词才出现。正常请求保持原有字段数，前端按可选字段处理
+    ...(vocabFallback ? { vocabFallback } : {}),
     tokenUsage: {
       promptTokens: doc.aiMeta?.promptTokens ?? 0,
       completionTokens: doc.aiMeta?.completionTokens ?? 0,

@@ -44,7 +44,7 @@ export function unknownBudgetFor(level, override = null) {
 }
 
 /**
- * 已知词汇量 = 个人词库(learning+mastered) ∪ 该档基础词表 ∪ 日历词。
+ * 已知词汇量 = 个人词库(learning + mastered + 非墓碑 new) ∪ 该档基础词表 ∪ 日历词。
  *
  * 生成与 /capacity 必须调用**同一个函数**：预检说能、点下去 422 的根源，
  * 就是两边各算了一遍。这里同时把个人基础词（已扣掉用户标 new 的词）返回，

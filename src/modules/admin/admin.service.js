@@ -189,10 +189,17 @@ async function attachMetrics(users, now = new Date()) {
   const today = startOfToday(now)
 
   const [wordRows, readingRows, tokenMap, quotaRows, failureRows, apiKeyRows] = await Promise.all([
-    // 与 wordRepository.countVocabulary 同口径：只算 learning / mastered。
-    // basic-removed 是 status=new 的占位行，天然被排除
+    // 与 wordRepository.countVocabulary 同口径（md/60）：
+    // learning / mastered / 非墓碑 new。basic-removed 必须显式排除——
+    // 它也是 status=new，只按状态筛会把「不认识」的墓碑算成用户的词。
     Word.aggregate([
-      { $match: { userId: { $in: keys }, status: { $in: ['learning', 'mastered'] } } },
+      {
+        $match: {
+          userId: { $in: keys },
+          status: { $in: ['learning', 'mastered', 'new'] },
+          source: { $ne: 'basic-removed' },
+        },
+      },
       { $group: { _id: '$userId', count: { $sum: 1 } } },
     ]),
     Reading.aggregate([

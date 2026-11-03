@@ -287,7 +287,7 @@ describe('POST /api/readings/generate · 正常生成', () => {
     ])
   })
 
-  it('vocabularySnapshot 只收 learning / mastered，不含 new', async () => {
+  it('vocabularySnapshot 收 learning / mastered / 非墓碑 new', async () => {
     await seedWords(400)
     await Word.insertMany(
       Array.from({ length: 5 }, (_, index) => ({
@@ -303,9 +303,29 @@ describe('POST /api/readings/generate · 正常生成', () => {
     const res = await generate(VALID_BODY)
 
     const doc = await Reading.findById(res.body.id).lean()
-    // easy + 100 词：池子按比例取 max(10, ceil(400 × 0.35)) = 140
+    // easy + 100 词：池子按比例取 max(10, ceil(405 × 0.35)) = 142
+    expect(doc.vocabularySnapshot).toHaveLength(142)
+    expect(doc.vocabularySnapshot.some((word) => word.startsWith('newword'))).toBe(true)
+  })
+
+  it('vocabularySnapshot 不含 basic-removed 墓碑', async () => {
+    await seedWords(400)
+    await Word.insertMany(
+      Array.from({ length: 5 }, (_, index) => ({
+        userId: config.defaultUserId,
+        word: `tombstone${index}`,
+        status: 'new',
+        source: 'basic-removed',
+        senses: [{ pos: '', meaning: '测试释义' }],
+      })),
+    )
+    chatJson.mockResolvedValue(reply(makePayload()))
+
+    const res = await generate(VALID_BODY)
+
+    const doc = await Reading.findById(res.body.id).lean()
     expect(doc.vocabularySnapshot).toHaveLength(140)
-    expect(doc.vocabularySnapshot.some((word) => word.startsWith('newword'))).toBe(false)
+    expect(doc.vocabularySnapshot.some((word) => word.startsWith('tombstone'))).toBe(false)
   })
 })
 

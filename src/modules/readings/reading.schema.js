@@ -161,7 +161,7 @@ const readingShape = {
   allowNewWords: z.boolean({ error: 'allowNewWords 必须是布尔值' }).optional(),
   /**
    * 用户显式要求用上的词（md/54）。不传 = 自动；显式 [] 是 400。
-   * 词必须在个人词库里（learning / mastered），由 service 在读库后校验——
+   * 词必须在个人词库里（learning / mastered / 非墓碑 new），由 service 在读库后校验——
    * 这里只做形状、归一化与数量上限。
    */
   focusWords: focusWordsField,

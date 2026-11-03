@@ -93,7 +93,7 @@ describe('词量不足以支撑篇幅', () => {
     expect(await Reading.countDocuments()).toBe(0)
   })
 
-  it('A 门只看本次 scope：缩短篇幅（或缩小词源）就能过', async () => {
+  it('A 门首次不够时从全部词汇兜底，不必缩短篇幅', async () => {
     // 已知词门看全库，与 scope 无关。基础词统一 600 后 hard 要 3778，
     // 个人词库得攒到 3160 个才跨得过去
     await seedWords(3200, 'old')
@@ -104,7 +104,8 @@ describe('词量不足以支撑篇幅', () => {
     await seedWords(45, 'fresh')
     chatJson.mockResolvedValue(reply)
 
-    // hard + 600：目标词 60 个，门槛 ceil(60 ÷ 0.7) = 86 个，45 个 fresh 不够
+    // hard + 600：目标词 60 个，门槛 ceil(60 ÷ 0.7) = 86 个，45 个 fresh 不够；
+    // md/60 允许从全库补，所以不再 422
     const long = await generate({
       level: 'hard',
       targetWords: 600,
@@ -112,18 +113,15 @@ describe('词量不足以支撑篇幅', () => {
       vocabScope: ['today_new'],
     })
 
-    expect(long.status).toBe(422)
-    expect(long.body.error.details.kind).toBe('target_words')
-
-    // hard + 100：目标词 10 个，门槛 ceil(10 ÷ 0.7) = 15 个，45 个够用
-    const short = await generate({
-      level: 'hard',
-      targetWords: 100,
-      questionCount: 3,
-      vocabScope: ['today_new'],
+    expect(long.status).toBe(201)
+    expect(long.body.vocabFallback).toMatchObject({
+      used: true,
+      requestedScope: ['today_new'],
+      scopeAvailable: 45,
+      allAvailable: 3245,
+      needed: 86,
     })
-
-    expect(short.status).toBe(201)
+    expect(long.body.vocabFallback.supplemented).toBeGreaterThan(0)
   })
 
   it('已知词门槛随篇幅走：20 个词写不了 300 词，但写得了 100 词', async () => {
@@ -526,7 +524,7 @@ describe('词库规模的产品含义（md/30 §7 / md/57）', () => {
 describe('词源筛选', () => {
   const capacity = (query) => request(app).get('/api/readings/capacity').query(query)
 
-  it('vocabScope=today_new 时只从今天新增的词里取', async () => {
+  it('vocabScope=today_new 只有 3 个时，从全部词汇补足', async () => {
     await seedWords(200, 'old')
     // 时间戳由 Mongoose 自动写入，绕过它把老词挪到过去
     await Word.collection.updateMany(
@@ -534,6 +532,7 @@ describe('词源筛选', () => {
       { $set: { createdAt: new Date('2020-01-01T00:00:00Z') } },
     )
     await seedWords(3, 'fresh')
+    chatJson.mockResolvedValue(reply)
 
     const res = await generate({
       level: 'easy',
@@ -542,15 +541,19 @@ describe('词源筛选', () => {
       vocabScope: ['today_new'],
     })
 
-    expect(res.status).toBe(422)
-    expect(res.body.error.code).toBe('VOCABULARY_TOO_SMALL')
-    // 总词数 203 过了 20 的闸门，卡在 scope 过滤之后只剩 3 个
-    expect(res.body.error.details.available).toBe(3)
-    expect(res.body.error.details.scope).toEqual(['today_new'])
-    expect(chatJson).not.toHaveBeenCalled()
+    expect(res.status).toBe(201)
+    expect(res.body.vocabFallback).toMatchObject({
+      used: true,
+      requestedScope: ['today_new'],
+      scopeAvailable: 3,
+      allAvailable: 203,
+      needed: 29,
+    })
+    expect(res.body.vocabFallback.supplemented).toBeGreaterThan(0)
+    expect(chatJson).toHaveBeenCalled()
   })
 
-  it('vocabScope=reviewing 只从复习中的词里取，预检与生成同一个数', async () => {
+  it('vocabScope=reviewing 首次不够时同样从全部词汇补，预检与生成同一个数', async () => {
     await seedWords(20, 'old')
     await Word.collection.updateMany(
       { userId: config.defaultUserId },
@@ -561,12 +564,21 @@ describe('词源筛选', () => {
 
     const forecast = await capacity({ targetWords: 100, vocabScope: 'reviewing' })
     expect(forecast.body.levels.easy).toMatchObject({
+      // available 仍是 reviewing 的 20 个；补完后的供给看 fallback
       available: 20,
       required: 29,
-      sufficient: false,
-      shortage: 9,
+      sufficient: true,
+      shortage: 0,
+    })
+    expect(forecast.body.levels.easy.fallback).toMatchObject({
+      used: true,
+      requestedScope: ['reviewing'],
+      scopeAvailable: 20,
+      allAvailable: 30,
+      needed: 29,
     })
 
+    chatJson.mockResolvedValue(reply)
     const res = await generate({
       level: 'easy',
       targetWords: 100,
@@ -574,12 +586,14 @@ describe('词源筛选', () => {
       vocabScope: ['reviewing'],
     })
 
-    expect(res.status).toBe(422)
-    expect(res.body.error.code).toBe('VOCABULARY_TOO_SMALL')
-    expect(res.body.error.details.available).toBe(20)
-    expect(res.body.error.details.scope).toEqual(['reviewing'])
-    // 预检说不够，生成也在调模型之前拦下
-    expect(chatJson).not.toHaveBeenCalled()
+    expect(res.status).toBe(201)
+    expect(res.body.vocabFallback).toMatchObject({
+      used: true,
+      requestedScope: ['reviewing'],
+      scopeAvailable: 20,
+      allAvailable: 30,
+      needed: 29,
+    })
   })
 
   it('reviewing 与 today_new 取并集', async () => {

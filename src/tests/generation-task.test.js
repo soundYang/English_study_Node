@@ -199,6 +199,44 @@ describe('GET /api/readings/generate/tasks/:id · 进度', () => {
     }
   })
 
+  it('today_new 首次不够时，任务 DTO 与文章都带 vocabFallback（md/60）', async () => {
+    await seedWords(400)
+    await Word.collection.updateMany(
+      { userId: config.defaultUserId },
+      { $set: { createdAt: new Date('2020-01-01T00:00:00Z') } },
+    )
+    await Word.insertMany(
+      Array.from({ length: 3 }, (_, index) => ({
+        userId: config.defaultUserId,
+        word: `fresh${index}`,
+        status: 'new',
+        source: 'manual',
+        senses: [{ pos: '', meaning: '测试释义' }],
+      })),
+    )
+    chatJson.mockResolvedValue(reply(makePayload()))
+
+    const { body } = await postTask({ ...BODY, vocabScope: ['today_new'] })
+    const done = await waitForFinish(body.taskId)
+
+    expect(done.body.status).toBe('succeeded')
+    expect(done.body.vocabFallback).toMatchObject({
+      used: true,
+      requestedScope: ['today_new'],
+      scopeAvailable: 3,
+      allAvailable: 403,
+      needed: 29,
+    })
+    expect(done.body.vocabFallback.supplemented).toBeGreaterThan(0)
+
+    const reading = await Reading.findById(done.body.readingId).lean()
+    expect(reading.vocabFallback).toMatchObject({
+      used: true,
+      requestedScope: ['today_new'],
+      scopeAvailable: 3,
+    })
+  })
+
   it('任务不存在 / id 非法都报 404 TASK_NOT_FOUND', async () => {
     const missing = await getTask('507f1f77bcf86cd799439011')
     expect(missing.status).toBe(404)

@@ -54,11 +54,11 @@ const payload = {
 
 const reply = { content: JSON.stringify(payload), usage: { prompt_tokens: 100, completion_tokens: 200 } }
 
-const wordDoc = (word, { status = 'learning', createdAt } = {}) => ({
+const wordDoc = (word, { status = 'learning', createdAt, source = 'manual' } = {}) => ({
   userId: config.defaultUserId,
   word,
   status,
-  source: 'manual',
+  source,
   senses: [{ pos: '', meaning: '测试释义' }],
   ...(createdAt ? { createdAt } : {}),
 })
@@ -477,9 +477,9 @@ describe('POST /api/readings/generate · 自选词', () => {
     expect(await Reading.countDocuments()).toBe(0)
   })
 
-  it('标记为「不认识」的词同样不能指定', async () => {
+  it('标记为「不认识」的墓碑词不能指定', async () => {
     await seedWords(400)
-    await Word.create(wordDoc('zzznew', { status: 'new' }))
+    await Word.create(wordDoc('zzznew', { status: 'new', source: 'basic-removed' }))
     chatJson.mockResolvedValue(reply)
 
     const res = await generate({
@@ -493,6 +493,23 @@ describe('POST /api/readings/generate · 自选词', () => {
     expect(res.body.error.code).toBe('FOCUS_WORDS_NOT_LEARNED')
     expect(res.body.error.details.words).toEqual(['zzznew'])
     expect(chatJson).not.toHaveBeenCalled()
+  })
+
+  it('用户自己添加的 status=new 词可以指定（md/60）', async () => {
+    await seedWords(400)
+    await Word.create(wordDoc('freshword', { status: 'new' }))
+    chatJson.mockResolvedValue(reply)
+
+    const res = await generate({
+      level: 'easy',
+      targetWords: 100,
+      questionCount: 3,
+      focusWords: ['freshword'],
+    })
+
+    expect(res.status).toBe(201)
+    expect(res.body.focusWords.requested).toEqual(['freshword'])
+    expect(chatJson).toHaveBeenCalled()
   })
 
   it('DTO 的 requested / missing 与正文实际命中一致', async () => {
@@ -702,8 +719,14 @@ describe('GET /capacity · focusWords', () => {
     expect(without.body.levels.easy).toMatchObject({
       available: 0,
       required: 29,
-      sufficient: false,
-      shortage: 29,
+      // md/60：today_new 首次不够时从全部词汇兜底，A 门不再直接判死
+      sufficient: true,
+      shortage: 0,
+    })
+    expect(without.body.levels.easy.fallback).toMatchObject({
+      used: true,
+      requestedScope: ['today_new'],
+      scopeAvailable: 0,
     })
 
     const withFocus = await capacity({

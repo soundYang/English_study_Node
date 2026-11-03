@@ -1,6 +1,24 @@
 import { Word } from './word.model.js'
 
 /**
+ * 生成侧「用户已拥有的词」口径（md/60）。
+ *
+ * 包含 `learning` / `mastered`，以及用户自己添加、尚未开始复习的 `new`。
+ * `new` 必须排除 `source: 'basic-removed'` 的墓碑：那是基础词页「不认识」的占位行，
+ * 用户从来没有学过，不能进候选池，也不能算进词汇量。
+ *
+ * 这条查询是 `countVocabulary` 与 `findVocabulary` 的唯一口径，
+ * 两处分开写迟早会分叉——一个说够、一个选不出词，正是 md/60 要修的缺陷。
+ */
+function generationVocabularyFilter(userId) {
+  return {
+    userId,
+    status: { $in: ['learning', 'mastered', 'new'] },
+    source: { $ne: 'basic-removed' },
+  }
+}
+
+/**
  * 只和 Mongoose 打交道的一层。
  * 这里不出现业务判断（去重规则、降级规则都在 service 里）。
  */
@@ -63,21 +81,21 @@ export const wordRepository = {
     return Word.findOne({ _id: id, userId })
   },
 
-  /** 生成文章用的可用词汇：只有 learning / mastered，new 不算 */
+  /** 生成文章用的可用词汇：learning / mastered / 非墓碑 new（md/60） */
   countVocabulary(userId) {
-    return Word.countDocuments({ userId, status: { $in: ['learning', 'mastered'] } })
+    return Word.countDocuments(generationVocabularyFilter(userId))
   },
 
   /**
-   * 选池用的候选词：只取 learning / mastered。
+   * 选池用的候选词：learning / mastered / 非墓碑 new（md/60）。
    *
    * 这里**不排序、不截断**。截断必须发生在「按复习优先级排完之后」
    * （vocabulary-pool.js）；在数据库层按 createdAt 倒序截断，丢掉的恰好是
    * 最早学的那批词，与「优先复习久未复习的词」完全相反。
    */
   findVocabulary(userId) {
-    return Word.find({ userId, status: { $in: ['learning', 'mastered'] } })
-      // source 供 vocabScope=reviewing 排除 basic-removed 墓碑（md/22 #109）
+    return Word.find(generationVocabularyFilter(userId))
+      // source 供 vocabScope 排除 basic-removed 墓碑，也供 md/60 的兜底提示
       .select('word status cocaRank lastReviewedAt createdAt source')
       .lean()
   },
