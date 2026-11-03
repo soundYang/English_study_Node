@@ -348,6 +348,27 @@ export const wordRepository = {
   },
 
   /**
+   * 批量改状态（md/61）。
+   *
+   * 与批量自评一样用 `ordered:false`：一条写失败不拦住后面所有条。
+   * 这里只写 service 算好的 `$set`，不在这里做任何状态判断——
+   * 迁移矩阵在 `word-status.js`，单条 PATCH 与批量共用。
+   */
+  applyStatusBatch({ userId, changes }) {
+    if (!changes.length) return Promise.resolve({ modifiedCount: 0 })
+
+    return Word.bulkWrite(
+      changes.map(({ id, update }) => ({
+        updateOne: {
+          filter: { _id: id, userId },
+          update: { $set: update },
+        },
+      })),
+      { ordered: false },
+    )
+  },
+
+  /**
    * 按 id 批量取词，供批量自评用（md/56 §8.1）。
    *
    * 非法 id 在 service 层已被过滤，这里不做 `isValidObjectId` 判断——

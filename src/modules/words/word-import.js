@@ -3,6 +3,7 @@ import { WORD_STATUSES } from './word.schema.js'
 import { canonicalWord } from '../../shared/utils/word-form.js'
 import { findEntry } from '../dictionary/dictionary.loader.js'
 import { getWordRank } from './word-ranks.js'
+import { planManualStatusUpdate } from './word-status.js'
 
 /**
  * 添加单词的纯函数层（md/44 §5）。
@@ -166,13 +167,27 @@ export function buildCreatePayload({ userId, word, status, source, meaning = '' 
  * @param {{ status?: string, meaning?: string }} request
  * @returns {{ action: 'kept'|'enriched'|'updated'|'reactivated', update: object|null }}
  */
-export function resolveDuplicate(existing, { status, meaning = '' } = {}) {
+export function resolveDuplicate(
+  existing,
+  { status, meaning = '', now = new Date() } = {},
+) {
   const nextStatus = normalizeStatus(status)
   const update = {}
   let action = 'kept'
 
   if (existing.status !== nextStatus) {
     update.status = nextStatus
+    // 与单条 PATCH / 批量改状态共用排期副作用（md/61），但 learning 例外：
+    // 导入时的默认状态就是 learning，这里若把 nextReviewAt 设成今天，
+    // 「今天新加的词不进今天队列」会被破坏。learning 交给次日结算补排期。
+    if (nextStatus === 'mastered') {
+      Object.assign(update, planManualStatusUpdate(existing, nextStatus, now))
+    } else if (nextStatus === 'new') {
+      update.masteredAt = null
+      update.nextReviewAt = null
+    } else {
+      update.masteredAt = null
+    }
     // 「转正」只对墓碑成立，由下面的 basic-removed 分支改写 action；
     // 普通状态互转（含 new → learning）只是更新（md/56 §18）
     action = 'updated'

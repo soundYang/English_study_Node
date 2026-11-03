@@ -39,4 +39,15 @@ export const basicWordMarkRepository = {
   deleteByWord(userId, word) {
     return BasicWordMark.deleteOne({ userId, word })
   },
+
+  /**
+   * 批量清标记（md/61）：批量移除时与 `removeBasicWord` 同口径。
+   *
+   * 只写 `source` 不清标记，词被物理删除后残留标记会让它在基础词页
+   * 重新显示成「认识」，所以移除成功后必须一起清掉。
+   */
+  deleteByWords(userId, words) {
+    if (!words.length) return Promise.resolve({ deletedCount: 0 })
+    return BasicWordMark.deleteMany({ userId, word: { $in: words } })
+  },
 }

@@ -104,6 +104,43 @@ export const reviewWordSchema = z.object({
  */
 export const MAX_REVIEW_BATCH = 200
 
+/** 一次批量改状态的上限（md/61 §4.2）；与批量导入 / 批量自评保持一致 */
+export const MAX_STATUS_BATCH = 200
+
+/**
+ * 批量改状态允许的目标（md/61 §4.2）。
+ *
+ * 注意这不是数据库 `status` 的枚举：`removed` 写的是 `source`，
+ * `restore` 是从墓碑回到词库。`all` 是筛选，不是目标。
+ */
+export const WORD_STATUS_TARGETS = [
+  'new',
+  'learning',
+  'mastered',
+  'removed',
+  'restore',
+]
+
+/**
+ * POST /api/words/status/batch 的请求体（md/61）。
+ *
+ * 只收 id：词形可以被 PATCH 改掉，id 才是稳定键。
+ * 非法 ObjectId 不在这里报 400——它与「查不到」对外是同一个结果，
+ * 由 service 进 `skipped / NOT_FOUND`，一条坏 id 不拖垮整批。
+ */
+export const batchStatusSchema = z.object({
+  ids: z
+    .array(z.string({ error: 'id 必须是字符串' }), {
+      error: 'ids 必须是字符串数组',
+    })
+    .min(1, '至少选择 1 个单词')
+    .max(MAX_STATUS_BATCH, `一次最多修改 ${MAX_STATUS_BATCH} 个单词`),
+  target: z.enum(WORD_STATUS_TARGETS, {
+    error: 'target 只能是 new / learning / mastered / removed / restore',
+  }),
+  dryRun: z.boolean({ error: 'dryRun 必须是布尔值' }).default(false),
+})
+
 /**
  * POST /api/words/review/batch 的请求体。
  *

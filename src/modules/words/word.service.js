@@ -24,6 +24,7 @@ import {
   mergeSenses,
   resolveDuplicate,
 } from './word-import.js'
+import { planManualStatusUpdate } from './word-status.js'
 import {
   DAILY_NEW_WORDS,
   DAILY_REVIEW_LIMIT,
@@ -190,6 +191,17 @@ function foldStudyCounts(rows) {
   }
 
   return counts
+}
+
+/**
+ * 五档学习状态计数（md/61）。批量改状态后要立刻回新的标签数字，
+ * 前端不必为了刷新计数再拉一次列表。
+ *
+ * 与 `listWords` 的 `studyCounts` 共用 `foldStudyCounts`，口径不会分叉。
+ */
+export async function buildStudyCounts(userId, now = new Date()) {
+  const today = startOfLocalDay(now)
+  return foldStudyCounts(await repo.countByStudyState(userId, today))
 }
 
 /** 词库全量快照（`includeCounts` 用，md/44 §5.7） */
@@ -408,6 +420,21 @@ export async function updateWord({ userId, id, body }) {
     throw badRequest('状态只能是 new / learning / mastered', 'status')
   }
 
+  // 墓碑不是普通词：只改 status 会让 source 仍是 basic-removed，
+  // 前端看起来「没变」。要复活必须显式走批量 restore 或基础词页恢复。
+  // 放行 new 是因为编辑弹窗可能原样回传当前状态，那是个幂等空操作。
+  if (
+    parsed.status !== undefined &&
+    parsed.status !== 'new' &&
+    doc.source === 'basic-removed'
+  ) {
+    throw conflict(
+      ERROR_CODES.BASIC_WORD_ALREADY_REMOVED,
+      '这个词已被标记为不认识，请先恢复后再修改状态',
+      'status',
+    )
+  }
+
   const nextWord =
     parsed.word !== undefined ? normalizeWordOrThrow(parsed.word) : doc.word
   const nextMeaning =
@@ -416,8 +443,8 @@ export async function updateWord({ userId, id, body }) {
       : undefined
 
   if (parsed.status !== undefined) {
+    Object.assign(doc, planManualStatusUpdate(doc, parsed.status))
     doc.status = parsed.status
-    applyManualStatusSideEffects(doc, parsed.status)
   }
 
   const wordChanged = nextWord !== doc.word
@@ -480,36 +507,6 @@ export async function deleteWord({ userId, id }) {
   const total = await repo.count({ userId })
 
   return { id: String(removed._id), total }
-}
-
-/**
- * 手动改状态时维护复习排期（md/56 §7）。
- *
- * 手动改状态是用户的最终裁量权，自动流程不能覆盖它，所以这里按目标状态直接重排：
- *   mastered → 退出复习队列，记下掌握时刻
- *   learning → 立刻进队列（用户说「我要复习它」，那就今天开始）
- *   new      → 退出队列，等次日结算再把它推回 learning
- *
- * 只在这里改，不在结算里改：结算只处理「过夜的新词」和「漏排期的老词」，
- * 不碰用户刚手动设过的状态。
- */
-function applyManualStatusSideEffects(doc, status) {
-  if (status === 'mastered') {
-    doc.nextReviewAt = null
-    doc.masteredAt = doc.masteredAt ?? new Date()
-    return
-  }
-
-  // 一旦不是 mastered，掌握时刻就该清掉，否则历史里会留一条对不上的记录
-  doc.masteredAt = null
-
-  if (status === 'learning') {
-    doc.reviewStage = doc.reviewStage ?? 0
-    doc.nextReviewAt = startOfLocalDay(new Date())
-    return
-  }
-
-  doc.nextReviewAt = null
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000

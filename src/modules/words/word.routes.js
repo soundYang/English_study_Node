@@ -9,6 +9,7 @@ import { MAX_FILE_BYTES } from './import/limits.js'
 import { checkWords, importWords } from './word-batch.service.js'
 import { getStudyStats } from './study-stats.service.js'
 import { listWordsQuerySchema } from './word.schema.js'
+import { updateWordsStatus } from './word-status.service.js'
 import {
   createWord,
   deleteWord,
@@ -61,6 +62,16 @@ const writeLimiter = createIpLimiter({
   windowMs: 60_000,
   limit: 60,
   message: '操作太频繁：每分钟最多 60 次，请稍后再试',
+})
+
+/**
+ * 批量改状态（md/61）：单次最多 200 写，不能和单条写共用 60 次/分钟的桶。
+ * 20 次/分钟 = 4000 写/分钟上限，与批量导入同一量级。
+ */
+const statusBatchLimiter = createIpLimiter({
+  windowMs: 60_000,
+  limit: 20,
+  message: '批量修改太频繁：每分钟最多 20 次，请稍后再试',
 })
 
 /**
@@ -196,6 +207,16 @@ router.patch('/:id', writeLimiter, async (req, res) => {
 
 router.delete('/:id', writeLimiter, async (req, res) => {
   res.json(await deleteWord({ userId: req.userId, id: req.params.id }))
+})
+
+/**
+ * 批量改学习状态（md/61）：`{ ids, target, dryRun? }`。
+ *
+ * 与批量自评一样是「对一批资源执行一个动作」，所以用 POST；
+ * 静态路径先挂，避免以后加 `/:id` 类路由时被吞掉。
+ */
+router.post('/status/batch', statusBatchLimiter, async (req, res) => {
+  res.json(await updateWordsStatus({ userId: req.userId, body: req.body ?? {} }))
 })
 
 /**
