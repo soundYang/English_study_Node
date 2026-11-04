@@ -15,6 +15,7 @@ import feedbackRoutes from './modules/feedback/feedback.routes.js'
 import healthRoutes from './modules/health/health.routes.js'
 import quotaRoutes from './modules/quota/quota.routes.js'
 import readingRoutes from './modules/readings/reading.routes.js'
+import wordBankRoutes from './modules/word-banks/word-banks.routes.js'
 import wordRoutes from './modules/words/word.routes.js'
 import { ERROR_CODES } from './shared/errors.js'
 import { accessLogger } from './shared/middleware/accessLog.js'
@@ -100,6 +101,7 @@ export function createApp() {
   // 需要身份。AUTH_ENFORCED=false 时 currentUser 会把 req.userId 回落成 DEFAULT_USER_ID，
   // 所以这三个 requireAuth 现在等于放行——打开开关才开始真正 401（md/33 §7.3）
   app.use('/api/words', requireAuth, wordRoutes)
+  app.use('/api/word-banks', requireAuth, wordBankRoutes)
   app.use('/api/basic-words', requireAuth, basicWordRoutes)
   app.use('/api/readings', requireAuth, readingRoutes)
 

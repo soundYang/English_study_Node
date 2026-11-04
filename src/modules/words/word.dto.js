@@ -75,6 +75,8 @@ export function toWordDto(doc, { now = new Date() } = {}) {
     status: doc.status,
     createdAt: doc.createdAt,
     source: doc.source,
+    // 由词库导入的标签；service 层查导入记录后覆盖。旧客户端忽略即可
+    wordBanks: [],
     dictionaryId: doc.dictionaryId ?? null,
     // COCA 排名：前端按它标「高频 / 中频 / 低频」（English_vue/md/13 C1）。
     // 手填词为 null，不是 0——0 会被当成「排名第 0」，null 才是「没有这个数」

@@ -139,6 +139,12 @@ export const wordRepository = {
     return Word.findOneAndDelete({ userId, word })
   },
 
+  /** 词库重置：一次删掉该词库导入的全部词（md/63） */
+  deleteManyByWords(userId, words) {
+    if (!words.length) return Promise.resolve()
+    return Word.deleteMany({ userId, word: { $in: words } })
+  },
+
   existsByWord(userId, word, excludeId) {
     const filter = { userId, word }
     if (excludeId) filter._id = { $ne: excludeId }

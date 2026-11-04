@@ -17,6 +17,7 @@ import {
   normalizeWordOrThrow,
 } from '../../shared/utils/word-form.js'
 import { findEntry } from '../dictionary/dictionary.loader.js'
+import { wordBankMembershipRepository as membershipRepo } from '../word-banks/word-bank-membership.repository.js'
 import { toWordDto } from './word.dto.js'
 import {
   buildCreatePayload,
@@ -48,6 +49,31 @@ import { settleDailyWords } from './word-settlement.js'
 
 /** PATCH 时不允许修改的字段 */
 const READONLY_FIELDS = ['source', 'dictionaryId', 'phonetic', 'senses']
+
+/**
+ * 给词 DTO 补“从哪个词库导入”的标签（md/63）。
+ *
+ * 只查当前页/当前批的词，不按用户全量扫；没有导入记录时保持空数组。
+ */
+export async function withWordBanks(userId, dtos) {
+  if (!dtos.length) return dtos
+
+  const memberships = await membershipRepo.findByWords(
+    userId,
+    dtos.map((dto) => dto.word),
+  )
+  const map = new Map()
+
+  for (const item of memberships) {
+    if (!map.has(item.word)) map.set(item.word, [])
+    map.get(item.word).push(item.bank)
+  }
+
+  return dtos.map((dto) => ({
+    ...dto,
+    wordBanks: map.get(dto.word) ?? [],
+  }))
+}
 
 /**
  * 把 `study` 参数翻成 Mongo 过滤条件，与 `WordDto.studyState` 一一对应。
@@ -136,7 +162,10 @@ export async function listWords({ userId, query }) {
   return {
     // 不写 `items.map(toWordDto)`：map 会把下标当第二参传进去，
     // 而 toWordDto 的第二参是 options，将来加字段时很容易被下标悄悄污染
-    items: items.map((item) => toWordDto(item)),
+    items: await withWordBanks(
+      userId,
+      items.map((item) => toWordDto(item)),
+    ),
     total,
     page: currentPage,
     pageSize,
@@ -327,7 +356,8 @@ async function decorate(dto, { action, userId, includeCounts }) {
     result.total = total
   }
 
-  return result
+  const [decorated] = await withWordBanks(userId, [result])
+  return decorated
 }
 
 /**
@@ -485,7 +515,9 @@ export async function updateWord({ userId, id, body }) {
   }
 
   try {
-    return toWordDto(await repo.save(doc))
+    const saved = await repo.save(doc)
+    const [dto] = await withWordBanks(userId, [toWordDto(saved)])
+    return dto
   } catch (err) {
     if (err?.code === 11000) {
       throw conflict(ERROR_CODES.WORD_EXISTS, '这个单词已经添加过了', 'word')
@@ -503,6 +535,9 @@ export async function deleteWord({ userId, id }) {
 
   const removed = await repo.deleteByIdAndUser(id, userId)
   if (!removed) throw wordNotFound()
+
+  // 手动删除后不能再算“从词库导入”，否则以后重新手动添加会被误判、重置时误删
+  await membershipRepo.deleteByWord(userId, removed.word)
 
   const total = await repo.count({ userId })
 
@@ -547,7 +582,10 @@ export async function getDailyPlan({ userId, now = new Date() }) {
       // 今天复习过多少个词。包含在文章里顺带复习到的池内词，
       // 所以它可能大于「今天原本到期的数量」——前端不要拿它反推 today
       doneToday,
-      words: words.map((item) => toWordDto(item)),
+      words: await withWordBanks(
+        userId,
+        words.map((item) => toWordDto(item)),
+      ),
     },
   }
 }
@@ -604,7 +642,10 @@ export async function reviewWord({ userId, id, body }) {
   await recordStudyActivity({ userId, reviewed: 1, mastered, at: now })
 
   // 重新读一次再转 DTO：用算好的结果构造，避免和 repository 的写逻辑重复一遍
-  return toWordDto(await repo.findByIdAndUser(id, userId))
+  const [dto] = await withWordBanks(userId, [
+    toWordDto(await repo.findByIdAndUser(id, userId)),
+  ])
+  return dto
 }
 
 /**
@@ -688,6 +729,9 @@ export async function reviewWords({ userId, body }) {
   return {
     updated: updates.length,
     skipped,
-    words: updated.map((item) => toWordDto(item)),
+    words: await withWordBanks(
+      userId,
+      updated.map((item) => toWordDto(item)),
+    ),
   }
 }

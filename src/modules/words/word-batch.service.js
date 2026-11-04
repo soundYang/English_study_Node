@@ -4,6 +4,7 @@ import { parseOrThrow } from '../../shared/utils/validation.js'
 import { checkMeaning, checkWord } from '../../shared/utils/word-form.js'
 import { findEntry } from '../dictionary/dictionary.loader.js'
 import { buildSummary, toWordDto } from './word.dto.js'
+import { withWordBanks } from './word.service.js'
 import {
   buildCreatePayload,
   normalizeStatus,
@@ -131,7 +132,7 @@ export async function importWords({ userId, body }) {
     skipped: skippedCount,
     failed: errors.length,
     total,
-    items,
+    items: await withWordBanks(userId, items),
     skippedItems: skipped,
     errors,
   }

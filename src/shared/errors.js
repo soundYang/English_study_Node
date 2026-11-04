@@ -38,6 +38,8 @@ export const ERROR_CODES = Object.freeze({
   // 个人词库到上限（md/44 §5.6）。与 WORD_EXISTS 分开：
   // 前端要提示「去删一些旧词」，而不是「这个词加过了」
   WORD_LIMIT_REACHED: 'WORD_LIMIT_REACHED',
+  // 词库 key 不是 high / mid（md/63）
+  WORD_BANK_NOT_FOUND: 'WORD_BANK_NOT_FOUND',
   READING_NOT_FOUND: 'READING_NOT_FOUND',
   WORD_EXISTS: 'WORD_EXISTS',
   // ——— 基础词表（md/29）：只有 421 个实词可改，功能词 / 日历词 / 缩写只读 ———

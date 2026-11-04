@@ -26,6 +26,7 @@ import {
 import { Reading } from './modules/readings/reading.model.js'
 import { basicWordsVersions } from './modules/readings/versions.js'
 import { TokenUsage } from './modules/usage/token-usage.model.js'
+import { WordBankMembership } from './modules/word-banks/word-bank-membership.model.js'
 import { Word } from './modules/words/word.model.js'
 import { logger } from './shared/logger.js'
 
@@ -44,6 +45,7 @@ async function main() {
   // 索引漏建的话，同名的第二个用户会直接建成功，而应用层不会有任何报错。
   await Promise.all([
     Word.syncIndexes(),
+    WordBankMembership.syncIndexes(),
     Reading.syncIndexes(),
     GenerationTask.syncIndexes(),
     User.syncIndexes(),

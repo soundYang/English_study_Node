@@ -6,7 +6,7 @@ import { deriveStudyState, toWordDto } from './word.dto.js'
 import { wordRepository as repo } from './word.repository.js'
 import { batchStatusSchema } from './word.schema.js'
 import { planStatusTransition } from './word-status.js'
-import { buildStudyCounts } from './word.service.js'
+import { buildStudyCounts, withWordBanks } from './word.service.js'
 
 /**
  * POST /api/words/status/batch（md/61）
@@ -114,10 +114,13 @@ export async function updateWordsStatus({ userId, body, now = new Date() }) {
     unchanged,
     skipped,
     // 只回真正写入的词，顺序按请求 id；前端按 id 就地替换
-    words: changed
-      .map(({ id }) => writtenById.get(id))
-      .filter(Boolean)
-      .map((doc) => toWordDto(doc, { now })),
+    words: await withWordBanks(
+      userId,
+      changed
+        .map(({ id }) => writtenById.get(id))
+        .filter(Boolean)
+        .map((doc) => toWordDto(doc, { now })),
+    ),
     // 写后的最新五档计数，前端直接更新标签数字
     studyCounts: await buildStudyCounts(userId, now),
   }
